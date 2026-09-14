@@ -7,17 +7,33 @@ export MIRAGE_HOME="${MIRAGE_HOME:-$ROOT}"
 echo "MIRAGE_HOME=${MIRAGE_HOME}"
 
 run_default() {
+  local batch="${1:-1}"
+  local point_dir="$ROOT/outputs/qwen3_batch/b${batch}"
+  local torch_output="$point_dir/torch_output.json"
+  local mpk_output="$point_dir/mpk_output.json"
+  local batch_args=(
+    --max-num-batched-requests "$batch"
+    --max-num-batched-tokens "$batch"
+  )
+
+  mkdir -p "$point_dir"
+  echo ""
+  echo "===== B=${batch} (default prompt and EOS stopping) ====="
   echo "Running Torch baseline..."
-  python "$ROOT/demo/qwen3/demo.py" --save-tokens
+  python "$ROOT/demo/qwen3/demo.py" "${batch_args[@]}" \
+    --save-tokens "$torch_output"
 
   echo "Running MPK..."
-  python "$ROOT/demo/qwen3/demo.py" --use-mirage --save-tokens
+  python "$ROOT/demo/qwen3/demo.py" --use-mirage "${batch_args[@]}" \
+    --save-tokens "$mpk_output"
 
   echo "Comparing outputs..."
-  pytest -q "$ROOT/tests/ci-tests/test_inference_output.py"
+  TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
+    pytest -q "$ROOT/tests/ci-tests/test_inference_output.py"
 
   echo "Performance comparison..."
-  python "$ROOT/tests/ci-tests/perf_comparison.py"
+  TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
+    python "$ROOT/tests/ci-tests/perf_comparison.py"
 }
 
 run_point() {
@@ -60,7 +76,9 @@ run_point() {
 # Set all three variables to whitespace-separated values to run a benchmark
 # matrix.  With none set, preserve the original single Qwen3 CI workflow.
 if [[ -z "${S_IN_VALUES:-}" && -z "${S_OUT_VALUES:-}" ]]; then
-  run_default
+  for batch in ${B_VALUES:-1}; do
+    run_default "$batch"
+  done
 elif [[ -z "${S_IN_VALUES:-}" || -z "${S_OUT_VALUES:-}" ]]; then
   echo "Set both S_IN_VALUES and S_OUT_VALUES when running a grid." >&2
   exit 2
