@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export MIRAGE_HOME="${MIRAGE_HOME:-$ROOT}"
 
 echo "MIRAGE_HOME=${MIRAGE_HOME}"
+CORRECTNESS_FAILURES=0
 
 write_summary_row() {
   local mode="$1"
@@ -13,16 +14,17 @@ write_summary_row() {
   local output_length="$4"
   local torch_output="$5"
   local mpk_output="$6"
+  local correctness="$7"
 
   # pytest has completed successfully when this is called, so every row in
   # the summary represents a passed length/prefix correctness check.
   python - "$RESULTS_FILE" "$mode" "$batch" "$input_length" "$output_length" \
-    "$torch_output" "$mpk_output" <<'PY'
+    "$torch_output" "$mpk_output" "$correctness" <<'PY'
 import csv
 import json
 import sys
 
-(summary_path, mode, batch, sin, sout, torch_path, mpk_path) = sys.argv[1:]
+(summary_path, mode, batch, sin, sout, torch_path, mpk_path, correctness) = sys.argv[1:]
 with open(torch_path, encoding="utf-8") as f:
     torch = json.load(f)
 with open(mpk_path, encoding="utf-8") as f:
@@ -31,6 +33,16 @@ with open(mpk_path, encoding="utf-8") as f:
 torch_latency = float(torch["latency_ms_per_token"])
 mpk_latency = float(mpk["latency_ms_per_token"])
 batch_size = int(batch)
+torch_tokens = torch.get("token_ids", [])
+mpk_tokens = mpk.get("token_ids", [])
+if torch["generate_length"] != mpk["generate_length"]:
+    detail = f"length:{torch['generate_length']}!={mpk['generate_length']}"
+else:
+    mismatch = next(
+        (i for i, (a, b) in enumerate(zip(torch_tokens[:50], mpk_tokens[:50])) if a != b),
+        None,
+    )
+    detail = "match" if mismatch is None else f"token:{mismatch}"
 row = [
     mode, batch_size, sin, sout,
     torch["generate_length"], mpk["generate_length"],
@@ -38,11 +50,32 @@ row = [
     f"{torch_latency / mpk_latency:.4f}",
     f"{batch_size * 1000.0 / torch_latency:.3f}",
     f"{batch_size * 1000.0 / mpk_latency:.3f}",
-    "PASS",
+    correctness, detail,
 ]
 with open(summary_path, "a", newline="", encoding="utf-8") as f:
     csv.writer(f).writerow(row)
 PY
+}
+
+run_correctness_test() {
+  local mode="$1"
+  local batch="$2"
+  local input_length="$3"
+  local output_length="$4"
+  local torch_output="$5"
+  local mpk_output="$6"
+
+  echo "Comparing outputs..."
+  if TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
+      pytest -q "$ROOT/tests/ci-tests/test_inference_output.py"; then
+    write_summary_row "$mode" "$batch" "$input_length" "$output_length" \
+      "$torch_output" "$mpk_output" "PASS"
+  else
+    CORRECTNESS_FAILURES=$((CORRECTNESS_FAILURES + 1))
+    write_summary_row "$mode" "$batch" "$input_length" "$output_length" \
+      "$torch_output" "$mpk_output" "FAIL"
+    echo "Recorded correctness failure; continuing with the remaining matrix points."
+  fi
 }
 
 run_default() {
@@ -66,10 +99,7 @@ run_default() {
   python "$ROOT/demo/qwen3/demo.py" --use-mirage "${batch_args[@]}" \
     --save-tokens "$mpk_output"
 
-  echo "Comparing outputs..."
-  TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
-    pytest -q "$ROOT/tests/ci-tests/test_inference_output.py"
-  write_summary_row "default_eos" "$batch" "" "" "$torch_output" "$mpk_output"
+  run_correctness_test "default_eos" "$batch" "" "" "$torch_output" "$mpk_output"
 
   echo "Performance comparison..."
   TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
@@ -104,10 +134,7 @@ run_point() {
   python "$ROOT/demo/qwen3/demo.py" --use-mirage "${common_args[@]}" \
     --save-tokens "$mpk_output"
 
-  echo "Comparing outputs..."
-  TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
-    pytest -q "$ROOT/tests/ci-tests/test_inference_output.py"
-  write_summary_row "fixed_length" "$batch" "$input_length" "$output_length" "$torch_output" "$mpk_output"
+  run_correctness_test "fixed_length" "$batch" "$input_length" "$output_length" "$torch_output" "$mpk_output"
 
   echo "Performance comparison..."
   TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
@@ -119,7 +146,7 @@ run_point() {
 if [[ -z "${S_IN_VALUES:-}" && -z "${S_OUT_VALUES:-}" ]]; then
   RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_batch/summary.csv}"
   mkdir -p "$(dirname "$RESULTS_FILE")"
-  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_ms_per_token,mpk_ms_per_token,speedup,torch_aggregate_tokens_per_s,mpk_aggregate_tokens_per_s,correctness' > "$RESULTS_FILE"
+  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_ms_per_token,mpk_ms_per_token,speedup,torch_aggregate_tokens_per_s,mpk_aggregate_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
   echo "Summary file: $RESULTS_FILE"
   for batch in ${B_VALUES:-1}; do
     run_default "$batch"
@@ -130,7 +157,7 @@ elif [[ -z "${S_IN_VALUES:-}" || -z "${S_OUT_VALUES:-}" ]]; then
 else
   RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_grid/summary.csv}"
   mkdir -p "$(dirname "$RESULTS_FILE")"
-  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_ms_per_token,mpk_ms_per_token,speedup,torch_aggregate_tokens_per_s,mpk_aggregate_tokens_per_s,correctness' > "$RESULTS_FILE"
+  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_ms_per_token,mpk_ms_per_token,speedup,torch_aggregate_tokens_per_s,mpk_aggregate_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
   echo "Summary file: $RESULTS_FILE"
   for batch in ${B_VALUES:-1}; do
     for input_length in ${S_IN_VALUES}; do
@@ -143,3 +170,7 @@ fi
 
 echo ""
 echo "Completed summary: $RESULTS_FILE"
+if (( CORRECTNESS_FAILURES > 0 )); then
+  echo "Correctness failed at $CORRECTNESS_FAILURES matrix point(s); see $RESULTS_FILE." >&2
+  exit 1
+fi
