@@ -42,8 +42,6 @@ def parse_args():
     parser.add_argument("--output-dir", help="Output files directory")
     parser.add_argument("--max-seq-length", default=512, type=int,
                         help="Total sequence length (prompt + generation)")
-    parser.add_argument("--prompt-length", default=1, type=int,
-                        help="Synthetic prompt length in tokens")
     parser.add_argument("--model", type=str, default="Qwen/Qwen3-8B",
                         help="Model path on hugging face")
     parser.add_argument("--ignore-eos", action="store_true",
@@ -53,10 +51,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-    if args.prompt_length <= 0:
-        raise ValueError("--prompt-length must be positive")
-    if args.prompt_length >= args.max_seq_length:
-        raise ValueError("--max-seq-length must exceed --prompt-length")
     print("Input arguments:", args)
 
     import mirage as mi
@@ -76,15 +70,14 @@ def main():
 
     total_num_requests = args.max_num_batched_requests
 
-    # Use one valid vocabulary id repeatedly.  Content is deliberately held
-    # constant: this benchmark measures the cost of a fixed-length prefill and
-    # decode rather than tokenizer or prompt-content effects.
-    prompt_token_id = tokenizer(PROMPT, add_special_tokens=False).input_ids[0]
-    prompt_len = args.prompt_length
+    # 1-token prompt: tokenize "." directly (no chat template).
+    model_inputs = tokenizer([PROMPT], return_tensors="pt").to(model.device)
+    prompt_len = model_inputs.input_ids.shape[-1]
+    assert prompt_len == 1, f"Expected 1-token prompt, got {prompt_len} tokens"
 
     tokens = torch.full((total_num_requests, args.max_seq_length), 0,
                         dtype=torch.long, device="cuda")
-    tokens[:, :prompt_len] = prompt_token_id
+    tokens[:, :prompt_len] = model_inputs.input_ids[0]
     prompt_lengths = torch.full((total_num_requests,), prompt_len,
                                 dtype=torch.int, device="cuda")
 
@@ -420,13 +413,11 @@ def main():
               f"with --ignore-eos, but stopped at {seq_len}")
 
     # -------- Dump result JSON ----------
-    save_dir = args.output_dir or DEFAULT_SAVE_DIR
-    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(DEFAULT_SAVE_DIR, exist_ok=True)
     result_path = os.path.join(
-        save_dir,
+        DEFAULT_SAVE_DIR,
         f"batch_perf_t{args.max_num_batched_tokens}"
-        f"_r{args.max_num_batched_requests}"
-        f"_in{prompt_len}_out{args.max_seq_length - prompt_len}.json",
+        f"_r{args.max_num_batched_requests}.json",
     )
     result = {
         "max_num_batched_tokens": args.max_num_batched_tokens,
