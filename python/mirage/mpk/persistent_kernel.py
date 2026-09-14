@@ -272,7 +272,6 @@ def get_compile_command(
         "-shared",
         _detect_cxx_standard(),
         "-rdc=false" if not use_nvshmem else "-rdc=true",
-        "-use_fast_math",
         "-lcuda",
         "-lcudart",
         "-lstdc++fs",
