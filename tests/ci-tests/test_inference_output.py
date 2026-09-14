@@ -23,6 +23,21 @@ def test_qwen3_torch_vs_mpk_tokens():
     torch_tokens, torch_meta = _load_tokens(TORCH_OUTPUT)
     mpk_tokens, mpk_meta = _load_tokens(MPK_OUTPUT)
 
+    # The implementations may use different fused kernels, so this CI checks
+    # a stable output prefix rather than requiring every generated token to be
+    # bit-identical.  They must still terminate at the same decode step: a
+    # different generated length means one path selected EOS at a different
+    # point and is an observable generation mismatch.
+    torch_length = torch_meta.get("generate_length")
+    mpk_length = mpk_meta.get("generate_length")
+    assert isinstance(torch_length, int), "Torch generate_length missing or invalid"
+    assert isinstance(mpk_length, int), "MPK generate_length missing or invalid"
+    assert torch_length == mpk_length, (
+        "Generated length mismatch: "
+        f"torch={torch_length}, mpk={mpk_length}. "
+        "MPK and Torch selected EOS at different decode steps."
+    )
+
     n = min(NUM_TOKENS_TO_COMPARE, len(torch_tokens), len(mpk_tokens))
     if n == 0:
         pytest.fail(f"No tokens to compare (torch={len(torch_tokens)}, mpk={len(mpk_tokens)})")
