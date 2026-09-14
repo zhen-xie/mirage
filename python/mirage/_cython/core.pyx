@@ -397,7 +397,8 @@ def convert_torch_type_to_dtype(type):
         return float8
     elif type is torch.float8_e5m2fnuz:
         return float8
-    elif type is torch.float8_e8m0fnu:
+    # Older supported PyTorch versions do not expose this FP8 dtype.
+    elif hasattr(torch, "float8_e8m0fnu") and type is torch.float8_e8m0fnu:
         return float8
     elif type is torch.int8:
         return int8
