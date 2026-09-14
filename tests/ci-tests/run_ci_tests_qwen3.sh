@@ -6,6 +6,45 @@ export MIRAGE_HOME="${MIRAGE_HOME:-$ROOT}"
 
 echo "MIRAGE_HOME=${MIRAGE_HOME}"
 
+write_summary_row() {
+  local mode="$1"
+  local batch="$2"
+  local input_length="$3"
+  local output_length="$4"
+  local torch_output="$5"
+  local mpk_output="$6"
+
+  # pytest has completed successfully when this is called, so every row in
+  # the summary represents a passed length/prefix correctness check.
+  python - "$RESULTS_FILE" "$mode" "$batch" "$input_length" "$output_length" \
+    "$torch_output" "$mpk_output" <<'PY'
+import csv
+import json
+import sys
+
+(summary_path, mode, batch, sin, sout, torch_path, mpk_path) = sys.argv[1:]
+with open(torch_path, encoding="utf-8") as f:
+    torch = json.load(f)
+with open(mpk_path, encoding="utf-8") as f:
+    mpk = json.load(f)
+
+torch_latency = float(torch["latency_ms_per_token"])
+mpk_latency = float(mpk["latency_ms_per_token"])
+batch_size = int(batch)
+row = [
+    mode, batch_size, sin, sout,
+    torch["generate_length"], mpk["generate_length"],
+    f"{torch_latency:.6f}", f"{mpk_latency:.6f}",
+    f"{torch_latency / mpk_latency:.4f}",
+    f"{batch_size * 1000.0 / torch_latency:.3f}",
+    f"{batch_size * 1000.0 / mpk_latency:.3f}",
+    "PASS",
+]
+with open(summary_path, "a", newline="", encoding="utf-8") as f:
+    csv.writer(f).writerow(row)
+PY
+}
+
 run_default() {
   local batch="${1:-1}"
   local point_dir="$ROOT/outputs/qwen3_batch/b${batch}"
@@ -30,6 +69,7 @@ run_default() {
   echo "Comparing outputs..."
   TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
     pytest -q "$ROOT/tests/ci-tests/test_inference_output.py"
+  write_summary_row "default_eos" "$batch" "" "" "$torch_output" "$mpk_output"
 
   echo "Performance comparison..."
   TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
@@ -67,6 +107,7 @@ run_point() {
   echo "Comparing outputs..."
   TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
     pytest -q "$ROOT/tests/ci-tests/test_inference_output.py"
+  write_summary_row "fixed_length" "$batch" "$input_length" "$output_length" "$torch_output" "$mpk_output"
 
   echo "Performance comparison..."
   TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
@@ -76,6 +117,10 @@ run_point() {
 # Set all three variables to whitespace-separated values to run a benchmark
 # matrix.  With none set, preserve the original single Qwen3 CI workflow.
 if [[ -z "${S_IN_VALUES:-}" && -z "${S_OUT_VALUES:-}" ]]; then
+  RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_batch/summary.csv}"
+  mkdir -p "$(dirname "$RESULTS_FILE")"
+  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_ms_per_token,mpk_ms_per_token,speedup,torch_aggregate_tokens_per_s,mpk_aggregate_tokens_per_s,correctness' > "$RESULTS_FILE"
+  echo "Summary file: $RESULTS_FILE"
   for batch in ${B_VALUES:-1}; do
     run_default "$batch"
   done
@@ -83,6 +128,10 @@ elif [[ -z "${S_IN_VALUES:-}" || -z "${S_OUT_VALUES:-}" ]]; then
   echo "Set both S_IN_VALUES and S_OUT_VALUES when running a grid." >&2
   exit 2
 else
+  RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_grid/summary.csv}"
+  mkdir -p "$(dirname "$RESULTS_FILE")"
+  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_ms_per_token,mpk_ms_per_token,speedup,torch_aggregate_tokens_per_s,mpk_aggregate_tokens_per_s,correctness' > "$RESULTS_FILE"
+  echo "Summary file: $RESULTS_FILE"
   for batch in ${B_VALUES:-1}; do
     for input_length in ${S_IN_VALUES}; do
       for output_length in ${S_OUT_VALUES}; do
@@ -91,3 +140,6 @@ else
     done
   done
 fi
+
+echo ""
+echo "Completed summary: $RESULTS_FILE"
