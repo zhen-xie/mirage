@@ -5,8 +5,12 @@ import os
 import sys
 
 DEFAULT_OUTPUT_DIR = os.path.join("outputs", "qwen3")
-TORCH_OUTPUT = os.path.join(DEFAULT_OUTPUT_DIR, "torch_output.json")
-MPK_OUTPUT = os.path.join(DEFAULT_OUTPUT_DIR, "mpk_output.json")
+TORCH_OUTPUT = os.environ.get(
+    "TORCH_OUTPUT", os.path.join(DEFAULT_OUTPUT_DIR, "torch_output.json")
+)
+MPK_OUTPUT = os.environ.get(
+    "MPK_OUTPUT", os.path.join(DEFAULT_OUTPUT_DIR, "mpk_output.json")
+)
 
 
 def _load_meta(path: str):
