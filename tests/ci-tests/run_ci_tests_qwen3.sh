@@ -146,7 +146,7 @@ run_point() {
 if [[ -z "${S_IN_VALUES:-}" && -z "${S_OUT_VALUES:-}" ]]; then
   RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_batch/summary.csv}"
   mkdir -p "$(dirname "$RESULTS_FILE")"
-  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_ms_per_token,mpk_ms_per_token,speedup,torch_aggregate_tokens_per_s,mpk_aggregate_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
+  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_e2e_ms_per_output_token_incl_prefill,mpk_e2e_ms_per_output_token_incl_prefill,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
   echo "Summary file: $RESULTS_FILE"
   for batch in ${B_VALUES:-1}; do
     run_default "$batch"
@@ -157,7 +157,7 @@ elif [[ -z "${S_IN_VALUES:-}" || -z "${S_OUT_VALUES:-}" ]]; then
 else
   RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_grid/summary.csv}"
   mkdir -p "$(dirname "$RESULTS_FILE")"
-  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_ms_per_token,mpk_ms_per_token,speedup,torch_aggregate_tokens_per_s,mpk_aggregate_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
+  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_e2e_ms_per_output_token_incl_prefill,mpk_e2e_ms_per_output_token_incl_prefill,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
   echo "Summary file: $RESULTS_FILE"
   for batch in ${B_VALUES:-1}; do
     for input_length in ${S_IN_VALUES}; do

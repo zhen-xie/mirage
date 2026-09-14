@@ -922,7 +922,7 @@ if __name__ == "__main__":
             response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
             print(response)
         print(
-            "Prompt length {}, generate length {}, per-token latency {:.3f} ms".format(
+            "Prompt length {}, generate length {}, end-to-end latency per output token (incl. prefill) {:.3f} ms".format(
                 prompt_len, tokens_generated, per_tok_ms
             )
         )
@@ -963,7 +963,7 @@ if __name__ == "__main__":
         tokens_generated = step.max().item() + 1 - prompt_lengths[0].item()
         per_tok_ms = run_time / max(tokens_generated, 1)
 
-        print("Prompt length {}, generate length {}, per-token latency: {:.3f} ms".format(
+        print("Prompt length {}, generate length {}, end-to-end latency per output token (incl. prefill): {:.3f} ms".format(
               prompt_lengths[0], tokens_generated, per_tok_ms
             )
         )

@@ -40,8 +40,8 @@ def main():
 
     print("")
     print("==================== Performance Comparison ====================")
-    print(f"  Torch:  {torch_lat:.3f} ms/token  (generated {torch_len} tokens)")
-    print(f"  MPK:    {mpk_lat:.3f} ms/token  (generated {mpk_len} tokens)")
+    print(f"  Torch:  {torch_lat:.3f} ms/output token incl. prefill  (generated {torch_len} tokens)")
+    print(f"  MPK:    {mpk_lat:.3f} ms/output token incl. prefill  (generated {mpk_len} tokens)")
     print(f"  Speedup: {speedup:.2f}x")
     print("===============================================================")
 
