@@ -149,6 +149,11 @@ if __name__ == "__main__":
         default="Give me a short introduction to large language model.",
         help="Custom prompt text to generate from.",
     )
+    parser.add_argument(
+        "--print-output",
+        action="store_true",
+        help="Print the prompt and generated text after inference.",
+    )
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
@@ -184,7 +189,7 @@ if __name__ == "__main__":
     if rank != 0:
         print = lambda *_, **__: None
 
-    print("Input arguments:", args)
+    print("Input arguments:", {k: v for k, v in vars(args).items() if k != "prompt"})
     print(f"world_size({world_size}) rank({rank})")
     model_name = args.model
     torch.set_default_dtype(torch.bfloat16)
@@ -891,8 +896,9 @@ if __name__ == "__main__":
         tokens_generated = max(0, end_idx - prompt_len)
         per_tok_ms = run_time / max(prompt_len + tokens_generated, 1)
 
-        response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        print(response)
+        if args.print_output:
+            response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            print(response)
         print(
             "Prompt length {}, generate length {}, per-token latency {:.3f} ms".format(
                 prompt_len, tokens_generated, per_tok_ms
@@ -922,11 +928,12 @@ if __name__ == "__main__":
         torch.cuda.synchronize()
         run_time = starter.elapsed_time(ender)
 
-        print("tokens.shape = ", tokens.shape)
-        for r in range(total_num_requests):
-            generated_ids = tokens[r, : step[r] + 1]
-            response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-            print(response)
+        if args.print_output:
+            print("tokens.shape = ", tokens.shape)
+            for r in range(total_num_requests):
+                generated_ids = tokens[r, : step[r] + 1]
+                response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                print(response)
         
         if total_num_requests > 1:
             print(f"Output length of each batch is same: {(step.max() == step.min()).item()}")
