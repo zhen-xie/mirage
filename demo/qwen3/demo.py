@@ -150,6 +150,12 @@ if __name__ == "__main__":
         help="Custom prompt text to generate from.",
     )
     parser.add_argument(
+        "--input-length",
+        type=int,
+        default=None,
+        help="Use a synthetic prompt with exactly this many tokens.",
+    )
+    parser.add_argument(
         "--print-output",
         action="store_true",
         help="Print the prompt and generated text after inference.",
@@ -160,6 +166,14 @@ if __name__ == "__main__":
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
+    if args.input_length is not None:
+        if args.input_length <= 0:
+            parser.error("--input-length must be positive")
+        if args.input_length >= args.max_seq_length:
+            parser.error("--input-length must be smaller than --max-seq-length")
+        if (args.max_new_tokens is not None
+                and args.input_length + args.max_new_tokens > args.max_seq_length):
+            parser.error("--input-length + --max-new-tokens exceeds --max-seq-length")
     try:
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
@@ -223,7 +237,7 @@ if __name__ == "__main__":
         with torch.device("cuda"):
             tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    total_num_requests = 1 if not args.use_mirage else args.max_num_batched_requests
+    total_num_requests = args.max_num_batched_requests
     # get all model weight tensors
     tokens = torch.full((total_num_requests, args.max_seq_length), 0, dtype=torch.long, device="cuda")
 
@@ -247,21 +261,27 @@ if __name__ == "__main__":
                 """
     #question = "Can you please change x axis to start from 0"
     #prompt = code_text + "\n" + question
-    messages = [
-        {
-            "role": "system",
-            "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
-        },
-        {"role": "user", "content": prompt},
-    ]
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-    for r in range(total_num_requests):
-        for i in range(model_inputs.input_ids.shape[-1]):
-            tokens[r, i] = model_inputs.input_ids[0, i]
-    prompt_lengths = torch.full((total_num_requests,), model_inputs.input_ids.shape[-1], dtype=torch.int, device="cuda")
+    if args.input_length is None:
+        messages = [
+            {
+                "role": "system",
+                "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
+        prompt_length = model_inputs.input_ids.shape[-1]
+        tokens[:, :prompt_length] = model_inputs.input_ids[0]
+    else:
+        # Repeating one ordinary vocabulary token makes prompt length an
+        # independent benchmark variable while keeping every request identical.
+        prompt_token_id = tokenizer.encode(" the", add_special_tokens=False)[0]
+        prompt_length = args.input_length
+        tokens[:, :prompt_length] = prompt_token_id
+    prompt_lengths = torch.full((total_num_requests,), prompt_length, dtype=torch.int, device="cuda")
     positions = torch.arange(32768).unsqueeze(0).to(model.device)
     position_embeddings = model.model.rotary_emb(positions)
 
@@ -846,6 +866,10 @@ if __name__ == "__main__":
     if not args.use_mirage:
         prompt_len = prompt_lengths[0].item()
         decode_limit = prompt_len + output_len
+        if args.do_sample and total_num_requests != 1:
+            parser.error("sampling benchmarks currently require batch size 1")
+        torch.cuda.synchronize()
+        starter.record()
         for cur_pos in range(prompt_len, decode_limit):
             step.fill_(cur_pos - 1)
             input_ids = tokens[:, prev_pos:cur_pos]
@@ -878,14 +902,12 @@ if __name__ == "__main__":
                 g.manual_seed(args.seed + cur_pos)
                 next_token = torch.multinomial(probs, 1, generator=g)
                 next_token = next_token.view(1, 1)
-            next_token = next_token[0, -1]
-            tokens[0, cur_pos] = next_token
+            next_token = next_token[:, -1]
+            tokens[:, cur_pos] = next_token
             prev_pos = cur_pos
-            if next_token == model.config.eos_token_id:
+            if (not args.ignore_eos
+                    and torch.all(next_token == model.config.eos_token_id)):
                 break
-            if cur_pos == prompt_len + warmup:
-                torch.cuda.synchronize()
-                starter.record()
 
         ender.record()
         torch.cuda.synchronize()
@@ -894,7 +916,7 @@ if __name__ == "__main__":
         end_idx = prev_pos + 1
         generated_ids = tokens[:, :end_idx]
         tokens_generated = max(0, end_idx - prompt_len)
-        per_tok_ms = run_time / max(prompt_len + tokens_generated, 1)
+        per_tok_ms = run_time / max(tokens_generated, 1)
 
         if args.print_output:
             response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
@@ -939,7 +961,7 @@ if __name__ == "__main__":
             print(f"Output length of each batch is same: {(step.max() == step.min()).item()}")
 
         tokens_generated = step.max().item() + 1 - prompt_lengths[0].item()
-        per_tok_ms = run_time / max(prompt_lengths[0].item() + tokens_generated, 1)
+        per_tok_ms = run_time / max(tokens_generated, 1)
 
         print("Prompt length {}, generate length {}, per-token latency: {:.3f} ms".format(
               prompt_lengths[0], tokens_generated, per_tok_ms
