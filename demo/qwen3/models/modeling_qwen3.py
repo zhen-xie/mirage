@@ -171,11 +171,12 @@ def naive_attention(
     value_cache,
     kv_len,
     layer_idx,
+    request_idx=0,
     is_causal=True, 
     enable_gqa=True):
             
-    k = key_cache[layer_idx, 0, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
-    v = value_cache[layer_idx, 0, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
+    k = key_cache[layer_idx, request_idx, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
+    v = value_cache[layer_idx, request_idx, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
 
     q_for_sdpa = q.permute(1, 0, 2)    # [num_q_heads, 1, head_dim]
     k_for_sdpa = k.permute(1, 0, 2)    # [num_q_heads, kv_seq_len, head_dim]
@@ -295,38 +296,34 @@ class Qwen3Attention(nn.Module):
             query_states, key_states, cos, sin, unsqueeze_dim=2
         )
 
-        if q_len > 1:
-            self.key_cache[self.layer_idx, 0, :q_len] = key_states[0]
-            self.value_cache[self.layer_idx, 0, :q_len] = value_states[0]
-        else:
-            self.key_cache[self.layer_idx, 0, step] = key_states[0]
-            self.value_cache[self.layer_idx, 0, step] = value_states[0]
+        if bsz > self.key_cache.shape[1]:
+            raise ValueError(
+                f"batch size {bsz} exceeds KV-cache page capacity "
+                f"{self.key_cache.shape[1]}")
 
-        q = query_states[0] # Shape: [q_len, num_q_heads, head_dim]
+        # The reference implementation keeps one KV-cache page per request.
+        # Its former batch=1-only path always read and wrote page 0, which
+        # made a multi-request Torch baseline invalid.
+        attn_outputs = []
+        for request_idx in range(bsz):
+            if q_len > 1:
+                self.key_cache[self.layer_idx, request_idx, :q_len] = key_states[request_idx]
+                self.value_cache[self.layer_idx, request_idx, :q_len] = value_states[request_idx]
+                kv_seq_len = q_len
+                is_causal = True
+            else:
+                request_step = step[request_idx].item()
+                self.key_cache[self.layer_idx, request_idx, request_step] = key_states[request_idx, 0]
+                self.value_cache[self.layer_idx, request_idx, request_step] = value_states[request_idx, 0]
+                kv_seq_len = request_step + 1
+                is_causal = False
 
-        if q_len > 1:
-            attn_output = naive_attention(
-                q,
-                self.key_cache,
-                self.value_cache,
-                q_len,
-                self.layer_idx,
-                True,
-                True
-            )
-        else:
-            kv_seq_len = step.item() + 1
-            attn_output = naive_attention(
-                q,
-                self.key_cache,
-                self.value_cache,
-                kv_seq_len,
-                self.layer_idx,
-                False,
-                True
-            )
+            attn_outputs.append(naive_attention(
+                query_states[request_idx], self.key_cache, self.value_cache,
+                kv_seq_len, self.layer_idx, request_idx, is_causal, True))
 
-        attn_output = attn_output.reshape(bsz, q_len, self.local_qkv_size)
+        attn_output = torch.stack(attn_outputs, dim=0).reshape(
+            bsz, q_len, self.local_qkv_size)
 
         attn_output = self.o_proj(attn_output)
         if self.world_size > 1:
@@ -485,6 +482,8 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         # decoder layers
         next_decoder_cache = None
+        if self.kv_last_page_len.shape != step.shape:
+            self.kv_last_page_len = torch.empty_like(step)
         self.kv_last_page_len.copy_(step + 1)
 
         for decoder_layer in self.layers:
