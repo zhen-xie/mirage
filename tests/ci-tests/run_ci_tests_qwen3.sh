@@ -45,8 +45,9 @@ summary_has_point() {
   local batch="$2"
   local input_length="$3"
   local output_length="$4"
-  awk -F, -v mode="$mode" -v batch="$batch" -v sin="$input_length" -v sout="$output_length" \
-    'NR > 1 && $1 == mode && $2 == batch && $3 == sin && $4 == sout { found=1; exit } END { exit !found }' \
+  awk -F, -v mode="$mode" -v batch="$batch" \
+    -v input_len="$input_length" -v output_len="$output_length" \
+    'NR > 1 && $1 == mode && $2 == batch && $3 == input_len && $4 == output_len { found=1; exit } END { exit !found }' \
     "$RESULTS_FILE"
 }
 
