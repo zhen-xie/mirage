@@ -7,7 +7,13 @@ export MIRAGE_HOME="${MIRAGE_HOME:-$ROOT}"
 echo "MIRAGE_HOME=${MIRAGE_HOME}"
 CORRECTNESS_FAILURES=0
 TEMP_OUTPUT_DIRS=()
-SUMMARY_HEADER='mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_batch_step_ms_incl_prefill,mpk_batch_step_ms_incl_prefill,torch_aggregate_ms_per_output_token,mpk_aggregate_ms_per_output_token,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail'
+PAIR_SUMMARY_HEADER='mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_batch_step_ms_incl_prefill,mpk_batch_step_ms_incl_prefill,torch_aggregate_ms_per_output_token,mpk_aggregate_ms_per_output_token,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail'
+THREE_WAY_SUMMARY_HEADER='mode,batch_size,input_length,output_length,torch_generate_length,torch_batch_step_ms_incl_prefill,torch_aggregate_ms_per_output_token,torch_aggregate_output_tokens_per_s,mpk_generate_length,mpk_batch_step_ms_incl_prefill,mpk_aggregate_ms_per_output_token,mpk_aggregate_output_tokens_per_s,mpk_speedup_vs_torch,mpk_correctness,mpk_correctness_detail,hybrid_generate_length,hybrid_batch_step_ms_incl_prefill,hybrid_aggregate_ms_per_output_token,hybrid_aggregate_output_tokens_per_s,hybrid_speedup_vs_torch,hybrid_torch_prefill_ms,hybrid_mpk_decode_ms,hybrid_correctness,hybrid_correctness_detail'
+if [[ "${TORCH_PREFILL:-0}" == "both" ]]; then
+  SUMMARY_HEADER="$THREE_WAY_SUMMARY_HEADER"
+else
+  SUMMARY_HEADER="$PAIR_SUMMARY_HEADER"
+fi
 
 cleanup_output_dir() {
   local temp_dir="$1"
@@ -112,18 +118,67 @@ run_correctness_test() {
   local output_length="$4"
   local torch_output="$5"
   local mpk_output="$6"
+  local write_row="${7:-1}"
 
   echo "Comparing outputs..."
   if TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
       pytest -q "$ROOT/tests/ci-tests/test_inference_output.py"; then
-    write_summary_row "$mode" "$batch" "$input_length" "$output_length" \
-      "$torch_output" "$mpk_output" "PASS"
+    if [[ "$write_row" == "1" ]]; then
+      write_summary_row "$mode" "$batch" "$input_length" "$output_length" \
+        "$torch_output" "$mpk_output" "PASS"
+    fi
   else
     CORRECTNESS_FAILURES=$((CORRECTNESS_FAILURES + 1))
-    write_summary_row "$mode" "$batch" "$input_length" "$output_length" \
-      "$torch_output" "$mpk_output" "FAIL"
+    if [[ "$write_row" == "1" ]]; then
+      write_summary_row "$mode" "$batch" "$input_length" "$output_length" \
+        "$torch_output" "$mpk_output" "FAIL"
+    fi
     echo "Recorded correctness failure; continuing with the remaining matrix points."
   fi
+}
+
+write_three_way_summary_row() {
+  python - "$RESULTS_FILE" "$1" "$2" "$3" "$4" "$5" "$6" <<'PY'
+import csv
+import json
+import sys
+
+summary_path, batch, sin, sout, torch_path, mpk_path, hybrid_path = sys.argv[1:]
+with open(torch_path, encoding="utf-8") as f:
+    torch = json.load(f)
+with open(mpk_path, encoding="utf-8") as f:
+    mpk = json.load(f)
+with open(hybrid_path, encoding="utf-8") as f:
+    hybrid = json.load(f)
+
+def correctness(reference, candidate):
+    if reference["generate_length"] != candidate["generate_length"]:
+        return "FAIL", f"length:{reference['generate_length']}!={candidate['generate_length']}"
+    mismatch = next((i for i, (a, b) in enumerate(zip(
+        reference.get("token_ids", [])[:10], candidate.get("token_ids", [])[:10]
+    )) if a != b), None)
+    return ("PASS", "match") if mismatch is None else ("FAIL", f"token:{mismatch}")
+
+mpk_status, mpk_detail = correctness(torch, mpk)
+hybrid_status, hybrid_detail = correctness(torch, hybrid)
+tlat = float(torch["latency_ms_per_token"])
+mlat = float(mpk["latency_ms_per_token"])
+hlat = float(hybrid["latency_ms_per_token"])
+row = [
+    "three_way", batch, sin, sout,
+    torch["generate_length"], f'{torch["batch_step_latency_ms"]:.6f}',
+    f"{tlat:.6f}", f'{torch["aggregate_throughput_tokens_per_s"]:.3f}',
+    mpk["generate_length"], f'{mpk["batch_step_latency_ms"]:.6f}',
+    f"{mlat:.6f}", f'{mpk["aggregate_throughput_tokens_per_s"]:.3f}',
+    f"{tlat / mlat:.4f}", mpk_status, mpk_detail,
+    hybrid["generate_length"], f'{hybrid["batch_step_latency_ms"]:.6f}',
+    f"{hlat:.6f}", f'{hybrid["aggregate_throughput_tokens_per_s"]:.3f}',
+    f"{tlat / hlat:.4f}", f'{hybrid.get("torch_prefill_time_ms", 0.0):.6f}',
+    f'{hybrid.get("mpk_decode_time_ms", 0.0):.6f}', hybrid_status, hybrid_detail,
+]
+with open(summary_path, "a", newline="", encoding="utf-8") as f:
+    csv.writer(f).writerow(row)
+PY
 }
 
 run_default() {
@@ -179,6 +234,12 @@ run_point() {
       return 2
       ;;
   esac
+
+  if [[ "${TORCH_PREFILL:-0}" == "both" ]] && \
+      summary_has_point "three_way" "$batch" "$input_length" "$output_length"; then
+    echo "Skipping completed point: B=${batch}, S_in=${input_length}, S_out=${output_length}"
+    return 0
+  fi
 
   local mode
   local pending=0
@@ -261,8 +322,18 @@ run_point() {
     python "$ROOT/demo/qwen3/demo.py" --use-mirage "${mpk_extra_args[@]}" "${common_args[@]}" \
       --save-tokens "$variant_output" --quiet-token-save
 
-    run_correctness_test "$mode" "$batch" "$input_length" "$output_length" "$torch_output" "$variant_output"
+    local write_pair_row=1
+    if [[ "${TORCH_PREFILL:-0}" == "both" ]]; then
+      write_pair_row=0
+    fi
+    run_correctness_test "$mode" "$batch" "$input_length" "$output_length" \
+      "$torch_output" "$variant_output" "$write_pair_row"
   done
+
+  if [[ "${TORCH_PREFILL:-0}" == "both" ]]; then
+    write_three_way_summary_row "$batch" "$input_length" "$output_length" \
+      "$torch_output" "$mpk_output" "$hybrid_output"
+  fi
 
   echo "Performance comparison..."
   if [[ -f "$mpk_output" && -f "$hybrid_output" ]]; then
@@ -305,7 +376,11 @@ fi
 
 echo ""
 echo "Completed summary: $RESULTS_FILE"
-TOTAL_CORRECTNESS_FAILURES="$(awk -F, 'NR > 1 && $14 == "FAIL" { count++ } END { print count + 0 }' "$RESULTS_FILE")"
+if [[ "${TORCH_PREFILL:-0}" == "both" ]]; then
+  TOTAL_CORRECTNESS_FAILURES="$(awk -F, 'NR > 1 && ($14 == "FAIL" || $23 == "FAIL") { count++ } END { print count + 0 }' "$RESULTS_FILE")"
+else
+  TOTAL_CORRECTNESS_FAILURES="$(awk -F, 'NR > 1 && $14 == "FAIL" { count++ } END { print count + 0 }' "$RESULTS_FILE")"
+fi
 if (( TOTAL_CORRECTNESS_FAILURES > 0 )); then
   echo "Correctness failed at $TOTAL_CORRECTNESS_FAILURES matrix point(s); see $RESULTS_FILE." >&2
   exit 1
