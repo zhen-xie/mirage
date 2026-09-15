@@ -117,6 +117,14 @@ run_point() {
   local auto_page_size=$(( ((total_length + 127) / 128) * 128 ))
   local page_size="${PAGE_SIZE:-$auto_page_size}"
   local max_num_pages="${MAX_NUM_PAGES:-$batch}"
+  # Hopper linear_swapAB supports at most 16 active tokens in one kernel
+  # invocation.  The persistent scheduler can still serve more requests by
+  # processing them in groups of up to this token budget.
+  local auto_batched_tokens="$batch"
+  if (( auto_batched_tokens > 16 )); then
+    auto_batched_tokens=16
+  fi
+  local max_batched_tokens="${MAX_BATCHED_TOKENS:-$auto_batched_tokens}"
   if (( page_size < total_length || page_size % 128 != 0 )); then
     echo "PAGE_SIZE must be >= S_in + S_out and divisible by 128; got $page_size for total length $total_length." >&2
     return 2
@@ -125,12 +133,16 @@ run_point() {
     echo "MAX_NUM_PAGES must be >= batch size; got $max_num_pages for B=$batch." >&2
     return 2
   fi
+  if (( max_batched_tokens < 1 || max_batched_tokens > 16 )); then
+    echo "MAX_BATCHED_TOKENS must be in [1, 16] for the Hopper Qwen3 kernels; got $max_batched_tokens." >&2
+    return 2
+  fi
   local point_dir="$ROOT/outputs/qwen3_grid/b${batch}_in${input_length}_out${output_length}"
   local torch_output="$point_dir/torch_output.json"
   local mpk_output="$point_dir/mpk_output.json"
   local common_args=(
     --max-num-batched-requests "$batch"
-    --max-num-batched-tokens "$batch"
+    --max-num-batched-tokens "$max_batched_tokens"
     --max-num-pages "$max_num_pages"
     --page-size "$page_size"
     --input-length "$input_length"
@@ -141,7 +153,7 @@ run_point() {
 
   mkdir -p "$point_dir"
   echo ""
-  echo "===== B=${batch}, S_in=${input_length}, S_out=${output_length}, page_size=${page_size}, pages=${max_num_pages} ====="
+  echo "===== B=${batch}, S_in=${input_length}, S_out=${output_length}, active_tokens=${max_batched_tokens}, page_size=${page_size}, pages=${max_num_pages} ====="
   echo "Running Torch baseline..."
   python "$ROOT/demo/qwen3/demo.py" "${common_args[@]}" \
     --save-tokens "$torch_output"
