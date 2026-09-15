@@ -128,8 +128,8 @@ run_correctness_test() {
 run_default() {
   local batch="${1:-1}"
   local mode="default_eos"
-  if [[ "${TORCH_PREFILL:-0}" == "1" ]]; then
-    echo "TORCH_PREFILL=1 is supported only by the fixed-length sweep." >&2
+  if [[ "${TORCH_PREFILL:-0}" != "0" ]]; then
+    echo "TORCH_PREFILL is supported only by the fixed-length sweep." >&2
     return 2
   fi
   if summary_has_point "$mode" "$batch" "" ""; then
@@ -168,16 +168,25 @@ run_point() {
   local batch="$1"
   local input_length="$2"
   local output_length="$3"
-  local mode="fixed_length"
-  local mpk_extra_args=()
-  if [[ "${TORCH_PREFILL:-0}" == "1" ]]; then
-    mode="torch_prefill_mpk_decode"
-    mpk_extra_args+=(--torch-prefill)
-  elif [[ "${TORCH_PREFILL:-0}" != "0" ]]; then
-    echo "TORCH_PREFILL must be 0 or 1; got ${TORCH_PREFILL}." >&2
-    return 2
-  fi
-  if summary_has_point "$mode" "$batch" "$input_length" "$output_length"; then
+  local variants=()
+  case "${TORCH_PREFILL:-0}" in
+    0) variants+=("fixed_length") ;;
+    1) variants+=("torch_prefill_mpk_decode") ;;
+    both) variants+=("fixed_length" "torch_prefill_mpk_decode") ;;
+    *)
+      echo "TORCH_PREFILL must be 0, 1, or both; got ${TORCH_PREFILL}." >&2
+      return 2
+      ;;
+  esac
+
+  local mode
+  local pending=0
+  for mode in "${variants[@]}"; do
+    if ! summary_has_point "$mode" "$batch" "$input_length" "$output_length"; then
+      pending=1
+    fi
+  done
+  if (( pending == 0 )); then
     echo "Skipping completed point: B=${batch}, S_in=${input_length}, S_out=${output_length}"
     return 0
   fi
@@ -230,15 +239,28 @@ run_point() {
   python "$ROOT/demo/qwen3/demo.py" "${common_args[@]}" \
     --save-tokens "$torch_output" --quiet-token-save
 
-  echo "Running MPK..."
-  python "$ROOT/demo/qwen3/demo.py" --use-mirage "${mpk_extra_args[@]}" "${common_args[@]}" \
-    --save-tokens "$mpk_output" --quiet-token-save
+  for mode in "${variants[@]}"; do
+    if summary_has_point "$mode" "$batch" "$input_length" "$output_length"; then
+      echo "Skipping completed variant: ${mode}"
+      continue
+    fi
+    local mpk_extra_args=()
+    local variant_label="MPK"
+    if [[ "$mode" == "torch_prefill_mpk_decode" ]]; then
+      mpk_extra_args+=(--torch-prefill)
+      variant_label="Torch prefill + MPK decode"
+    fi
 
-  run_correctness_test "$mode" "$batch" "$input_length" "$output_length" "$torch_output" "$mpk_output"
+    echo "Running ${variant_label}..."
+    python "$ROOT/demo/qwen3/demo.py" --use-mirage "${mpk_extra_args[@]}" "${common_args[@]}" \
+      --save-tokens "$mpk_output" --quiet-token-save
 
-  echo "Performance comparison..."
-  TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
-    python "$ROOT/tests/ci-tests/perf_comparison.py"
+    run_correctness_test "$mode" "$batch" "$input_length" "$output_length" "$torch_output" "$mpk_output"
+
+    echo "Performance comparison: Torch vs ${variant_label}..."
+    TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
+      python "$ROOT/tests/ci-tests/perf_comparison.py"
+  done
   cleanup_output_dir "$point_dir"
 }
 
