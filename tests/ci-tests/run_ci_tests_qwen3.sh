@@ -111,12 +111,28 @@ run_point() {
   local input_length="$2"
   local output_length="$3"
   local total_length=$((input_length + output_length))
+  # The Hopper paged-attention kernel requires page size to be a multiple of
+  # its tile size.  One page per request also matches the Torch reference
+  # cache mapping, which uses request index as page index.
+  local auto_page_size=$(( ((total_length + 127) / 128) * 128 ))
+  local page_size="${PAGE_SIZE:-$auto_page_size}"
+  local max_num_pages="${MAX_NUM_PAGES:-$batch}"
+  if (( page_size < total_length || page_size % 128 != 0 )); then
+    echo "PAGE_SIZE must be >= S_in + S_out and divisible by 128; got $page_size for total length $total_length." >&2
+    return 2
+  fi
+  if (( max_num_pages < batch )); then
+    echo "MAX_NUM_PAGES must be >= batch size; got $max_num_pages for B=$batch." >&2
+    return 2
+  fi
   local point_dir="$ROOT/outputs/qwen3_grid/b${batch}_in${input_length}_out${output_length}"
   local torch_output="$point_dir/torch_output.json"
   local mpk_output="$point_dir/mpk_output.json"
   local common_args=(
     --max-num-batched-requests "$batch"
     --max-num-batched-tokens "$batch"
+    --max-num-pages "$max_num_pages"
+    --page-size "$page_size"
     --input-length "$input_length"
     --max-new-tokens "$output_length"
     --max-seq-length "$total_length"
@@ -125,7 +141,7 @@ run_point() {
 
   mkdir -p "$point_dir"
   echo ""
-  echo "===== B=${batch}, S_in=${input_length}, S_out=${output_length} ====="
+  echo "===== B=${batch}, S_in=${input_length}, S_out=${output_length}, page_size=${page_size}, pages=${max_num_pages} ====="
   echo "Running Torch baseline..."
   python "$ROOT/demo/qwen3/demo.py" "${common_args[@]}" \
     --save-tokens "$torch_output"
