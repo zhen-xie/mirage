@@ -11,6 +11,8 @@ TORCH_OUTPUT = os.environ.get(
 MPK_OUTPUT = os.environ.get(
     "MPK_OUTPUT", os.path.join(DEFAULT_OUTPUT_DIR, "mpk_output.json")
 )
+HYBRID_OUTPUT = os.environ.get("HYBRID_OUTPUT")
+MPK_LABEL = os.environ.get("MPK_LABEL", "MPK")
 
 
 def _load_meta(path: str):
@@ -45,8 +47,25 @@ def main():
     print("")
     print("==================== Performance Comparison ====================")
     print(f"  Torch:  {torch_step:.3f} ms/batch step, {torch_lat:.3f} ms/token, {torch_throughput:.3f} tokens/s  (generated {torch_len} tokens/request)")
-    print(f"  MPK:    {mpk_step:.3f} ms/batch step, {mpk_lat:.3f} ms/token, {mpk_throughput:.3f} tokens/s  (generated {mpk_len} tokens/request)")
-    print(f"  Speedup: {speedup:.2f}x")
+    print(f"  {MPK_LABEL}: {mpk_step:.3f} ms/batch step, {mpk_lat:.3f} ms/token, {mpk_throughput:.3f} tokens/s  (generated {mpk_len} tokens/request)")
+    print(f"    Speedup vs Torch: {speedup:.2f}x")
+    if HYBRID_OUTPUT:
+        hybrid_meta = _load_meta(HYBRID_OUTPUT)
+        if hybrid_meta is not None:
+            hybrid_lat = hybrid_meta.get("latency_ms_per_token")
+            hybrid_step = hybrid_meta.get("batch_step_latency_ms")
+            hybrid_throughput = hybrid_meta.get("aggregate_throughput_tokens_per_s")
+            hybrid_len = hybrid_meta.get("generate_length", "?")
+            if hybrid_lat is not None:
+                hybrid_speedup = (
+                    torch_lat / hybrid_lat if hybrid_lat > 0 else float("inf")
+                )
+                print(
+                    f"  Torch prefill + MPK decode: {hybrid_step:.3f} ms/batch step, "
+                    f"{hybrid_lat:.3f} ms/token, {hybrid_throughput:.3f} tokens/s  "
+                    f"(generated {hybrid_len} tokens/request)"
+                )
+                print(f"    Speedup vs Torch: {hybrid_speedup:.2f}x")
     print("===============================================================")
 
 

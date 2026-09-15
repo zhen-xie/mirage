@@ -11,7 +11,8 @@ SUMMARY_HEADER='mode,batch_size,input_length,output_length,torch_generate_length
 
 cleanup_output_dir() {
   local temp_dir="$1"
-  rm -f -- "$temp_dir/torch_output.json" "$temp_dir/mpk_output.json"
+  rm -f -- "$temp_dir/torch_output.json" "$temp_dir/mpk_output.json" \
+    "$temp_dir/hybrid_output.json"
   rmdir -- "$temp_dir" 2>/dev/null || true
 }
 
@@ -141,6 +142,7 @@ run_default() {
   TEMP_OUTPUT_DIRS+=("$point_dir")
   local torch_output="$point_dir/torch_output.json"
   local mpk_output="$point_dir/mpk_output.json"
+  local hybrid_output="$point_dir/hybrid_output.json"
   local batch_args=(
     --max-num-batched-requests "$batch"
     --max-num-batched-tokens "$batch"
@@ -246,21 +248,35 @@ run_point() {
     fi
     local mpk_extra_args=()
     local variant_label="MPK"
+    local variant_output="$mpk_output"
     if [[ "$mode" == "torch_prefill_mpk_decode" ]]; then
       mpk_extra_args+=(--torch-prefill)
       variant_label="Torch prefill + MPK decode"
+      variant_output="$hybrid_output"
+    else
+      variant_output="$mpk_output"
     fi
 
     echo "Running ${variant_label}..."
     python "$ROOT/demo/qwen3/demo.py" --use-mirage "${mpk_extra_args[@]}" "${common_args[@]}" \
-      --save-tokens "$mpk_output" --quiet-token-save
+      --save-tokens "$variant_output" --quiet-token-save
 
-    run_correctness_test "$mode" "$batch" "$input_length" "$output_length" "$torch_output" "$mpk_output"
+    run_correctness_test "$mode" "$batch" "$input_length" "$output_length" "$torch_output" "$variant_output"
+  done
 
-    echo "Performance comparison: Torch vs ${variant_label}..."
+  echo "Performance comparison..."
+  if [[ -f "$mpk_output" && -f "$hybrid_output" ]]; then
+    TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
+      HYBRID_OUTPUT="$hybrid_output" \
+      python "$ROOT/tests/ci-tests/perf_comparison.py"
+  elif [[ -f "$mpk_output" ]]; then
     TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
       python "$ROOT/tests/ci-tests/perf_comparison.py"
-  done
+  elif [[ -f "$hybrid_output" ]]; then
+    TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$hybrid_output" \
+      MPK_LABEL="Torch prefill + MPK decode" \
+      python "$ROOT/tests/ci-tests/perf_comparison.py"
+  fi
   cleanup_output_dir "$point_dir"
 }
 
