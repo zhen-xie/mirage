@@ -7,6 +7,7 @@ export MIRAGE_HOME="${MIRAGE_HOME:-$ROOT}"
 echo "MIRAGE_HOME=${MIRAGE_HOME}"
 CORRECTNESS_FAILURES=0
 TEMP_OUTPUT_DIRS=()
+SUMMARY_HEADER='mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_batch_step_ms_incl_prefill,mpk_batch_step_ms_incl_prefill,torch_aggregate_ms_per_output_token,mpk_aggregate_ms_per_output_token,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail'
 
 cleanup_output_dir() {
   local temp_dir="$1"
@@ -21,6 +22,33 @@ cleanup_temp_outputs() {
   done
 }
 trap cleanup_temp_outputs EXIT
+
+prepare_results_file() {
+  mkdir -p "$(dirname "$RESULTS_FILE")"
+  if [[ "${RESUME:-1}" == "1" && -s "$RESULTS_FILE" ]]; then
+    local existing_header
+    existing_header="$(head -n 1 "$RESULTS_FILE" | tr -d '\r')"
+    if [[ "$existing_header" != "$SUMMARY_HEADER" ]]; then
+      echo "Existing summary has an incompatible format: $RESULTS_FILE" >&2
+      echo "Run with RESUME=0 to start a new sweep." >&2
+      exit 2
+    fi
+    echo "Resuming from summary: $RESULTS_FILE"
+  else
+    printf '%s\n' "$SUMMARY_HEADER" > "$RESULTS_FILE"
+    echo "Starting new summary: $RESULTS_FILE"
+  fi
+}
+
+summary_has_point() {
+  local mode="$1"
+  local batch="$2"
+  local input_length="$3"
+  local output_length="$4"
+  awk -F, -v mode="$mode" -v batch="$batch" -v sin="$input_length" -v sout="$output_length" \
+    'NR > 1 && $1 == mode && $2 == batch && $3 == sin && $4 == sout { found=1; exit } END { exit !found }' \
+    "$RESULTS_FILE"
+}
 
 write_summary_row() {
   local mode="$1"
@@ -98,6 +126,10 @@ run_correctness_test() {
 
 run_default() {
   local batch="${1:-1}"
+  if summary_has_point "default_eos" "$batch" "" ""; then
+    echo "Skipping completed point: B=${batch} (default prompt and EOS stopping)"
+    return 0
+  fi
   local point_dir
   point_dir="$(mktemp -d "${TMPDIR:-/tmp}/mirage-qwen3.XXXXXX")"
   TEMP_OUTPUT_DIRS+=("$point_dir")
@@ -130,6 +162,10 @@ run_point() {
   local batch="$1"
   local input_length="$2"
   local output_length="$3"
+  if summary_has_point "fixed_length" "$batch" "$input_length" "$output_length"; then
+    echo "Skipping completed point: B=${batch}, S_in=${input_length}, S_out=${output_length}"
+    return 0
+  fi
   local total_length=$((input_length + output_length))
   # The Hopper paged-attention kernel requires page size to be a multiple of
   # its tile size.  One page per request also matches the Torch reference
@@ -195,9 +231,7 @@ run_point() {
 # matrix.  With none set, preserve the original single Qwen3 CI workflow.
 if [[ -z "${S_IN_VALUES:-}" && -z "${S_OUT_VALUES:-}" ]]; then
   RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_batch/summary.csv}"
-  mkdir -p "$(dirname "$RESULTS_FILE")"
-  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_batch_step_ms_incl_prefill,mpk_batch_step_ms_incl_prefill,torch_aggregate_ms_per_output_token,mpk_aggregate_ms_per_output_token,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
-  echo "Summary file: $RESULTS_FILE"
+  prepare_results_file
   for batch in ${B_VALUES:-1}; do
     run_default "$batch"
   done
@@ -206,9 +240,7 @@ elif [[ -z "${S_IN_VALUES:-}" || -z "${S_OUT_VALUES:-}" ]]; then
   exit 2
 else
   RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_grid/summary.csv}"
-  mkdir -p "$(dirname "$RESULTS_FILE")"
-  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_batch_step_ms_incl_prefill,mpk_batch_step_ms_incl_prefill,torch_aggregate_ms_per_output_token,mpk_aggregate_ms_per_output_token,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
-  echo "Summary file: $RESULTS_FILE"
+  prepare_results_file
   for batch in ${B_VALUES:-1}; do
     for input_length in ${S_IN_VALUES}; do
       for output_length in ${S_OUT_VALUES}; do
@@ -220,7 +252,8 @@ fi
 
 echo ""
 echo "Completed summary: $RESULTS_FILE"
-if (( CORRECTNESS_FAILURES > 0 )); then
-  echo "Correctness failed at $CORRECTNESS_FAILURES matrix point(s); see $RESULTS_FILE." >&2
+TOTAL_CORRECTNESS_FAILURES="$(awk -F, 'NR > 1 && $14 == "FAIL" { count++ } END { print count + 0 }' "$RESULTS_FILE")"
+if (( TOTAL_CORRECTNESS_FAILURES > 0 )); then
+  echo "Correctness failed at $TOTAL_CORRECTNESS_FAILURES matrix point(s); see $RESULTS_FILE." >&2
   exit 1
 fi
