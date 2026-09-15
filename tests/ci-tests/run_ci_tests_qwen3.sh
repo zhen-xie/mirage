@@ -32,6 +32,8 @@ with open(mpk_path, encoding="utf-8") as f:
 
 torch_latency = float(torch["latency_ms_per_token"])
 mpk_latency = float(mpk["latency_ms_per_token"])
+torch_step = float(torch["batch_step_latency_ms"])
+mpk_step = float(mpk["batch_step_latency_ms"])
 batch_size = int(batch)
 torch_tokens = torch.get("token_ids", [])
 mpk_tokens = mpk.get("token_ids", [])
@@ -46,10 +48,11 @@ else:
 row = [
     mode, batch_size, sin, sout,
     torch["generate_length"], mpk["generate_length"],
+    f"{torch_step:.6f}", f"{mpk_step:.6f}",
     f"{torch_latency:.6f}", f"{mpk_latency:.6f}",
     f"{torch_latency / mpk_latency:.4f}",
-    f"{batch_size * 1000.0 / torch_latency:.3f}",
-    f"{batch_size * 1000.0 / mpk_latency:.3f}",
+    f"{1000.0 / torch_latency:.3f}",
+    f"{1000.0 / mpk_latency:.3f}",
     correctness, detail,
 ]
 with open(summary_path, "a", newline="", encoding="utf-8") as f:
@@ -174,7 +177,7 @@ run_point() {
 if [[ -z "${S_IN_VALUES:-}" && -z "${S_OUT_VALUES:-}" ]]; then
   RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_batch/summary.csv}"
   mkdir -p "$(dirname "$RESULTS_FILE")"
-  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_e2e_ms_per_output_token_incl_prefill,mpk_e2e_ms_per_output_token_incl_prefill,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
+  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_batch_step_ms_incl_prefill,mpk_batch_step_ms_incl_prefill,torch_aggregate_ms_per_output_token,mpk_aggregate_ms_per_output_token,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
   echo "Summary file: $RESULTS_FILE"
   for batch in ${B_VALUES:-1}; do
     run_default "$batch"
@@ -185,7 +188,7 @@ elif [[ -z "${S_IN_VALUES:-}" || -z "${S_OUT_VALUES:-}" ]]; then
 else
   RESULTS_FILE="${RESULTS_FILE:-$ROOT/outputs/qwen3_grid/summary.csv}"
   mkdir -p "$(dirname "$RESULTS_FILE")"
-  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_e2e_ms_per_output_token_incl_prefill,mpk_e2e_ms_per_output_token_incl_prefill,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
+  printf '%s\n' 'mode,batch_size,input_length,output_length,torch_generate_length,mpk_generate_length,torch_batch_step_ms_incl_prefill,mpk_batch_step_ms_incl_prefill,torch_aggregate_ms_per_output_token,mpk_aggregate_ms_per_output_token,speedup,torch_aggregate_output_tokens_per_s,mpk_aggregate_output_tokens_per_s,correctness,correctness_detail' > "$RESULTS_FILE"
   echo "Summary file: $RESULTS_FILE"
   for batch in ${B_VALUES:-1}; do
     for input_length in ${S_IN_VALUES}; do

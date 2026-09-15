@@ -922,14 +922,17 @@ if __name__ == "__main__":
         end_idx = prev_pos + 1
         generated_ids = tokens[:, :end_idx]
         tokens_generated = max(0, end_idx - prompt_len)
-        per_tok_ms = run_time / max(tokens_generated, 1)
+        batch_step_ms = run_time / max(tokens_generated, 1)
+        per_tok_ms = run_time / max(total_num_requests * tokens_generated, 1)
+        throughput = 1000.0 / per_tok_ms
 
         if args.print_output:
             response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
             print(response)
         print(
-            "Prompt length {}, generate length {}, end-to-end latency per output token (incl. prefill) {:.3f} ms".format(
-                prompt_len, tokens_generated, per_tok_ms
+            "Prompt length {}, generate length {}, batch-step latency (incl. prefill) {:.3f} ms, "
+            "aggregate latency {:.3f} ms/token, throughput {:.3f} tokens/s".format(
+                prompt_len, tokens_generated, batch_step_ms, per_tok_ms, throughput
             )
         )
 
@@ -941,6 +944,10 @@ if __name__ == "__main__":
                 "token_ids": token_ids,
                 "text": tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True),
                 "latency_ms_per_token": per_tok_ms,
+                "batch_step_latency_ms": batch_step_ms,
+                "aggregate_throughput_tokens_per_s": throughput,
+                "batch_size": total_num_requests,
+                "total_time_ms": run_time,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
                 "mode": "torch",
@@ -967,10 +974,13 @@ if __name__ == "__main__":
             print(f"Output length of each batch is same: {(step.max() == step.min()).item()}")
 
         tokens_generated = step.max().item() + 1 - prompt_lengths[0].item()
-        per_tok_ms = run_time / max(tokens_generated, 1)
+        batch_step_ms = run_time / max(tokens_generated, 1)
+        per_tok_ms = run_time / max(total_num_requests * tokens_generated, 1)
+        throughput = 1000.0 / per_tok_ms
 
-        print("Prompt length {}, generate length {}, end-to-end latency per output token (incl. prefill): {:.3f} ms".format(
-              prompt_lengths[0], tokens_generated, per_tok_ms
+        print("Prompt length {}, generate length {}, batch-step latency (incl. prefill) {:.3f} ms, "
+              "aggregate latency {:.3f} ms/token, throughput {:.3f} tokens/s".format(
+              prompt_lengths[0], tokens_generated, batch_step_ms, per_tok_ms, throughput
             )
         )
 
@@ -979,7 +989,6 @@ if __name__ == "__main__":
             end_idx = step[0].item() + 1
             prompt_len = prompt_lengths[0].item()
             tokens_generated = max(0, end_idx - prompt_len)
-            per_tok_ms = per_tok_ms
             slice_end = min(end_idx, prompt_len + MAX_SAVE_TOKENS)
             token_ids = tokens[0, prompt_len:slice_end].tolist()
             response_text = tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True)
@@ -987,6 +996,10 @@ if __name__ == "__main__":
                 "token_ids": token_ids,
                 "text": response_text,
                 "latency_ms_per_token": per_tok_ms,
+                "batch_step_latency_ms": batch_step_ms,
+                "aggregate_throughput_tokens_per_s": throughput,
+                "batch_size": total_num_requests,
+                "total_time_ms": run_time,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
                 "mode": "mpk",

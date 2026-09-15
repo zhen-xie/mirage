@@ -29,6 +29,10 @@ def main():
 
     torch_lat = torch_meta.get("latency_ms_per_token")
     mpk_lat = mpk_meta.get("latency_ms_per_token")
+    torch_step = torch_meta.get("batch_step_latency_ms")
+    mpk_step = mpk_meta.get("batch_step_latency_ms")
+    torch_throughput = torch_meta.get("aggregate_throughput_tokens_per_s")
+    mpk_throughput = mpk_meta.get("aggregate_throughput_tokens_per_s")
     torch_len = torch_meta.get("generate_length", "?")
     mpk_len = mpk_meta.get("generate_length", "?")
 
@@ -40,8 +44,8 @@ def main():
 
     print("")
     print("==================== Performance Comparison ====================")
-    print(f"  Torch:  {torch_lat:.3f} ms/output token incl. prefill  (generated {torch_len} tokens)")
-    print(f"  MPK:    {mpk_lat:.3f} ms/output token incl. prefill  (generated {mpk_len} tokens)")
+    print(f"  Torch:  {torch_step:.3f} ms/batch step, {torch_lat:.3f} ms/token, {torch_throughput:.3f} tokens/s  (generated {torch_len} tokens/request)")
+    print(f"  MPK:    {mpk_step:.3f} ms/batch step, {mpk_lat:.3f} ms/token, {mpk_throughput:.3f} tokens/s  (generated {mpk_len} tokens/request)")
     print(f"  Speedup: {speedup:.2f}x")
     print("===============================================================")
 
