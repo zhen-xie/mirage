@@ -364,17 +364,22 @@ __device__ __forceinline__ bool
     config.request_ids[num_reqs] = next_request_id;
     config.qo_indptr_buffer[num_reqs] = num_tokens;
     config.paged_kv_indptr_buffer[num_reqs] = num_pages;
-    // Prefill request
-    int num_new_tokens = min(config.prompt_length[next_request_id],
+    // A newly admitted request may already have a KV prefix populated by an
+    // external prefill backend. step is the position of its next input token;
+    // ordinary requests still start at zero.
+    int initial_step = config.step[next_request_id];
+    int remaining_prompt = config.prompt_length[next_request_id] - initial_step;
+    int num_new_tokens = min(max(remaining_prompt, 1),
                              MPK_MAX_NUM_BATCHED_TOKENS - num_tokens);
     // Move tokens to input tokens
     for (int j = 0; j < num_new_tokens; j++) {
       config.input_tokens[num_tokens + j] =
-          config.tokens[next_request_id * MPK_MAX_SEQ_LENGTH + j];
+          config.tokens[next_request_id * MPK_MAX_SEQ_LENGTH + initial_step + j];
     }
-    int num_new_pages = (num_new_tokens + MPK_PAGE_SIZE - 1) / MPK_PAGE_SIZE;
+    int kv_length = initial_step + num_new_tokens;
+    int num_new_pages = (kv_length + MPK_PAGE_SIZE - 1) / MPK_PAGE_SIZE;
     {
-      int _lpl = num_new_tokens % MPK_PAGE_SIZE;
+      int _lpl = kv_length % MPK_PAGE_SIZE;
       config.paged_kv_last_page_len_buffer[num_reqs] =
           (_lpl == 0) ? MPK_PAGE_SIZE : _lpl;
     }
