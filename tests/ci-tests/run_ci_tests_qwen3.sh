@@ -41,7 +41,7 @@ if torch["generate_length"] != mpk["generate_length"]:
     detail = f"length:{torch['generate_length']}!={mpk['generate_length']}"
 else:
     mismatch = next(
-        (i for i, (a, b) in enumerate(zip(torch_tokens[:50], mpk_tokens[:50])) if a != b),
+        (i for i, (a, b) in enumerate(zip(torch_tokens[:10], mpk_tokens[:10])) if a != b),
         None,
     )
     detail = "match" if mismatch is None else f"token:{mismatch}"

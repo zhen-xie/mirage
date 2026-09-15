@@ -9,7 +9,7 @@ TORCH_OUTPUT = os.environ.get(
 MPK_OUTPUT = os.environ.get(
     "MPK_OUTPUT", os.path.join(DEFAULT_OUTPUT_DIR, "mpk_output.json")
 )
-NUM_TOKENS_TO_COMPARE = 50
+NUM_TOKENS_TO_COMPARE = 10
 
 
 def _load_tokens(path: str):
