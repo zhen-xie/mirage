@@ -6,6 +6,21 @@ export MIRAGE_HOME="${MIRAGE_HOME:-$ROOT}"
 
 echo "MIRAGE_HOME=${MIRAGE_HOME}"
 CORRECTNESS_FAILURES=0
+TEMP_OUTPUT_DIRS=()
+
+cleanup_output_dir() {
+  local temp_dir="$1"
+  rm -f -- "$temp_dir/torch_output.json" "$temp_dir/mpk_output.json"
+  rmdir -- "$temp_dir" 2>/dev/null || true
+}
+
+cleanup_temp_outputs() {
+  local temp_dir
+  for temp_dir in "${TEMP_OUTPUT_DIRS[@]}"; do
+    cleanup_output_dir "$temp_dir"
+  done
+}
+trap cleanup_temp_outputs EXIT
 
 write_summary_row() {
   local mode="$1"
@@ -83,7 +98,9 @@ run_correctness_test() {
 
 run_default() {
   local batch="${1:-1}"
-  local point_dir="$ROOT/outputs/qwen3_batch/b${batch}"
+  local point_dir
+  point_dir="$(mktemp -d "${TMPDIR:-/tmp}/mirage-qwen3.XXXXXX")"
+  TEMP_OUTPUT_DIRS+=("$point_dir")
   local torch_output="$point_dir/torch_output.json"
   local mpk_output="$point_dir/mpk_output.json"
   local batch_args=(
@@ -91,22 +108,22 @@ run_default() {
     --max-num-batched-tokens "$batch"
   )
 
-  mkdir -p "$point_dir"
   echo ""
   echo "===== B=${batch} (default prompt and EOS stopping) ====="
   echo "Running Torch baseline..."
   python "$ROOT/demo/qwen3/demo.py" "${batch_args[@]}" \
-    --save-tokens "$torch_output"
+    --save-tokens "$torch_output" --quiet-token-save
 
   echo "Running MPK..."
   python "$ROOT/demo/qwen3/demo.py" --use-mirage "${batch_args[@]}" \
-    --save-tokens "$mpk_output"
+    --save-tokens "$mpk_output" --quiet-token-save
 
   run_correctness_test "default_eos" "$batch" "" "" "$torch_output" "$mpk_output"
 
   echo "Performance comparison..."
   TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
     python "$ROOT/tests/ci-tests/perf_comparison.py"
+  cleanup_output_dir "$point_dir"
 }
 
 run_point() {
@@ -140,7 +157,9 @@ run_point() {
     echo "MAX_BATCHED_TOKENS must be in [1, 16] for the Hopper Qwen3 kernels; got $max_batched_tokens." >&2
     return 2
   fi
-  local point_dir="$ROOT/outputs/qwen3_grid/b${batch}_in${input_length}_out${output_length}"
+  local point_dir
+  point_dir="$(mktemp -d "${TMPDIR:-/tmp}/mirage-qwen3.XXXXXX")"
+  TEMP_OUTPUT_DIRS+=("$point_dir")
   local torch_output="$point_dir/torch_output.json"
   local mpk_output="$point_dir/mpk_output.json"
   local common_args=(
@@ -154,22 +173,22 @@ run_point() {
     --ignore-eos
   )
 
-  mkdir -p "$point_dir"
   echo ""
   echo "===== B=${batch}, S_in=${input_length}, S_out=${output_length}, active_tokens=${max_batched_tokens}, page_size=${page_size}, pages=${max_num_pages} ====="
   echo "Running Torch baseline..."
   python "$ROOT/demo/qwen3/demo.py" "${common_args[@]}" \
-    --save-tokens "$torch_output"
+    --save-tokens "$torch_output" --quiet-token-save
 
   echo "Running MPK..."
   python "$ROOT/demo/qwen3/demo.py" --use-mirage "${common_args[@]}" \
-    --save-tokens "$mpk_output"
+    --save-tokens "$mpk_output" --quiet-token-save
 
   run_correctness_test "fixed_length" "$batch" "$input_length" "$output_length" "$torch_output" "$mpk_output"
 
   echo "Performance comparison..."
   TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
     python "$ROOT/tests/ci-tests/perf_comparison.py"
+  cleanup_output_dir "$point_dir"
 }
 
 # Set all three variables to whitespace-separated values to run a benchmark

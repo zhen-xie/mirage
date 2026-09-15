@@ -144,6 +144,11 @@ if __name__ == "__main__":
             "If path omitted, saves to outputs/qwen3/{torch_output.json|mpk_output.json}."
         ),
     )
+    parser.add_argument(
+        "--quiet-token-save",
+        action="store_true",
+        help="Do not print the token JSON path after saving it.",
+    )
     parser.add_argument("--prompt",
         type=str,
         default="Give me a short introduction to large language model.",
@@ -954,7 +959,8 @@ if __name__ == "__main__":
             }
             with open(save_path, "w") as f:
                 json.dump(out, f, indent=2)
-            print(f"Saved tokens to {save_path}")
+            if not args.quiet_token_save:
+                print(f"Saved tokens to {save_path}")
 
     else:
         starter.record()
@@ -1006,7 +1012,8 @@ if __name__ == "__main__":
             }
             with open(save_path, "w") as f:
                 json.dump(out, f, indent=2)
-            print(f"Saved tokens to {save_path}")
+            if not args.quiet_token_save:
+                print(f"Saved tokens to {save_path}")
 
     if world_size > 1:
         dist.destroy_process_group()
