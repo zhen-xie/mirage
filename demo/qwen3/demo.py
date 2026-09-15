@@ -70,6 +70,14 @@ def max_factor_leq_n(m: int, n: int) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--use-mirage", action="store_true", help="Use Mirage kernels")
+    parser.add_argument(
+        "--torch-prefill",
+        action="store_true",
+        help=(
+            "With --use-mirage, run prompt prefill with Torch and use MPK only "
+            "for decode. The end-to-end latency still includes Torch prefill."
+        ),
+    )
     parser.add_argument("--max-num-batched-tokens", default=8, type=int, help="Max number of tokens in a batch")
     parser.add_argument("--max-num-batched-requests", default=1, type=int, help="Max number of requests in a batch")
     parser.add_argument("--page-size", default=4096, type=int, help="Page size")
@@ -168,6 +176,22 @@ if __name__ == "__main__":
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
+    if args.torch_prefill and not args.use_mirage:
+        parser.error("--torch-prefill requires --use-mirage")
+    if args.torch_prefill and args.spec_decode is not None:
+        parser.error("--torch-prefill does not yet support speculative decoding")
+    if args.torch_prefill and args.do_sample:
+        parser.error("--torch-prefill currently supports greedy decoding only")
+    if args.torch_prefill and (not args.ignore_eos or args.max_new_tokens is None):
+        parser.error(
+            "--torch-prefill currently requires --ignore-eos and "
+            "--max-new-tokens for an unambiguous Torch-to-MPK handoff"
+        )
+    if args.torch_prefill and args.max_new_tokens < 2:
+        parser.error(
+            "--torch-prefill requires --max-new-tokens >= 2 so MPK has at "
+            "least one decode step to execute"
+        )
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -293,6 +317,17 @@ if __name__ == "__main__":
         prompt_length = args.input_length
         tokens[:, :prompt_length] = prompt_ids
     prompt_lengths = torch.full((total_num_requests,), prompt_length, dtype=torch.int, device="cuda")
+    if args.torch_prefill:
+        if args.page_size < args.max_seq_length:
+            parser.error(
+                "--torch-prefill currently requires --page-size >= "
+                "--max-seq-length (one KV-cache page per request)"
+            )
+        if args.max_num_pages < total_num_requests:
+            parser.error(
+                "--torch-prefill requires --max-num-pages >= "
+                "--max-num-batched-requests"
+            )
     positions = torch.arange(32768).unsqueeze(0).to(model.device)
     position_embeddings = model.model.rotary_emb(positions)
 
@@ -963,11 +998,37 @@ if __name__ == "__main__":
                 print(f"Saved tokens to {save_path}")
 
     else:
+        prompt_len = prompt_lengths[0].item()
+        prefill_ender = None
         starter.record()
+        if args.torch_prefill:
+            # Torch and MPK attach the same model.model.kv_cache tensors. Fill
+            # the prompt K/V entries with Torch, place Torch's first generated
+            # token at prompt_len, then let MPK process that token and continue
+            # decoding. MPK's offline page allocator assigns pages in request
+            # order, matching the Torch reference cache's request-index layout.
+            step.fill_(prompt_len - 1)
+            prefill_logits = model.forward(
+                input_ids=tokens[:, :prompt_len],
+                position_embeddings=(
+                    position_embeddings[0][:, :prompt_len],
+                    position_embeddings[1][:, :prompt_len],
+                ),
+                step=step,
+                stream=stream,
+            )
+            tokens[:, prompt_len] = prefill_logits[:, -1].argmax(dim=-1)
+            step.fill_(prompt_len)
+            prefill_ender = torch.cuda.Event(enable_timing=True)
+            prefill_ender.record()
         mpk()
         ender.record()
         torch.cuda.synchronize()
         run_time = starter.elapsed_time(ender)
+        prefill_time = (
+            starter.elapsed_time(prefill_ender) if prefill_ender is not None else 0.0
+        )
+        decode_time = run_time - prefill_time
 
         if args.print_output:
             print("tokens.shape = ", tokens.shape)
@@ -984,11 +1045,18 @@ if __name__ == "__main__":
         per_tok_ms = run_time / max(total_num_requests * tokens_generated, 1)
         throughput = 1000.0 / per_tok_ms
 
-        print("Prompt length {}, generate length {}, batch-step latency (incl. prefill) {:.3f} ms, "
+        execution_mode = "Torch prefill + MPK decode" if args.torch_prefill else "MPK"
+        print("{}: Prompt length {}, generate length {}, batch-step latency (incl. prefill) {:.3f} ms, "
               "aggregate latency {:.3f} ms/token, throughput {:.3f} tokens/s".format(
-              prompt_lengths[0], tokens_generated, batch_step_ms, per_tok_ms, throughput
+              execution_mode, prompt_lengths[0], tokens_generated, batch_step_ms, per_tok_ms, throughput
             )
         )
+        if args.torch_prefill:
+            print(
+                "Hybrid timing: Torch prefill {:.3f} ms, MPK decode {:.3f} ms".format(
+                    prefill_time, decode_time
+                )
+            )
 
         # -------- CI dumps outputs to json files ----------
         if save_path and rank == 0:
@@ -1006,9 +1074,11 @@ if __name__ == "__main__":
                 "aggregate_throughput_tokens_per_s": throughput,
                 "batch_size": total_num_requests,
                 "total_time_ms": run_time,
+                "torch_prefill_time_ms": prefill_time,
+                "mpk_decode_time_ms": decode_time,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
-                "mode": "mpk",
+                "mode": "torch_prefill_mpk_decode" if args.torch_prefill else "mpk",
             }
             with open(save_path, "w") as f:
                 json.dump(out, f, indent=2)

@@ -127,7 +127,12 @@ run_correctness_test() {
 
 run_default() {
   local batch="${1:-1}"
-  if summary_has_point "default_eos" "$batch" "" ""; then
+  local mode="default_eos"
+  if [[ "${TORCH_PREFILL:-0}" == "1" ]]; then
+    echo "TORCH_PREFILL=1 is supported only by the fixed-length sweep." >&2
+    return 2
+  fi
+  if summary_has_point "$mode" "$batch" "" ""; then
     echo "Skipping completed point: B=${batch} (default prompt and EOS stopping)"
     return 0
   fi
@@ -163,7 +168,16 @@ run_point() {
   local batch="$1"
   local input_length="$2"
   local output_length="$3"
-  if summary_has_point "fixed_length" "$batch" "$input_length" "$output_length"; then
+  local mode="fixed_length"
+  local mpk_extra_args=()
+  if [[ "${TORCH_PREFILL:-0}" == "1" ]]; then
+    mode="torch_prefill_mpk_decode"
+    mpk_extra_args+=(--torch-prefill)
+  elif [[ "${TORCH_PREFILL:-0}" != "0" ]]; then
+    echo "TORCH_PREFILL must be 0 or 1; got ${TORCH_PREFILL}." >&2
+    return 2
+  fi
+  if summary_has_point "$mode" "$batch" "$input_length" "$output_length"; then
     echo "Skipping completed point: B=${batch}, S_in=${input_length}, S_out=${output_length}"
     return 0
   fi
@@ -217,10 +231,10 @@ run_point() {
     --save-tokens "$torch_output" --quiet-token-save
 
   echo "Running MPK..."
-  python "$ROOT/demo/qwen3/demo.py" --use-mirage "${common_args[@]}" \
+  python "$ROOT/demo/qwen3/demo.py" --use-mirage "${mpk_extra_args[@]}" "${common_args[@]}" \
     --save-tokens "$mpk_output" --quiet-token-save
 
-  run_correctness_test "fixed_length" "$batch" "$input_length" "$output_length" "$torch_output" "$mpk_output"
+  run_correctness_test "$mode" "$batch" "$input_length" "$output_length" "$torch_output" "$mpk_output"
 
   echo "Performance comparison..."
   TORCH_OUTPUT="$torch_output" MPK_OUTPUT="$mpk_output" \
