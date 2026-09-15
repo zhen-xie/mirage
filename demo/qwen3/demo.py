@@ -1003,9 +1003,11 @@ if __name__ == "__main__":
         starter.record()
         if args.torch_prefill:
             # Torch and MPK attach the same model.model.kv_cache tensors. Fill
-            # the prompt K/V entries with Torch, place Torch's first generated
-            # token at prompt_len, then let MPK process that token and continue
-            # decoding. MPK's offline page allocator assigns pages in request
+            # the prompt K/V entries with Torch and place Torch's first generated
+            # token at prompt_len. For MPK that token is still an input whose KV
+            # entry must be produced, so temporarily include it in prompt_length.
+            # This preserves MPK's step convention and avoids one extra decode
+            # step at the end. The offline page allocator assigns pages in request
             # order, matching the Torch reference cache's request-index layout.
             step.fill_(prompt_len - 1)
             prefill_logits = model.forward(
@@ -1019,6 +1021,7 @@ if __name__ == "__main__":
             )
             tokens[:, prompt_len] = prefill_logits[:, -1].argmax(dim=-1)
             step.fill_(prompt_len)
+            prompt_lengths.add_(1)
             prefill_ender = torch.cuda.Event(enable_timing=True)
             prefill_ender.record()
         mpk()
@@ -1029,6 +1032,10 @@ if __name__ == "__main__":
             starter.elapsed_time(prefill_ender) if prefill_ender is not None else 0.0
         )
         decode_time = run_time - prefill_time
+        if args.torch_prefill:
+            # Restore the user-visible prompt length for output accounting and
+            # token comparison after MPK has finished reading the tensor.
+            prompt_lengths.sub_(1)
 
         if args.print_output:
             print("tokens.shape = ", tokens.shape)
