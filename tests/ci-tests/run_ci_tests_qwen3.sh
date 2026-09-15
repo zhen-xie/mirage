@@ -142,7 +142,6 @@ run_default() {
   TEMP_OUTPUT_DIRS+=("$point_dir")
   local torch_output="$point_dir/torch_output.json"
   local mpk_output="$point_dir/mpk_output.json"
-  local hybrid_output="$point_dir/hybrid_output.json"
   local batch_args=(
     --max-num-batched-requests "$batch"
     --max-num-batched-tokens "$batch"
@@ -224,6 +223,7 @@ run_point() {
   TEMP_OUTPUT_DIRS+=("$point_dir")
   local torch_output="$point_dir/torch_output.json"
   local mpk_output="$point_dir/mpk_output.json"
+  local hybrid_output="$point_dir/hybrid_output.json"
   local common_args=(
     --max-num-batched-requests "$batch"
     --max-num-batched-tokens "$max_batched_tokens"
