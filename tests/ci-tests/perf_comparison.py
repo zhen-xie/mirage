@@ -47,8 +47,11 @@ def main():
     print("")
     print("==================== Performance Comparison ====================")
     print(f"  Torch:  {torch_step:.3f} ms/batch step, {torch_lat:.3f} ms/token, {torch_throughput:.3f} tokens/s  (generated {torch_len} tokens/request)")
-    print(f"  {MPK_LABEL}: {mpk_step:.3f} ms/batch step, {mpk_lat:.3f} ms/token, {mpk_throughput:.3f} tokens/s  (generated {mpk_len} tokens/request)")
-    print(f"    Speedup vs Torch: {speedup:.2f}x")
+    print(
+        f"  {MPK_LABEL}: {mpk_step:.3f} ms/batch step, "
+        f"{mpk_lat:.3f} ms/token, {mpk_throughput:.3f} tokens/s  "
+        f"(generated {mpk_len} tokens/request), Speedup vs Torch: {speedup:.2f}x"
+    )
     if HYBRID_OUTPUT:
         hybrid_meta = _load_meta(HYBRID_OUTPUT)
         if hybrid_meta is not None:
@@ -63,9 +66,9 @@ def main():
                 print(
                     f"  Torch prefill + MPK decode: {hybrid_step:.3f} ms/batch step, "
                     f"{hybrid_lat:.3f} ms/token, {hybrid_throughput:.3f} tokens/s  "
-                    f"(generated {hybrid_len} tokens/request)"
+                    f"(generated {hybrid_len} tokens/request), "
+                    f"Speedup vs Torch: {hybrid_speedup:.2f}x"
                 )
-                print(f"    Speedup vs Torch: {hybrid_speedup:.2f}x")
     print("===============================================================")
 
 
