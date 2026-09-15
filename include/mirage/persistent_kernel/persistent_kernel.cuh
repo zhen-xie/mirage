@@ -812,6 +812,10 @@ __device__ __forceinline__ void persistent_checker(RuntimeConfig config) {
   assert(gridDim.x ==
          config.num_workers + num_schedulers / num_schedulers_per_sm);
   assert(config.num_workers <= MAX_NUM_WORKERS);
+  // These values are otherwise referenced only by assertions, which disappear
+  // in release builds compiled with NDEBUG.
+  (void)num_schedulers;
+  (void)num_schedulers_per_sm;
   // We will reinterpret TaskDesc as an array of integers to
   // collectively load it from device to shared memory
   static_assert(sizeof(TaskDesc) % sizeof(int) == 0);
@@ -830,7 +834,13 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
       (mirage::runtime::WORKER_RESERVED_STATIC_SHARED_MEMORY_SIZE - 56) /
           (int)(sizeof(TaskDesc) + sizeof(TaskId)),
       16);
-  __shared__ TaskDesc task_descs[TASK_DESCS_BUFFER_LENGTH];
+  // TaskDesc has a user-provided constructor, while CUDA does not support
+  // dynamic initialization of function-scope __shared__ objects.  This buffer
+  // is populated as raw bytes below, so use aligned byte storage directly.
+  __shared__ __align__(alignof(TaskDesc))
+      uint8_t task_desc_storage[TASK_DESCS_BUFFER_LENGTH * sizeof(TaskDesc)];
+  TaskDesc *const task_descs =
+      reinterpret_cast<TaskDesc *>(task_desc_storage);
   __shared__ TaskId task_ids[TASK_DESCS_BUFFER_LENGTH];
   __shared__ TaskId *worker_queues[2];
   __shared__ int worker_queue_ids[2];
@@ -988,18 +998,6 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
     } else if (task_desc->task_type == TASK_BEGIN_TASK_GRAPH) {
       // Do nothing
     } else {
-      // Dispatch trace: D=dispatch start, F=finish
-      bool _trace_t =
-          task_desc->task_type == 275 || task_desc->task_type == 276 ||
-          task_desc->task_type == 277 || task_desc->task_type == 287 ||
-          task_desc->task_type == 288 || task_desc->task_type == 248 ||
-          task_desc->task_type == 249 || task_desc->task_type == 302 ||
-          task_desc->task_type == 278 || task_desc->task_type == 154 ||
-          task_desc->task_type == 280 || task_desc->task_type == 118 ||
-          task_desc->task_type == 281 || task_desc->task_type == 253 ||
-          task_desc->task_type == 258 || task_desc->task_type == 259 ||
-          task_desc->task_type == 261 || task_desc->task_type == 262 ||
-          task_desc->task_type == 101;
 #ifdef MPK_ENABLE_VERBOSE
       if (threadIdx.x == 0) {
         printf("[worker] _execute_task EXECUTE_TASK %d\n",
