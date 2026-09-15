@@ -276,11 +276,17 @@ if __name__ == "__main__":
         prompt_length = model_inputs.input_ids.shape[-1]
         tokens[:, :prompt_length] = model_inputs.input_ids[0]
     else:
-        # Repeating one ordinary vocabulary token makes prompt length an
-        # independent benchmark variable while keeping every request identical.
-        prompt_token_id = tokenizer.encode(" the", add_special_tokens=False)[0]
+        # Use a deterministic, position-varying sequence of ordinary token
+        # IDs.  Repeating one token creates a pathological attention pattern
+        # that can amplify small BF16 implementation differences during greedy
+        # decode.  Every request still receives identical input.
+        token_span = max(1, min(32000, model.config.vocab_size - 100))
+        prompt_ids = 100 + (
+            torch.arange(args.input_length, dtype=torch.long, device=model.device)
+            * 1543
+        ) % token_span
         prompt_length = args.input_length
-        tokens[:, :prompt_length] = prompt_token_id
+        tokens[:, :prompt_length] = prompt_ids
     prompt_lengths = torch.full((total_num_requests,), prompt_length, dtype=torch.int, device="cuda")
     positions = torch.arange(32768).unsqueeze(0).to(model.device)
     position_embeddings = model.model.rotary_emb(positions)
