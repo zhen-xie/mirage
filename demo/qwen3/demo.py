@@ -1037,6 +1037,50 @@ if __name__ == "__main__":
             # token comparison after MPK has finished reading the tensor.
             prompt_lengths.sub_(1)
 
+        # Validate MPK state before reporting performance or decoding text. A
+        # bad step can make the aggregate metrics meaningless, while an invalid
+        # token id otherwise surfaces later as an opaque tokenizer OverflowError.
+        step_values, step_counts = torch.unique(step, return_counts=True)
+        step_distribution = {
+            int(value): int(count)
+            for value, count in zip(step_values.cpu(), step_counts.cpu())
+        }
+        expected_final_step = prompt_len + output_len - 1
+        step_mismatch = args.ignore_eos and (
+            len(step_distribution) != 1
+            or next(iter(step_distribution)) != expected_final_step
+        )
+        valid_positions = (
+            torch.arange(tokens.size(1), device=tokens.device).unsqueeze(0)
+            <= step.unsqueeze(1)
+        )
+        invalid_token_mask = valid_positions & (
+            (tokens < 0) | (tokens >= model.config.vocab_size)
+        )
+        first_invalid = None
+        if invalid_token_mask.any().item():
+            invalid_pos = invalid_token_mask.nonzero(as_tuple=False)[0]
+            invalid_request = int(invalid_pos[0].item())
+            invalid_position = int(invalid_pos[1].item())
+            invalid_value = int(tokens[invalid_request, invalid_position].item())
+            first_invalid = (invalid_request, invalid_position, invalid_value)
+
+        if step_mismatch or first_invalid is not None:
+            print(f"Invalid MPK step distribution: {step_distribution}")
+            print(f"Expected final step with --ignore-eos: {expected_final_step}")
+            if first_invalid is not None:
+                request_id, position, token_id = first_invalid
+                print(
+                    "First invalid token: request={}, position={}, token_id={}, "
+                    "valid range=[0, {})".format(
+                        request_id, position, token_id, model.config.vocab_size
+                    )
+                )
+            raise RuntimeError(
+                "MPK produced inconsistent request progress or an invalid token; "
+                "performance metrics and decoded text were not emitted"
+            )
+
         if args.print_output:
             print("tokens.shape = ", tokens.shape)
             for r in range(total_num_requests):
