@@ -9,6 +9,8 @@ import os, json
 from models.qwen3_shard_loader import Qwen3ShardLoader
 from mirage.mpk.base_dynamic_shard_loader import ShardType
 from mirage.mpk.models.utils import grid_for_splitk_linear_layer
+from execution.workload import WorkloadDescriptor
+from policy import make_policy
 
 
 mapping = {
@@ -269,14 +271,6 @@ if __name__ == "__main__":
     print("Input arguments:", args)
     print(f"Execution backend: {args.backend.upper()}"
           + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
-    if args.backend == "normal":
-        print("Prefill backend: NORMAL\nDecode backend: NORMAL")
-    elif args.mpk_policy == "always":
-        print("Prefill backend: MPK\nDecode backend: MPK")
-    elif args.mpk_policy == "prefill-only":
-        print("Prefill backend: MPK\nDecode backend: NORMAL")
-    elif args.mpk_policy == "decode-only":
-        print("Prefill backend: NORMAL\nDecode backend: MPK")
     print(f"world_size({world_size}) rank({rank})")
     if args.mpk_policy in ("prefill-only", "decode-only") and world_size != 1:
         parser.error("Mixed backend policies currently require a single GPU")
@@ -351,6 +345,14 @@ if __name__ == "__main__":
         for i in range(model_inputs.input_ids.shape[-1]):
             tokens[r, i] = model_inputs.input_ids[0, i]
     prompt_lengths = torch.full((total_num_requests,), model_inputs.input_ids.shape[-1], dtype=torch.int, device="cuda")
+    input_length = model_inputs.input_ids.shape[-1]
+    execution_policy = make_policy(args.mpk_policy) if args.backend == "mpk" else None
+    prefill_workload = WorkloadDescriptor.for_prefill(total_num_requests, input_length)
+    decode_workload = WorkloadDescriptor.for_decode(total_num_requests, input_length, 0)
+    prefill_use_mpk = execution_policy.should_use_mpk(prefill_workload) if execution_policy else False
+    decode_use_mpk = execution_policy.should_use_mpk(decode_workload) if execution_policy else False
+    print(f"Prefill backend: {'MPK' if prefill_use_mpk else 'NORMAL'}")
+    print(f"Decode backend: {'MPK' if decode_use_mpk else 'NORMAL'}")
     positions = torch.arange(32768).unsqueeze(0).to(model.device)
     position_embeddings = model.model.rotary_emb(positions)
 
@@ -932,7 +934,7 @@ if __name__ == "__main__":
     # Decode up to user cap or buffer size
     output_len = args.max_new_tokens if args.max_new_tokens is not None else (tokens.size(1) - prompt_lengths[0].item())
     output_len = max(0, min(output_len, tokens.size(1) - prompt_lengths[0].item()))
-    if args.mpk_policy == "prefill-only":
+    if prefill_use_mpk and not decode_use_mpk:
         if output_len == 0:
             parser.error("prefill-only requires at least one output token")
         starter.record()
@@ -948,7 +950,7 @@ if __name__ == "__main__":
         if step[0].item() != prompt_len:
             raise RuntimeError("MPK did not stop at the prefill boundary")
         prev_pos = prompt_len
-    elif args.mpk_policy == "decode-only":
+    elif decode_use_mpk and not prefill_use_mpk:
         prompt_len = prompt_lengths[0].item()
         if output_len < 2 or args.max_seq_length != prompt_len + output_len:
             parser.error("decode-only requires at least two output tokens and max-seq-length = prompt length + output length")
@@ -964,7 +966,7 @@ if __name__ == "__main__":
         if args.phase_timing:
             normal_prefill_end.record()
 
-    if not args.use_mirage or args.mpk_policy == "prefill-only":
+    if not decode_use_mpk:
         prompt_len = prompt_lengths[0].item()
         decode_limit = prompt_len + output_len
         start_pos = prompt_len + (args.mpk_policy == "prefill-only")
