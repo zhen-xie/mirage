@@ -67,6 +67,34 @@ def max_factor_leq_n(m: int, n: int) -> int:
         i += 1
     return max_factor
 
+
+def execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream):
+    """Run the normal backend over the prompt and populate its KV cache."""
+    step.fill_(prompt_len - 1)
+    return model.forward(
+        input_ids=tokens[:, :prompt_len],
+        position_embeddings=(
+            position_embeddings[0][:, :prompt_len],
+            position_embeddings[1][:, :prompt_len],
+        ),
+        step=step,
+        stream=stream,
+    )
+
+
+def execute_decode_step(model, tokens, cur_pos, position_embeddings, step, stream):
+    """Consume the previous token using the normal backend's KV cache."""
+    step.fill_(cur_pos - 1)
+    return model.forward(
+        input_ids=tokens[:, cur_pos - 1:cur_pos],
+        position_embeddings=(
+            position_embeddings[0][:, cur_pos - 1:cur_pos],
+            position_embeddings[1][:, cur_pos - 1:cur_pos],
+        ),
+        step=step,
+        stream=stream,
+    )
+
 if __name__ == "__main__":
     global print
     parser = argparse.ArgumentParser()
@@ -82,6 +110,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-num-pages", default=16, type=int, help="Max num pages")
     parser.add_argument("--output-dir", help="Output files directory")
     parser.add_argument("--trace-name", default="", help="Perfetto trace output name")
+    parser.add_argument("--phase-timing", action="store_true",
+                        help="Record normal prefill and per-step decode CUDA timings")
     parser.add_argument(
         "--profiling", action="store_true", help="Use Profiler to generate trace"
     )
@@ -173,6 +203,8 @@ if __name__ == "__main__":
             args.mpk_policy = args.mpk_policy or "always"
     # Keep the existing execution paths intact while migrating their CLI.
     args.use_mirage = args.backend == "mpk"
+    if args.phase_timing and args.backend == "mpk":
+        parser.error("--phase-timing currently requires --backend=normal")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -863,17 +895,17 @@ if __name__ == "__main__":
     if not args.use_mirage:
         prompt_len = prompt_lengths[0].item()
         decode_limit = prompt_len + output_len
+        phase_events = []
         for cur_pos in range(prompt_len, decode_limit):
-            step.fill_(cur_pos - 1)
-            input_ids = tokens[:, prev_pos:cur_pos]
-            cos_embeddings = position_embeddings[0][:, prev_pos:cur_pos]
-            sin_embeddings = position_embeddings[1][:, prev_pos:cur_pos]
-            logits = model.forward(
-                input_ids=input_ids,
-                position_embeddings=(cos_embeddings, sin_embeddings),
-                step=step,
-                stream=stream,
-            )
+            phase = "prefill" if cur_pos == prompt_len else "decode"
+            if args.phase_timing:
+                phase_start = torch.cuda.Event(enable_timing=True)
+                phase_end = torch.cuda.Event(enable_timing=True)
+                phase_start.record()
+            if phase == "prefill":
+                logits = execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream)
+            else:
+                logits = execute_decode_step(model, tokens, cur_pos, position_embeddings, step, stream)
             next_token = logits.argmax(dim=-1)
             if args.do_sample:
                 # Match the megakernel path: temperature → top-k → top-p → draw.
@@ -898,6 +930,9 @@ if __name__ == "__main__":
             next_token = next_token[0, -1]
             tokens[0, cur_pos] = next_token
             prev_pos = cur_pos
+            if args.phase_timing:
+                phase_end.record()
+                phase_events.append((phase, phase_start, phase_end))
             if next_token == model.config.eos_token_id:
                 break
             if cur_pos == prompt_len + warmup:
@@ -907,6 +942,19 @@ if __name__ == "__main__":
         ender.record()
         torch.cuda.synchronize()
         run_time = starter.elapsed_time(ender)
+        phase_timing_data = None
+        if args.phase_timing and phase_events:
+            prefill_ms = phase_events[0][1].elapsed_time(phase_events[0][2])
+            decode_step_ms = [start.elapsed_time(end) for phase, start, end in phase_events
+                              if phase == "decode"]
+            phase_timing_data = {
+                "prefill_ms": prefill_ms,
+                "decode_ms": sum(decode_step_ms),
+                "decode_step_ms": decode_step_ms,
+            }
+            print(f"Phase timing: prefill={prefill_ms:.3f} ms, "
+                  f"decode={sum(decode_step_ms):.3f} ms, "
+                  f"decode_steps={len(decode_step_ms)}")
 
         end_idx = prev_pos + 1
         generated_ids = tokens[:, :end_idx]
@@ -933,6 +981,8 @@ if __name__ == "__main__":
                 "generate_length": tokens_generated,
                 "mode": "torch",
             }
+            if phase_timing_data is not None:
+                out["phase_timing"] = phase_timing_data
             with open(save_path, "w") as f:
                 json.dump(out, f, indent=2)
             print(f"Saved tokens to {save_path}")
