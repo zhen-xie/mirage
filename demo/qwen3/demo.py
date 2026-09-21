@@ -125,7 +125,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("normal", "mpk"), default=None,
                         help="Execution backend (default: normal)")
-    parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only"), default=None,
+    parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only", "workload-aware"), default=None,
                         help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
                         help="Deprecated alias for --backend mpk --mpk-policy always")
@@ -228,8 +228,10 @@ if __name__ == "__main__":
             args.mpk_policy = args.mpk_policy or "always"
     # Keep the existing execution paths intact while migrating their CLI.
     args.use_mirage = args.backend == "mpk"
-    if args.phase_timing and args.backend == "mpk":
-        parser.error("--phase-timing currently requires --backend=normal")
+    if args.phase_timing and args.mpk_policy == "always":
+        parser.error("--phase-timing requires a separate prefill/decode boundary")
+    if args.mpk_policy == "workload-aware":
+        parser.error("workload-aware requires a measured MPK advantage map; complete Steps 9–10 first")
     if args.mpk_policy in ("prefill-only", "decode-only"):
         if args.max_num_batched_requests != 1 or args.spec_decode or args.do_sample or args.profiling:
             parser.error("Mixed backend policies currently require one request, greedy decoding, no speculative decoding, and no profiling")
@@ -267,7 +269,11 @@ if __name__ == "__main__":
     print("Input arguments:", args)
     print(f"Execution backend: {args.backend.upper()}"
           + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
-    if args.mpk_policy == "prefill-only":
+    if args.backend == "normal":
+        print("Prefill backend: NORMAL\nDecode backend: NORMAL")
+    elif args.mpk_policy == "always":
+        print("Prefill backend: MPK\nDecode backend: MPK")
+    elif args.mpk_policy == "prefill-only":
         print("Prefill backend: MPK\nDecode backend: NORMAL")
     elif args.mpk_policy == "decode-only":
         print("Prefill backend: NORMAL\nDecode backend: MPK")
@@ -930,7 +936,13 @@ if __name__ == "__main__":
         if output_len == 0:
             parser.error("prefill-only requires at least one output token")
         starter.record()
+        if args.phase_timing:
+            mpk_prefill_start = torch.cuda.Event(enable_timing=True)
+            mpk_prefill_end = torch.cuda.Event(enable_timing=True)
+            mpk_prefill_start.record()
         mpk(stop_after_prefill=True)
+        if args.phase_timing:
+            mpk_prefill_end.record()
         torch.cuda.synchronize()
         prompt_len = prompt_lengths[0].item()
         if step[0].item() != prompt_len:
@@ -943,8 +955,14 @@ if __name__ == "__main__":
         if prompt_len >= args.page_size:
             parser.error("decode-only currently requires the prompt to fit in one KV page")
         starter.record()
+        if args.phase_timing:
+            normal_prefill_start = torch.cuda.Event(enable_timing=True)
+            normal_prefill_end = torch.cuda.Event(enable_timing=True)
+            normal_prefill_start.record()
         logits = execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream)
         tokens[0, prompt_len] = select_normal_token(logits, args, model, prompt_len)
+        if args.phase_timing:
+            normal_prefill_end.record()
 
     if not args.use_mirage or args.mpk_policy == "prefill-only":
         prompt_len = prompt_lengths[0].item()
@@ -977,8 +995,10 @@ if __name__ == "__main__":
         torch.cuda.synchronize()
         run_time = starter.elapsed_time(ender)
         phase_timing_data = None
-        if args.phase_timing and phase_events:
-            prefill_ms = phase_events[0][1].elapsed_time(phase_events[0][2])
+        if args.phase_timing and (phase_events or args.mpk_policy == "prefill-only"):
+            prefill_ms = (mpk_prefill_start.elapsed_time(mpk_prefill_end)
+                          if args.mpk_policy == "prefill-only"
+                          else phase_events[0][1].elapsed_time(phase_events[0][2]))
             decode_step_ms = [start.elapsed_time(end) for phase, start, end in phase_events
                               if phase == "decode"]
             phase_timing_data = {
@@ -1024,10 +1044,26 @@ if __name__ == "__main__":
     else:
         if args.mpk_policy != "decode-only":
             starter.record()
+        if args.phase_timing:
+            mpk_decode_start = torch.cuda.Event(enable_timing=True)
+            mpk_decode_end = torch.cuda.Event(enable_timing=True)
+            mpk_decode_start.record()
         mpk(resume_after_prefill=args.mpk_policy == "decode-only")
+        if args.phase_timing:
+            mpk_decode_end.record()
         ender.record()
         torch.cuda.synchronize()
         run_time = starter.elapsed_time(ender)
+        phase_timing_data = None
+        if args.phase_timing:
+            phase_timing_data = {
+                "prefill_ms": normal_prefill_start.elapsed_time(normal_prefill_end),
+                "decode_ms": mpk_decode_start.elapsed_time(mpk_decode_end),
+                "decode_steps": output_len - 1,
+                "decode_step_ms": None,
+            }
+            print(f"Phase timing: prefill={phase_timing_data['prefill_ms']:.3f} ms, "
+                  f"decode={phase_timing_data['decode_ms']:.3f} ms")
 
         print("tokens.shape = ", tokens.shape)
         for r in range(total_num_requests):
@@ -1063,6 +1099,8 @@ if __name__ == "__main__":
                 "generate_length": tokens_generated,
                 "mode": "normal_prefill_mpk_decode" if args.mpk_policy == "decode-only" else "mpk",
             }
+            if phase_timing_data is not None:
+                out["phase_timing"] = phase_timing_data
             with open(save_path, "w") as f:
                 json.dump(out, f, indent=2)
             print(f"Saved tokens to {save_path}")
