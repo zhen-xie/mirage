@@ -68,6 +68,7 @@ def max_factor_leq_n(m: int, n: int) -> int:
     return max_factor
 
 if __name__ == "__main__":
+    global print
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("normal", "mpk"), default=None,
                         help="Execution backend (default: normal)")
@@ -200,7 +201,6 @@ if __name__ == "__main__":
 
     if world_size > 1:
         dist.init_process_group(backend="nccl", init_method="env://")
-    global print
     if rank != 0:
         print = lambda *_, **__: None
 
