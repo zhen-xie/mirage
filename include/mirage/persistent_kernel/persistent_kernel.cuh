@@ -271,7 +271,9 @@ __device__ __forceinline__ bool
 #if defined(MPK_ENABLE_PROFILING) || defined(MPK_TEST_MODE)
       if (true)
 #else
-      if ((step + step_advance + 1 >= config.max_seq_length) ||
+      if ((config.stop_after_prefill &&
+           step + step_advance >= prompt_len) ||
+          (step + step_advance + 1 >= config.max_seq_length) ||
           ((config.tokens[request_id * MPK_MAX_SEQ_LENGTH + step +
                           step_advance] == config.eos_token_id) &&
            (step + step_advance >= prompt_len)))
@@ -1791,7 +1793,9 @@ extern "C" void
 
 // Entry point for C/C++
 // TODO: change launch config
-extern "C" void launch_persistent_kernel(cudaStream_t default_stream) {
+extern "C" void launch_persistent_kernel(cudaStream_t default_stream,
+                                          bool stop_after_prefill = false) {
+  global_runtime_config.stop_after_prefill = stop_after_prefill;
   // int device;
   // cudaGetDevice(&device);
   // int sm_count;

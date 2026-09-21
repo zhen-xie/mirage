@@ -95,13 +95,38 @@ def execute_decode_step(model, tokens, cur_pos, position_embeddings, step, strea
         stream=stream,
     )
 
+
+def select_normal_token(logits, args, model, cur_pos):
+    next_token = logits.argmax(dim=-1)
+    if args.do_sample:
+        # Match the megakernel path: temperature → top-k → top-p → draw.
+        row = logits[0, -1, : model.config.vocab_size].float()
+        row = row / args.temperature
+        if args.top_k > 0:
+            kth = torch.topk(row, min(args.top_k, row.numel())).values[-1]
+            row = row.masked_fill(row < kth, float("-inf"))
+        if args.top_p < 1.0:
+            sorted_logits, sorted_idx = torch.sort(row, descending=True)
+            probs = torch.softmax(sorted_logits, dim=-1)
+            cum = torch.cumsum(probs, dim=-1)
+            keep = cum <= args.top_p
+            keep[..., 0] = True
+            row = row.clone()
+            row[sorted_idx[~keep]] = float("-inf")
+        probs = torch.softmax(row, dim=-1)
+        g = torch.Generator(device=probs.device)
+        g.manual_seed(args.seed + cur_pos)
+        next_token = torch.multinomial(probs, 1, generator=g)
+        next_token = next_token.view(1, 1)
+    return next_token[0, -1]
+
 if __name__ == "__main__":
     global print
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("normal", "mpk"), default=None,
                         help="Execution backend (default: normal)")
-    parser.add_argument("--mpk-policy", choices=("always",), default=None,
-                        help="MPK execution policy (currently: always)")
+    parser.add_argument("--mpk-policy", choices=("always", "prefill-only"), default=None,
+                        help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
                         help="Deprecated alias for --backend mpk --mpk-policy always")
     parser.add_argument("--max-num-batched-tokens", default=8, type=int, help="Max number of tokens in a batch")
@@ -205,6 +230,9 @@ if __name__ == "__main__":
     args.use_mirage = args.backend == "mpk"
     if args.phase_timing and args.backend == "mpk":
         parser.error("--phase-timing currently requires --backend=normal")
+    if args.mpk_policy == "prefill-only":
+        if args.max_num_batched_requests != 1 or args.spec_decode or args.do_sample:
+            parser.error("prefill-only currently requires one request, greedy decoding, and no speculative decoding")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -239,7 +267,11 @@ if __name__ == "__main__":
     print("Input arguments:", args)
     print(f"Execution backend: {args.backend.upper()}"
           + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
+    if args.mpk_policy == "prefill-only":
+        print("Prefill backend: MPK\nDecode backend: NORMAL")
     print(f"world_size({world_size}) rank({rank})")
+    if args.mpk_policy == "prefill-only" and world_size != 1:
+        parser.error("prefill-only currently requires a single GPU")
     model_name = args.model
     torch.set_default_dtype(torch.bfloat16)
 
@@ -892,11 +924,23 @@ if __name__ == "__main__":
     # Decode up to user cap or buffer size
     output_len = args.max_new_tokens if args.max_new_tokens is not None else (tokens.size(1) - prompt_lengths[0].item())
     output_len = max(0, min(output_len, tokens.size(1) - prompt_lengths[0].item()))
-    if not args.use_mirage:
+    if args.mpk_policy == "prefill-only":
+        if output_len == 0:
+            parser.error("prefill-only requires at least one output token")
+        starter.record()
+        mpk(stop_after_prefill=True)
+        torch.cuda.synchronize()
+        prompt_len = prompt_lengths[0].item()
+        if step[0].item() != prompt_len:
+            raise RuntimeError("MPK did not stop at the prefill boundary")
+        prev_pos = prompt_len
+
+    if not args.use_mirage or args.mpk_policy == "prefill-only":
         prompt_len = prompt_lengths[0].item()
         decode_limit = prompt_len + output_len
+        start_pos = prompt_len + (args.mpk_policy == "prefill-only")
         phase_events = []
-        for cur_pos in range(prompt_len, decode_limit):
+        for cur_pos in range(start_pos, decode_limit):
             phase = "prefill" if cur_pos == prompt_len else "decode"
             if args.phase_timing:
                 phase_start = torch.cuda.Event(enable_timing=True)
@@ -906,28 +950,7 @@ if __name__ == "__main__":
                 logits = execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream)
             else:
                 logits = execute_decode_step(model, tokens, cur_pos, position_embeddings, step, stream)
-            next_token = logits.argmax(dim=-1)
-            if args.do_sample:
-                # Match the megakernel path: temperature → top-k → top-p → draw.
-                row = logits[0, -1, : model.config.vocab_size].float()
-                row = row / args.temperature
-                if args.top_k > 0:
-                    kth = torch.topk(row, min(args.top_k, row.numel())).values[-1]
-                    row = row.masked_fill(row < kth, float("-inf"))
-                if args.top_p < 1.0:
-                    sorted_logits, sorted_idx = torch.sort(row, descending=True)
-                    probs = torch.softmax(sorted_logits, dim=-1)
-                    cum = torch.cumsum(probs, dim=-1)
-                    keep = cum <= args.top_p
-                    keep[..., 0] = True
-                    row = row.clone()
-                    row[sorted_idx[~keep]] = float("-inf")
-                probs = torch.softmax(row, dim=-1)
-                g = torch.Generator(device=probs.device)
-                g.manual_seed(args.seed + cur_pos)
-                next_token = torch.multinomial(probs, 1, generator=g)
-                next_token = next_token.view(1, 1)
-            next_token = next_token[0, -1]
+            next_token = select_normal_token(logits, args, model, cur_pos)
             tokens[0, cur_pos] = next_token
             prev_pos = cur_pos
             if args.phase_timing:
@@ -935,7 +958,7 @@ if __name__ == "__main__":
                 phase_events.append((phase, phase_start, phase_end))
             if next_token == model.config.eos_token_id:
                 break
-            if cur_pos == prompt_len + warmup:
+            if args.mpk_policy != "prefill-only" and cur_pos == prompt_len + warmup:
                 torch.cuda.synchronize()
                 starter.record()
 
@@ -979,7 +1002,7 @@ if __name__ == "__main__":
                 "latency_ms_per_token": per_tok_ms,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
-                "mode": "torch",
+                "mode": "mpk_prefill_normal_decode" if args.mpk_policy == "prefill-only" else "torch",
             }
             if phase_timing_data is not None:
                 out["phase_timing"] = phase_timing_data

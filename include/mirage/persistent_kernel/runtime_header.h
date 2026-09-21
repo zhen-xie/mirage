@@ -353,6 +353,7 @@ struct RuntimeConfig {
   long long *output_tokens;       // Metadata for LLM serving
   long long eos_token_id;         // Metadata for LLM serving
   int max_seq_length;             // Metadata for LLM serving
+  bool stop_after_prefill;         // Offline mode: stop after producing first token
   int *new_token_nums;            // Metadata for LLM serving
   int *qo_indptr_buffer;          // Metadata for LLM serving (paged attention)
   int *paged_kv_indptr_buffer;    // Metadata for LLM serving (paged attention)
