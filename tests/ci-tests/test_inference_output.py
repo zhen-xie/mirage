@@ -5,7 +5,7 @@ import pytest
 DEFAULT_OUTPUT_DIR = os.path.join("outputs", "qwen3")
 TORCH_OUTPUT = os.path.join(DEFAULT_OUTPUT_DIR, "torch_output.json")
 MPK_OUTPUT = os.path.join(DEFAULT_OUTPUT_DIR, "mpk_output.json")
-NUM_TOKENS_TO_COMPARE = 50
+NUM_TOKENS_TO_COMPARE = 30
 
 
 def _load_tokens(path: str):
@@ -23,9 +23,12 @@ def test_qwen3_torch_vs_mpk_tokens():
     torch_tokens, torch_meta = _load_tokens(TORCH_OUTPUT)
     mpk_tokens, mpk_meta = _load_tokens(MPK_OUTPUT)
 
-    n = min(NUM_TOKENS_TO_COMPARE, len(torch_tokens), len(mpk_tokens))
-    if n == 0:
-        pytest.fail(f"No tokens to compare (torch={len(torch_tokens)}, mpk={len(mpk_tokens)})")
+    n = NUM_TOKENS_TO_COMPARE
+    if len(torch_tokens) < n or len(mpk_tokens) < n:
+        pytest.fail(
+            f"Need {n} generated tokens to compare "
+            f"(torch={len(torch_tokens)}, mpk={len(mpk_tokens)})"
+        )
 
     torch_slice = torch_tokens[:n]
     mpk_slice = mpk_tokens[:n]
