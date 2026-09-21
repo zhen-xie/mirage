@@ -186,6 +186,28 @@ __global__ void init_kernel(RuntimeConfig config) {
   }
 }
 
+#ifdef MODE_OFFLINE
+// Seed one request after its prompt was executed by the normal backend.
+// The normal Qwen3 path writes the shared KV cache into page zero.
+__global__ void resume_after_prefill_kernel(RuntimeConfig config) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    assert(MPK_MAX_NUM_BATCHED_REQUESTS == 1);
+    assert(config.total_num_requests == 1);
+    int prompt_len = config.prompt_length[0];
+    assert(prompt_len > 0 && prompt_len < MPK_PAGE_SIZE);
+    config.step[0] = prompt_len;
+    config.request_ids[0] = 0;
+    *config.next_request_id = 1;
+    config.qo_indptr_buffer[0] = 0;
+    config.qo_indptr_buffer[1] = 0;
+    config.paged_kv_indptr_buffer[0] = 0;
+    config.paged_kv_indptr_buffer[1] = 1;
+    config.paged_kv_indices_buffer[0] = 0;
+    *config.page_queue_head = 1;
+  }
+}
+#endif
+
 __global__ void prepare_kernel(RuntimeConfig config,
                                int end_of_task_graph_event_pos) {
   // Initialize worker queue last task id
@@ -1794,8 +1816,17 @@ extern "C" void
 // Entry point for C/C++
 // TODO: change launch config
 extern "C" void launch_persistent_kernel(cudaStream_t default_stream,
-                                          bool stop_after_prefill = false) {
+                                          bool stop_after_prefill = false,
+                                          bool resume_after_prefill = false) {
   global_runtime_config.stop_after_prefill = stop_after_prefill;
+#ifdef MODE_OFFLINE
+  if (resume_after_prefill) {
+    resume_after_prefill_kernel<<<1, 1, 0, default_stream>>>(
+        global_runtime_config);
+  }
+#else
+  assert(!resume_after_prefill);
+#endif
   // int device;
   // cudaGetDevice(&device);
   // int sm_count;

@@ -105,13 +105,16 @@ static PyObject *init_request_func(PyObject *self, PyObject *args) {
 static PyObject *launch_func(PyObject *self, PyObject *args) {
   PyObject *py_stream;
   int stop_after_prefill;
+  int resume_after_prefill;
   cudaStream_t stream;
-  if (!PyArg_ParseTuple(args, "Oi", &py_stream, &stop_after_prefill)) {
+  if (!PyArg_ParseTuple(args, "Oii", &py_stream, &stop_after_prefill,
+                        &resume_after_prefill)) {
     PyErr_SetString(PyExc_TypeError, "Invalid parameters");
     return NULL;
   }
   stream = (cudaStream_t)PyLong_AsVoidPtr(py_stream);
-  launch_persistent_kernel(stream, stop_after_prefill != 0);
+  launch_persistent_kernel(stream, stop_after_prefill != 0,
+                           resume_after_prefill != 0);
 
   Py_RETURN_NONE;
 }
@@ -3350,10 +3353,13 @@ class PersistentKernel:
 
     def __call__(self, **kwargs):
         stop_after_prefill = kwargs.get("stop_after_prefill", False)
-        if stop_after_prefill and self.mode != "offline":
-            raise ValueError("stop_after_prefill requires offline mode")
-        if stop_after_prefill and self.profiler_tensor is not None:
-            raise ValueError("stop_after_prefill does not support profiling")
+        resume_after_prefill = kwargs.get("resume_after_prefill", False)
+        if stop_after_prefill and resume_after_prefill:
+            raise ValueError("Cannot stop and resume after prefill in one launch")
+        if (stop_after_prefill or resume_after_prefill) and self.mode != "offline":
+            raise ValueError("Prefill boundary controls require offline mode")
+        if (stop_after_prefill or resume_after_prefill) and self.profiler_tensor is not None:
+            raise ValueError("Prefill boundary controls do not support profiling")
         stream = kwargs.get("default_stream", None)
         if stream is None:
            stream = torch.cuda.current_stream()
@@ -3371,7 +3377,8 @@ class PersistentKernel:
             stream_ptr = stream
         else:
             raise ValueError("Invalid stream object")
-        self.launch_func(stream_ptr, int(stop_after_prefill))
+        self.launch_func(stream_ptr, int(stop_after_prefill),
+                         int(resume_after_prefill))
         if self.profiler_tensor is not None:
             from .profiler_persistent import export_to_csv, export_to_perfetto_trace
 

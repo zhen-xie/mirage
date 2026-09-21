@@ -125,7 +125,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("normal", "mpk"), default=None,
                         help="Execution backend (default: normal)")
-    parser.add_argument("--mpk-policy", choices=("always", "prefill-only"), default=None,
+    parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only"), default=None,
                         help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
                         help="Deprecated alias for --backend mpk --mpk-policy always")
@@ -230,9 +230,9 @@ if __name__ == "__main__":
     args.use_mirage = args.backend == "mpk"
     if args.phase_timing and args.backend == "mpk":
         parser.error("--phase-timing currently requires --backend=normal")
-    if args.mpk_policy == "prefill-only":
-        if args.max_num_batched_requests != 1 or args.spec_decode or args.do_sample:
-            parser.error("prefill-only currently requires one request, greedy decoding, and no speculative decoding")
+    if args.mpk_policy in ("prefill-only", "decode-only"):
+        if args.max_num_batched_requests != 1 or args.spec_decode or args.do_sample or args.profiling:
+            parser.error("Mixed backend policies currently require one request, greedy decoding, no speculative decoding, and no profiling")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -269,9 +269,11 @@ if __name__ == "__main__":
           + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
     if args.mpk_policy == "prefill-only":
         print("Prefill backend: MPK\nDecode backend: NORMAL")
+    elif args.mpk_policy == "decode-only":
+        print("Prefill backend: NORMAL\nDecode backend: MPK")
     print(f"world_size({world_size}) rank({rank})")
-    if args.mpk_policy == "prefill-only" and world_size != 1:
-        parser.error("prefill-only currently requires a single GPU")
+    if args.mpk_policy in ("prefill-only", "decode-only") and world_size != 1:
+        parser.error("Mixed backend policies currently require a single GPU")
     model_name = args.model
     torch.set_default_dtype(torch.bfloat16)
 
@@ -934,6 +936,15 @@ if __name__ == "__main__":
         if step[0].item() != prompt_len:
             raise RuntimeError("MPK did not stop at the prefill boundary")
         prev_pos = prompt_len
+    elif args.mpk_policy == "decode-only":
+        prompt_len = prompt_lengths[0].item()
+        if output_len < 2 or args.max_seq_length != prompt_len + output_len:
+            parser.error("decode-only requires at least two output tokens and max-seq-length = prompt length + output length")
+        if prompt_len >= args.page_size:
+            parser.error("decode-only currently requires the prompt to fit in one KV page")
+        starter.record()
+        logits = execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream)
+        tokens[0, prompt_len] = select_normal_token(logits, args, model, prompt_len)
 
     if not args.use_mirage or args.mpk_policy == "prefill-only":
         prompt_len = prompt_lengths[0].item()
@@ -1011,8 +1022,9 @@ if __name__ == "__main__":
             print(f"Saved tokens to {save_path}")
 
     else:
-        starter.record()
-        mpk()
+        if args.mpk_policy != "decode-only":
+            starter.record()
+        mpk(resume_after_prefill=args.mpk_policy == "decode-only")
         ender.record()
         torch.cuda.synchronize()
         run_time = starter.elapsed_time(ender)
@@ -1049,7 +1061,7 @@ if __name__ == "__main__":
                 "latency_ms_per_token": per_tok_ms,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
-                "mode": "mpk",
+                "mode": "normal_prefill_mpk_decode" if args.mpk_policy == "decode-only" else "mpk",
             }
             with open(save_path, "w") as f:
                 json.dump(out, f, indent=2)
