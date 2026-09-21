@@ -69,7 +69,12 @@ def max_factor_leq_n(m: int, n: int) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--use-mirage", action="store_true", help="Use Mirage kernels")
+    parser.add_argument("--backend", choices=("normal", "mpk"), default=None,
+                        help="Execution backend (default: normal)")
+    parser.add_argument("--mpk-policy", choices=("always",), default=None,
+                        help="MPK execution policy (currently: always)")
+    parser.add_argument("--use-mirage", action="store_true",
+                        help="Deprecated alias for --backend mpk --mpk-policy always")
     parser.add_argument("--max-num-batched-tokens", default=8, type=int, help="Max number of tokens in a batch")
     parser.add_argument("--max-num-batched-requests", default=1, type=int, help="Max number of requests in a batch")
     parser.add_argument("--page-size", default=4096, type=int, help="Page size")
@@ -152,6 +157,21 @@ if __name__ == "__main__":
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
+    if args.use_mirage:
+        if args.backend not in (None, "mpk") or args.mpk_policy not in (None, "always"):
+            parser.error("--use-mirage conflicts with the selected backend or MPK policy")
+        print("[Deprecated] --use-mirage is deprecated.\n"
+              "Use --backend mpk --mpk-policy always instead.")
+        args.backend = "mpk"
+        args.mpk_policy = "always"
+    else:
+        args.backend = args.backend or "normal"
+        if args.backend == "normal" and args.mpk_policy is not None:
+            parser.error("--mpk-policy is only valid when --backend=mpk")
+        if args.backend == "mpk":
+            args.mpk_policy = args.mpk_policy or "always"
+    # Keep the existing execution paths intact while migrating their CLI.
+    args.use_mirage = args.backend == "mpk"
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -185,6 +205,8 @@ if __name__ == "__main__":
         print = lambda *_, **__: None
 
     print("Input arguments:", args)
+    print(f"Execution backend: {args.backend.upper()}"
+          + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
     print(f"world_size({world_size}) rank({rank})")
     model_name = args.model
     torch.set_default_dtype(torch.bfloat16)
