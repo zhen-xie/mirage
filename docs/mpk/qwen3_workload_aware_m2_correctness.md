@@ -120,3 +120,13 @@ The split-MPK diagnostic has now run at generated token 20. A continuous
 had exactly equal generated tokens, logits, and normalized hidden state.
 This rules out an observable resume-path difference for this configuration;
 the next diagnostic compares the normal and MPK prefill KV snapshots directly.
+
+The first KV snapshot comparison used the diverse 128-token prompt. Both
+caches had shape `[36, 128, 8, 128]`. Key mean absolute error was 0.01374
+with max 2.0; value mean absolute error was 0.01884 with max 2.125. Value
+cache mean absolute error was largest in layers 34, 33, 35, 32, and 31
+(0.0950, 0.0932, 0.0730, 0.0617, and 0.0491). The first comparison script
+printed a key cosine above 1 due to fp32 reduction error; that number is
+invalid. The script now uses fp64 reduction and reports relative RMSE and
+per-layer/position errors. These need to be recomputed from the saved KV
+snapshots before interpreting the distribution.

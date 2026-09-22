@@ -16,18 +16,32 @@ def summarize(reference, actual):
     difference = (reference - actual).abs()
     layer_means = difference.flatten(1).mean(dim=1)
     worst_layers = torch.argsort(layer_means, descending=True)[:5]
-    cosine = torch.nn.functional.cosine_similarity(
-        reference.reshape(1, -1), actual.reshape(1, -1)
-    ).item()
+    # Accumulating millions of fp32 products can push cosine slightly above 1.
+    reference64 = reference.double().flatten()
+    actual64 = actual.double().flatten()
+    cosine = (torch.dot(reference64, actual64) /
+              (torch.linalg.vector_norm(reference64) *
+               torch.linalg.vector_norm(actual64))).item()
+    relative_rmse = (torch.linalg.vector_norm(reference64 - actual64) /
+                     torch.linalg.vector_norm(reference64)).item()
+    position_means = difference.mean(dim=(0, 2, 3))
+    worst_positions = torch.argsort(position_means, descending=True)[:5]
     return {
         "shape": list(reference.shape),
         "exact_equal_fraction": (difference == 0).float().mean().item(),
         "max_absolute_error": difference.max().item(),
         "mean_absolute_error": difference.mean().item(),
         "cosine_similarity": cosine,
+        "relative_rmse": relative_rmse,
+        "reference_rms": torch.sqrt((reference64.square()).mean()).item(),
+        "per_layer_mean_absolute_error": layer_means.tolist(),
         "worst_layers_by_mean_absolute_error": [
             {"layer": i.item(), "mean_absolute_error": layer_means[i].item()}
             for i in worst_layers
+        ],
+        "worst_positions_by_mean_absolute_error": [
+            {"position": i.item(), "mean_absolute_error": position_means[i].item()}
+            for i in worst_positions
         ],
     }
 
