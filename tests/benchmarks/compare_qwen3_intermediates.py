@@ -64,9 +64,9 @@ def main():
             normal["generated_token_ids"], mpk["generated_token_ids"]
         ),
         "normal_generated_token_ids": normal["generated_token_ids"].tolist(),
-        "decode_only_generated_token_ids": mpk["generated_token_ids"].tolist(),
+        "mpk_generated_token_ids": mpk["generated_token_ids"].tolist(),
         "normal_top_5": top_tokens(normal),
-        "decode_only_top_5": top_tokens(mpk),
+        "mpk_top_5": top_tokens(mpk),
         "logits": tensor_metrics(normal["logits"], mpk["logits"]),
         "normalized_hidden_state": tensor_metrics(
             normal["normalized_hidden_state"], mpk["normalized_hidden_state"]

@@ -91,3 +91,9 @@ hidden-state cosine similarity was 0.999953; max absolute errors were 0.25
 for both tensors. The near tie explains the immediate token difference, but
 does not yet identify whether the underlying numeric difference comes from
 prefill KV values, MPK decode arithmetic, or both.
+
+At the same step, the `always` probe generated token 323. Its MPK logits
+ranked token 323 at 31.625 and token 11 at 31.5, preserving the normal
+ordering. Thus the decode-only mismatch is specific to the mixed path in
+this case. More evidence is needed to separate prefill KV differences from
+resume-state effects.
