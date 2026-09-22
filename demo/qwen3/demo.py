@@ -274,6 +274,8 @@ if __name__ == "__main__":
             args.mpk_policy = args.mpk_policy or "always"
     # Keep the existing execution paths intact while migrating their CLI.
     args.use_mirage = args.backend == "mpk"
+    if args.backend == "normal" and args.max_num_batched_requests != 1:
+        parser.error("normal backend currently supports exactly one request; batched normal attention is not implemented")
     if args.phase_timing and args.mpk_policy == "always":
         parser.error("--phase-timing requires a separate prefill/decode boundary")
     if args.mpk_policy == "workload-aware":

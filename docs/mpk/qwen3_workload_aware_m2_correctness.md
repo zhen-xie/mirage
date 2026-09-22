@@ -84,7 +84,28 @@ result from the repeated `hello` prompt. All four modes generated 128 tokens.
 diverged at zero-based generated token 35. `decode-only` first diverged at
 zero-based generated token 20. This failed the earlier exact-first-30 gate.
 The first 20 positions match, so it passes the revised 20-of-30 gate; the
-full positional match count will be computed from the saved artifacts.
+full positional match count was later measured as 24/30. On the repeated
+`hello` prompt, all four modes scored 30/30. The revised pytest suite reported
+7 passed and 3 subtests passed on the second server.
+
+An additional positional comparison of the first 50 saved tokens used the
+same artifacts. On the repeated `hello` prompt, `always`, `decode-only`, and
+`prefill-only` each matched normal at 50/50 positions. On the diverse prompt,
+`always` matched at 35/50 (70%; first mismatch at zero-based position 35),
+`decode-only` at 29/50 (58%; first mismatch at position 20), and
+`prefill-only` at 50/50. These are positional match rates after generation;
+an early token difference can change the later continuation. The agreed
+acceptance gate remains at least 20 matching positions among the first 30.
+
+## Step 8 batch coverage
+
+The current normal attention path reads and writes only KV page 0, and the
+normal generation loop selects and saves only request 0. MPK `decode-only`
+resume also assumes one request. Therefore the B=1 results above cannot be
+extended to B=8 by setting `--max-num-batched-requests 8`. The normal CLI now
+rejects that setting explicitly. The next implementation step is per-request
+KV pages and token selection in normal execution, followed by batched MPK
+resume, correctness checks, and B=8 measurements.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and
