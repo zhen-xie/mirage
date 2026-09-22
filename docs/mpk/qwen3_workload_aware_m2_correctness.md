@@ -114,3 +114,9 @@ token 11. Thus both combinations that use MPK prefill preserved the normal
 argmax at this point, while normal prefill plus MPK decode produced the tie.
 This does not yet prove that the resume path is identical to continuous MPK
 execution; a split-MPK diagnostic is needed to isolate that factor.
+
+The split-MPK diagnostic has now run at generated token 20. A continuous
+`always` run and a run that stopped after MPK prefill then resumed MPK decode
+had exactly equal generated tokens, logits, and normalized hidden state.
+This rules out an observable resume-path difference for this configuration;
+the next diagnostic compares the normal and MPK prefill KV snapshots directly.

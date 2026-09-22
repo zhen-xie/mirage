@@ -98,6 +98,22 @@ def execute_decode_step(model, tokens, cur_pos, position_embeddings, step, strea
     )
 
 
+def save_prefill_kv_snapshot(path, model, tokens, prompt_len, backend, policy):
+    """Capture only the populated first KV page for offline diagnostics."""
+    torch.cuda.synchronize()
+    key_cache, value_cache = model.model.kv_cache
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    torch.save({
+        "backend": backend,
+        "policy": policy,
+        "prompt_length": prompt_len,
+        "prompt_token_ids": tokens[0, :prompt_len].detach().cpu(),
+        "key_cache": key_cache[:, 0, :prompt_len].detach().cpu(),
+        "value_cache": value_cache[:, 0, :prompt_len].detach().cpu(),
+    }, path)
+    print(f"Saved prefill KV to {path}")
+
+
 def select_normal_token(logits, args, model, cur_pos):
     next_token = logits.argmax(dim=-1)
     if args.do_sample:
@@ -213,6 +229,8 @@ if __name__ == "__main__":
         "--save-intermediates", type=str, default=None,
         help="Save final decode logits and normalized hidden state for a correctness probe",
     )
+    parser.add_argument("--save-prefill-kv", type=str, default=None,
+                        help="Save populated KV cache at the prefill boundary for diagnostics")
     parser.add_argument("--prompt",
         type=str,
         default="Give me a short introduction to large language model.",
@@ -256,6 +274,11 @@ if __name__ == "__main__":
         or args.do_sample
     ):
         parser.error("--save-intermediates requires a static policy, at least two output tokens, ignore-eos, and greedy decoding")
+    if args.save_prefill_kv and (
+        args.backend == "mpk" and args.mpk_policy != "prefill-only"
+        or args.do_sample or args.spec_decode or args.profiling
+    ):
+        parser.error("--save-prefill-kv requires normal or prefill-only, greedy decoding, no speculative decoding, and no profiling")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -295,6 +318,8 @@ if __name__ == "__main__":
         parser.error("Mixed backend policies currently require a single GPU")
     if args.save_intermediates and world_size != 1:
         parser.error("--save-intermediates currently requires a single GPU")
+    if args.save_prefill_kv and world_size != 1:
+        parser.error("--save-prefill-kv currently requires a single GPU")
     if args.debug_split_mpk_prefill and world_size != 1:
         parser.error("--debug-split-mpk-prefill currently requires a single GPU")
     model_name = args.model
@@ -992,6 +1017,9 @@ if __name__ == "__main__":
         prompt_len = prompt_lengths[0].item()
         if step[0].item() != prompt_len:
             raise RuntimeError("MPK did not stop at the prefill boundary")
+        if args.save_prefill_kv:
+            save_prefill_kv_snapshot(args.save_prefill_kv, model, tokens,
+                                     prompt_len, args.backend, args.mpk_policy)
         prev_pos = prompt_len
     elif decode_use_mpk and not prefill_use_mpk:
         prompt_len = prompt_lengths[0].item()
@@ -1022,6 +1050,9 @@ if __name__ == "__main__":
                 phase_start.record()
             if phase == "prefill":
                 logits = execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream)
+                if args.save_prefill_kv:
+                    save_prefill_kv_snapshot(args.save_prefill_kv, model, tokens,
+                                             prompt_len, args.backend, args.mpk_policy)
             else:
                 logits = execute_decode_step(model, tokens, cur_pos, position_embeddings, step, stream)
             next_token = select_normal_token(logits, args, model, cur_pos)
