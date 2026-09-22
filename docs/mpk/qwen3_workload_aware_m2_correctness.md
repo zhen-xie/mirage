@@ -42,5 +42,7 @@ Both runs again generated `[151667, 198]`:
 Both prompts repeat `hello`, so these two cases vary context length but do
 not provide diverse text or generated continuations. The numeric probe covers
 one decode position per prompt, while the 30-token artifact check covers only
-the 128-token prompt on the second server. No numeric threshold or full-output
-correctness claim follows from these observations.
+the 128-token prompt on the second server at the time of the probe. A later
+1024-input, 128-output normal/decode-only run also matched on the first 30
+tokens. No numeric threshold or full-output correctness claim follows from
+these observations.
