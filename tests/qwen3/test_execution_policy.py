@@ -1,7 +1,7 @@
 import unittest
 
-from demo.qwen3.execution.workload import WorkloadDescriptor
-from demo.qwen3.policy import make_policy
+from execution.workload import WorkloadDescriptor
+from policy import make_policy
 
 
 class ExecutionPolicyTest(unittest.TestCase):

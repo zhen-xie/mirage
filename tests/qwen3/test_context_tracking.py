@@ -1,6 +1,6 @@
 import unittest
 
-from demo.qwen3.execution.workload import WorkloadDescriptor
+from execution.workload import WorkloadDescriptor
 
 
 class ContextTrackingTest(unittest.TestCase):
