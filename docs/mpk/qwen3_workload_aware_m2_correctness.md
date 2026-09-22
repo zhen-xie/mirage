@@ -106,4 +106,11 @@ normal, `always` logits had mean absolute error 0.08029 and cosine 0.999610;
 corresponding normalized hidden-state mean absolute errors were 0.04453 and
 0.02921. Thus differences are present from the first decode step, but the
 decode-only path is closer to normal on these global metrics at that step.
-The `prefill-only` combination has not yet been measured numerically.
+The `prefill-only` combination was subsequently measured. At the first
+decode step its logit mean absolute error was 0.07592 and hidden-state mean
+absolute error was 0.04408 relative to normal. At generated token 20 it
+still selected token 323, with logits 31.625 for token 323 and 31.5 for
+token 11. Thus both combinations that use MPK prefill preserved the normal
+argmax at this point, while normal prefill plus MPK decode produced the tie.
+This does not yet prove that the resume path is identical to continuous MPK
+execution; a split-MPK diagnostic is needed to isolate that factor.

@@ -139,6 +139,8 @@ if __name__ == "__main__":
     parser.add_argument("--trace-name", default="", help="Perfetto trace output name")
     parser.add_argument("--phase-timing", action="store_true",
                         help="Record normal prefill and per-step decode CUDA timings")
+    parser.add_argument("--debug-split-mpk-prefill", action="store_true",
+                        help="Diagnostic: stop MPK after prefill and resume MPK decode")
     parser.add_argument(
         "--profiling", action="store_true", help="Use Profiler to generate trace"
     )
@@ -238,6 +240,11 @@ if __name__ == "__main__":
         parser.error("--phase-timing requires a separate prefill/decode boundary")
     if args.mpk_policy == "workload-aware":
         parser.error("workload-aware requires a measured MPK advantage map; complete Steps 9–10 first")
+    if args.debug_split_mpk_prefill and (
+        args.backend != "mpk" or args.mpk_policy != "always"
+        or args.do_sample or args.spec_decode or args.profiling
+    ):
+        parser.error("--debug-split-mpk-prefill requires MPK always, greedy decoding, no speculative decoding, and no profiling")
     if args.mpk_policy in ("prefill-only", "decode-only"):
         if args.max_num_batched_requests != 1 or args.spec_decode or args.do_sample or args.profiling:
             parser.error("Mixed backend policies currently require one request, greedy decoding, no speculative decoding, and no profiling")
@@ -288,6 +295,8 @@ if __name__ == "__main__":
         parser.error("Mixed backend policies currently require a single GPU")
     if args.save_intermediates and world_size != 1:
         parser.error("--save-intermediates currently requires a single GPU")
+    if args.debug_split_mpk_prefill and world_size != 1:
+        parser.error("--debug-split-mpk-prefill currently requires a single GPU")
     model_name = args.model
     torch.set_default_dtype(torch.bfloat16)
 
@@ -963,6 +972,11 @@ if __name__ == "__main__":
     # Decode up to user cap or buffer size
     output_len = args.max_new_tokens if args.max_new_tokens is not None else (tokens.size(1) - prompt_lengths[0].item())
     output_len = max(0, min(output_len, tokens.size(1) - prompt_lengths[0].item()))
+    if args.debug_split_mpk_prefill and (
+        prompt_lengths[0].item() >= args.page_size or output_len < 2
+        or args.max_seq_length != prompt_lengths[0].item() + output_len
+    ):
+        parser.error("--debug-split-mpk-prefill requires prompt shorter than one KV page and max-seq-length = prompt length + at least two output tokens")
     if prefill_use_mpk and not decode_use_mpk:
         if output_len == 0:
             parser.error("prefill-only requires at least one output token")
@@ -1079,7 +1093,12 @@ if __name__ == "__main__":
             mpk_decode_start = torch.cuda.Event(enable_timing=True)
             mpk_decode_end = torch.cuda.Event(enable_timing=True)
             mpk_decode_start.record()
-        mpk(resume_after_prefill=args.mpk_policy == "decode-only")
+        if args.debug_split_mpk_prefill:
+            mpk(stop_after_prefill=True)
+            torch.cuda.synchronize()
+            if step[0].item() != prompt_lengths[0].item():
+                raise RuntimeError("MPK did not stop at the prefill boundary")
+        mpk(resume_after_prefill=args.mpk_policy == "decode-only" or args.debug_split_mpk_prefill)
         if args.phase_timing:
             mpk_decode_end.record()
         ender.record()
@@ -1154,6 +1173,7 @@ if __name__ == "__main__":
             "prefix_token_ids": tokens[0, :prompt_len + output_len - 1].cpu(),
             "generated_token_ids": tokens[0, prompt_len:prompt_len + output_len].cpu(),
             "decode_step_index": output_len - 2,
+            "debug_split_mpk_prefill": args.debug_split_mpk_prefill,
             "logits": output_logits.detach().cpu(),
             "normalized_hidden_state": hidden.detach().cpu(),
         }, args.save_intermediates)
