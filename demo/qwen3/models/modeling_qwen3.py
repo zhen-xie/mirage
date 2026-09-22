@@ -295,36 +295,42 @@ class Qwen3Attention(nn.Module):
             query_states, key_states, cos, sin, unsqueeze_dim=2
         )
 
-        if q_len > 1:
-            self.key_cache[self.layer_idx, 0, :q_len] = key_states[0]
-            self.value_cache[self.layer_idx, 0, :q_len] = value_states[0]
-        else:
-            self.key_cache[self.layer_idx, 0, step] = key_states[0]
-            self.value_cache[self.layer_idx, 0, step] = value_states[0]
+        if bsz == 1:
+            # Preserve the established single-request attention path.
+            if q_len > 1:
+                self.key_cache[self.layer_idx, 0, :q_len] = key_states[0]
+                self.value_cache[self.layer_idx, 0, :q_len] = value_states[0]
+            else:
+                self.key_cache[self.layer_idx, 0, step] = key_states[0]
+                self.value_cache[self.layer_idx, 0, step] = value_states[0]
 
-        q = query_states[0] # Shape: [q_len, num_q_heads, head_dim]
-
-        if q_len > 1:
+            q = query_states[0]
+            kv_seq_len = q_len if q_len > 1 else step.item() + 1
             attn_output = naive_attention(
-                q,
-                self.key_cache,
-                self.value_cache,
-                q_len,
-                self.layer_idx,
-                True,
-                True
+                q, self.key_cache, self.value_cache, kv_seq_len,
+                self.layer_idx, q_len > 1, True,
             )
         else:
-            kv_seq_len = step.item() + 1
-            attn_output = naive_attention(
-                q,
-                self.key_cache,
-                self.value_cache,
-                kv_seq_len,
-                self.layer_idx,
-                False,
-                True
-            )
+            # One KV page per request. The demo advances these requests in
+            # lockstep, so they share the same context length.
+            if bsz > self.key_cache.shape[1]:
+                raise ValueError("Batch size exceeds the number of KV pages")
+            if q_len > 1:
+                self.key_cache[self.layer_idx, :bsz, :q_len] = key_states
+                self.value_cache[self.layer_idx, :bsz, :q_len] = value_states
+                kv_seq_len = q_len
+            else:
+                position = step[0].item()
+                self.key_cache[self.layer_idx, :bsz, position] = key_states[:, 0]
+                self.value_cache[self.layer_idx, :bsz, position] = value_states[:, 0]
+                kv_seq_len = position + 1
+
+            q = query_states.permute(0, 2, 1, 3)
+            k = self.key_cache[self.layer_idx, :bsz, :kv_seq_len].permute(0, 2, 1, 3)
+            v = self.value_cache[self.layer_idx, :bsz, :kv_seq_len].permute(0, 2, 1, 3)
+            attn_output = nn.functional.scaled_dot_product_attention(
+                q, k, v, is_causal=q_len > 1, enable_gqa=True,
+            ).permute(0, 2, 1, 3)
 
         attn_output = attn_output.reshape(bsz, q_len, self.local_qkv_size)
 
@@ -485,7 +491,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         # decoder layers
         next_decoder_cache = None
-        self.kv_last_page_len.copy_(step + 1)
+        self.kv_last_page_len.copy_(step[:1] + 1)
 
         for decoder_layer in self.layers:
             layer_outputs = decoder_layer(

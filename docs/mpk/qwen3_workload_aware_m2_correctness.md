@@ -99,13 +99,14 @@ acceptance gate remains at least 20 matching positions among the first 30.
 
 ## Step 8 batch coverage
 
-The current normal attention path reads and writes only KV page 0, and the
-normal generation loop selects and saves only request 0. MPK `decode-only`
-resume also assumes one request. Therefore the B=1 results above cannot be
-extended to B=8 by setting `--max-num-batched-requests 8`. The normal CLI now
-rejects that setting explicitly. The next implementation step is per-request
-KV pages and token selection in normal execution, followed by batched MPK
-resume, correctness checks, and B=8 measurements.
+The normal path now has an experimental lockstep batch implementation: each
+request uses its own KV page, batched attention, and its own greedy token
+output. It requires one GPU, greedy decoding, `--ignore-eos`, and one KV page
+per request. The existing B=1 path is preserved. This code still needs B=2
+GPU validation before its performance can be interpreted. MPK `decode-only`
+resume still assumes one request, so a B=8 backend comparison cannot yet be
+run. After B=2 normal correctness, the next implementation step is batched
+MPK resume, followed by B=8 correctness and timing.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and

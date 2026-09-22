@@ -256,6 +256,8 @@ if __name__ == "__main__":
         default="Give me a short introduction to large language model.",
         help="Custom prompt text to generate from.",
     )
+    parser.add_argument("--batch-prompts-file", type=str, default=None,
+                        help="JSON array of equal-token-length prompts for batched normal execution")
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
@@ -274,8 +276,21 @@ if __name__ == "__main__":
             args.mpk_policy = args.mpk_policy or "always"
     # Keep the existing execution paths intact while migrating their CLI.
     args.use_mirage = args.backend == "mpk"
-    if args.backend == "normal" and args.max_num_batched_requests != 1:
-        parser.error("normal backend currently supports exactly one request; batched normal attention is not implemented")
+    if args.max_num_batched_requests < 1:
+        parser.error("--max-num-batched-requests must be positive")
+    if args.batch_prompts_file and (
+        args.backend != "normal" or args.max_num_batched_requests < 2
+    ):
+        parser.error("--batch-prompts-file requires batched normal execution")
+    if args.backend == "normal" and args.max_num_batched_requests > 1:
+        if (args.max_num_batched_requests > args.max_num_pages
+            or not args.ignore_eos or args.do_sample or args.spec_decode
+            or args.profiling or args.save_intermediates or args.save_prefill_kv):
+            parser.error("Batched normal currently requires one KV page per request, "
+                         "--ignore-eos, greedy decoding, and no profiling, "
+                         "speculative decoding, or diagnostic snapshots")
+        if args.max_seq_length > args.page_size:
+            parser.error("Batched normal currently requires each sequence to fit in one KV page")
     if args.phase_timing and args.mpk_policy == "always":
         parser.error("--phase-timing requires a separate prefill/decode boundary")
     if args.mpk_policy == "workload-aware":
@@ -340,6 +355,8 @@ if __name__ == "__main__":
     print(f"world_size({world_size}) rank({rank})")
     if args.mpk_policy in ("prefill-only", "decode-only") and world_size != 1:
         parser.error("Mixed backend policies currently require a single GPU")
+    if args.backend == "normal" and args.max_num_batched_requests > 1 and world_size != 1:
+        parser.error("Batched normal currently requires a single GPU")
     if args.save_intermediates and world_size != 1:
         parser.error("--save-intermediates currently requires a single GPU")
     if args.save_prefill_kv and world_size != 1:
@@ -380,7 +397,7 @@ if __name__ == "__main__":
         with torch.device("cuda"):
             tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    total_num_requests = 1 if not args.use_mirage else args.max_num_batched_requests
+    total_num_requests = args.max_num_batched_requests
     normal_hidden = {}
     if args.save_intermediates and (args.backend == "normal" or args.mpk_policy == "prefill-only"):
         def capture_normal_hidden(_module, _inputs, output):
@@ -409,20 +426,35 @@ if __name__ == "__main__":
                 """
     #question = "Can you please change x axis to start from 0"
     #prompt = code_text + "\n" + question
-    messages = [
-        {
-            "role": "system",
-            "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
-        },
-        {"role": "user", "content": prompt},
-    ]
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-    for r in range(total_num_requests):
+    if args.batch_prompts_file:
+        with open(args.batch_prompts_file) as f:
+            prompts = json.load(f)
+        if (not isinstance(prompts, list) or len(prompts) != total_num_requests
+            or any(not isinstance(item, str) for item in prompts)):
+            parser.error("--batch-prompts-file must contain one string per request")
+    else:
+        prompts = [prompt] * total_num_requests
+    texts = []
+    for request_prompt in prompts:
+        messages = [
+            {
+                "role": "system",
+                "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+            },
+            {"role": "user", "content": request_prompt},
+        ]
+        texts.append(tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        ))
+    encoded = tokenizer(texts)
+    if len({len(ids) for ids in encoded["input_ids"]}) != 1:
+        parser.error("Batched normal prompts must have equal input token lengths")
+    model_inputs = tokenizer(texts, return_tensors="pt").to(model.device)
+    if total_num_requests == 1:
         for i in range(model_inputs.input_ids.shape[-1]):
-            tokens[r, i] = model_inputs.input_ids[0, i]
+            tokens[0, i] = model_inputs.input_ids[0, i]
+    else:
+        tokens[:, :model_inputs.input_ids.shape[-1]] = model_inputs.input_ids
     prompt_lengths = torch.full((total_num_requests,), model_inputs.input_ids.shape[-1], dtype=torch.int, device="cuda")
     input_length = model_inputs.input_ids.shape[-1]
     execution_policy = make_policy(args.mpk_policy) if args.backend == "mpk" else None
@@ -1083,13 +1115,18 @@ if __name__ == "__main__":
                                              prompt_len, args.backend, args.mpk_policy)
             else:
                 logits = execute_decode_step(model, tokens, cur_pos, position_embeddings, step, stream)
-            next_token = select_normal_token(logits, args, model, cur_pos)
-            tokens[0, cur_pos] = next_token
+            if total_num_requests == 1:
+                next_token = select_normal_token(logits, args, model, cur_pos)
+                tokens[0, cur_pos] = next_token
+            else:
+                next_token = logits[:, -1, :model.config.vocab_size].argmax(dim=-1)
+                tokens[:, cur_pos] = next_token
             prev_pos = cur_pos
             if args.phase_timing:
                 phase_end.record()
                 phase_events.append((phase, phase_start, phase_end))
-            if next_token == model.config.eos_token_id:
+            if (total_num_requests == 1 and not args.ignore_eos
+                and next_token == model.config.eos_token_id):
                 break
             if args.mpk_policy != "prefill-only" and cur_pos == prompt_len + warmup:
                 torch.cuda.synchronize()
@@ -1119,8 +1156,11 @@ if __name__ == "__main__":
         tokens_generated = max(0, end_idx - prompt_len)
         per_tok_ms = run_time / max(prompt_len + tokens_generated, 1)
 
-        response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        print(response)
+        responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        for request_id, response in enumerate(responses):
+            if total_num_requests > 1:
+                print(f"Request {request_id}:")
+            print(response)
         print(
             "Prompt length {}, generate length {}, per-token latency {:.3f} ms".format(
                 prompt_len, tokens_generated, per_tok_ms
@@ -1139,6 +1179,12 @@ if __name__ == "__main__":
                 "generate_length": tokens_generated,
                 "mode": "mpk_prefill_normal_decode" if args.mpk_policy == "prefill-only" else "torch",
             }
+            if total_num_requests > 1:
+                out["batch_size"] = total_num_requests
+                out["token_ids_by_request"] = [
+                    tokens[r, prompt_len:slice_end].tolist()
+                    for r in range(total_num_requests)
+                ]
             if phase_timing_data is not None:
                 out["phase_timing"] = phase_timing_data
             with open(save_path, "w") as f:
