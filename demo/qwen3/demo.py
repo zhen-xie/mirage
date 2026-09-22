@@ -1222,6 +1222,9 @@ if __name__ == "__main__":
         else:
             hidden = mpk_hidden[0]
             output_logits = mpk_logits[0, :model.config.vocab_size]
+        candidate_ids = torch.topk(output_logits.float(), 8).indices
+        candidate_weights = model.lm_head.weight.index_select(0, candidate_ids)
+        fp32_candidate_logits = torch.mv(candidate_weights.float(), hidden.float())
         os.makedirs(os.path.dirname(os.path.abspath(args.save_intermediates)), exist_ok=True)
         torch.save({
             "backend": args.backend,
@@ -1234,5 +1237,7 @@ if __name__ == "__main__":
             "debug_load_prefill_kv": args.debug_load_prefill_kv,
             "logits": output_logits.detach().cpu(),
             "normalized_hidden_state": hidden.detach().cpu(),
+            "candidate_token_ids": candidate_ids.detach().cpu(),
+            "fp32_recomputed_candidate_logits": fp32_candidate_logits.detach().cpu(),
         }, args.save_intermediates)
         print(f"Saved intermediates to {args.save_intermediates}")

@@ -14,9 +14,11 @@ def tensor_metrics(reference, actual):
     if not torch.isfinite(reference).all() or not torch.isfinite(actual).all():
         raise ValueError("Non-finite values in intermediate tensors")
     difference = (reference - actual).abs()
-    cosine = torch.nn.functional.cosine_similarity(
-        reference.reshape(1, -1), actual.reshape(1, -1)
-    ).item()
+    reference64 = reference.double().flatten()
+    actual64 = actual.double().flatten()
+    cosine = (torch.dot(reference64, actual64) /
+              (torch.linalg.vector_norm(reference64) *
+               torch.linalg.vector_norm(actual64))).item()
     return {
         "max_absolute_error": difference.max().item(),
         "mean_absolute_error": difference.mean().item(),
@@ -54,6 +56,16 @@ def main():
         return [{"token_id": token.item(), "logit": value.item()}
                 for token, value in zip(indices, values)]
 
+    def fp32_candidates(probe):
+        if "fp32_recomputed_candidate_logits" not in probe:
+            return None
+        candidates = [
+            {"token_id": token.item(), "logit": score.item()}
+            for token, score in zip(probe["candidate_token_ids"],
+                                    probe["fp32_recomputed_candidate_logits"])
+        ]
+        return sorted(candidates, key=lambda item: item["logit"], reverse=True)
+
     report = {
         "mpk_policy": mpk["policy"],
         "prompt_length": normal["prompt_length"],
@@ -67,6 +79,8 @@ def main():
         "mpk_generated_token_ids": mpk["generated_token_ids"].tolist(),
         "normal_top_5": top_tokens(normal),
         "mpk_top_5": top_tokens(mpk),
+        "normal_fp32_candidates": fp32_candidates(normal),
+        "mpk_fp32_candidates": fp32_candidates(mpk),
         "logits": tensor_metrics(normal["logits"], mpk["logits"]),
         "normalized_hidden_state": tensor_metrics(
             normal["normalized_hidden_state"], mpk["normalized_hidden_state"]

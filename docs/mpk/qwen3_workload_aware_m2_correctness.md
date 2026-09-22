@@ -139,3 +139,13 @@ the first three layers to 0.049-0.095 in the last five. This pattern is
 consistent with differences accumulating across layers, but does not alone
 prove the KV values cause the decode-only token divergence. A controlled KV
 replacement probe is needed for that causal check.
+
+That controlled replacement has now run at generated token 20. A normal
+prefill followed by MPK decode originally selected token 11. Replacing only
+its populated KV cache with the saved MPK prefill KV before MPK decode made
+the generated tokens, logits, and normalized hidden state exactly equal to
+the continuous `always` run; it selected token 323. Together with the
+split-MPK equality check, this identifies the different prefill KV values
+as the cause of this particular mixed-path divergence. It does not imply the
+normal prefill KV values are invalid; both backends use BF16 arithmetic and
+their small numeric differences can flip an almost tied argmax.
