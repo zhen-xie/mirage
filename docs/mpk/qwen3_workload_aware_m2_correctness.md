@@ -130,3 +130,12 @@ printed a key cosine above 1 due to fp32 reduction error; that number is
 invalid. The script now uses fp64 reduction and reports relative RMSE and
 per-layer/position errors. These need to be recomputed from the saved KV
 snapshots before interpreting the distribution.
+
+Recomputation with fp64 reductions gave key cosine 0.999970 and relative
+RMSE 0.00773, and value cosine 0.999793 and relative RMSE 0.02032. Key
+mean absolute error rises from roughly 0.006-0.007 in the first three layers
+to 0.015-0.017 in the last five. Value error rises from 0.00005-0.00044 in
+the first three layers to 0.049-0.095 in the last five. This pattern is
+consistent with differences accumulating across layers, but does not alone
+prove the KV values cause the decode-only token divergence. A controlled KV
+replacement probe is needed for that causal check.

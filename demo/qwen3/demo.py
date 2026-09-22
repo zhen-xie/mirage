@@ -114,6 +114,24 @@ def save_prefill_kv_snapshot(path, model, tokens, prompt_len, backend, policy):
     print(f"Saved prefill KV to {path}")
 
 
+def load_prefill_kv_snapshot(path, model, tokens, prompt_len):
+    """Replace normal prefill KV with a matching MPK snapshot for diagnosis."""
+    snapshot = torch.load(path, map_location="cpu", weights_only=True)
+    if snapshot["policy"] != "prefill-only" or snapshot["prompt_length"] != prompt_len:
+        raise ValueError("Expected an MPK prefill-only KV snapshot of this length")
+    if not torch.equal(snapshot["prompt_token_ids"], tokens[0, :prompt_len].cpu()):
+        raise ValueError("KV snapshot prompt token IDs differ from this run")
+    key_cache, value_cache = model.model.kv_cache
+    for name, destination in (("key_cache", key_cache), ("value_cache", value_cache)):
+        source = snapshot[name]
+        target = destination[:, 0, :prompt_len]
+        if source.shape != target.shape or source.dtype != target.dtype:
+            raise ValueError(f"KV snapshot {name} shape or dtype differs")
+        target.copy_(source.to(target.device))
+    torch.cuda.synchronize()
+    print(f"Loaded MPK prefill KV from {path}")
+
+
 def select_normal_token(logits, args, model, cur_pos):
     next_token = logits.argmax(dim=-1)
     if args.do_sample:
@@ -231,6 +249,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--save-prefill-kv", type=str, default=None,
                         help="Save populated KV cache at the prefill boundary for diagnostics")
+    parser.add_argument("--debug-load-prefill-kv", type=str, default=None,
+                        help="Diagnostic: replace normal prefill KV with an MPK snapshot before decode")
     parser.add_argument("--prompt",
         type=str,
         default="Give me a short introduction to large language model.",
@@ -279,6 +299,8 @@ if __name__ == "__main__":
         or args.do_sample or args.spec_decode or args.profiling
     ):
         parser.error("--save-prefill-kv requires normal or prefill-only, greedy decoding, no speculative decoding, and no profiling")
+    if args.debug_load_prefill_kv and (args.backend != "mpk" or args.mpk_policy != "decode-only"):
+        parser.error("--debug-load-prefill-kv requires MPK decode-only")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -320,6 +342,8 @@ if __name__ == "__main__":
         parser.error("--save-intermediates currently requires a single GPU")
     if args.save_prefill_kv and world_size != 1:
         parser.error("--save-prefill-kv currently requires a single GPU")
+    if args.debug_load_prefill_kv and world_size != 1:
+        parser.error("--debug-load-prefill-kv currently requires a single GPU")
     if args.debug_split_mpk_prefill and world_size != 1:
         parser.error("--debug-split-mpk-prefill currently requires a single GPU")
     model_name = args.model
@@ -1034,6 +1058,8 @@ if __name__ == "__main__":
             normal_prefill_start.record()
         logits = execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream)
         tokens[0, prompt_len] = select_normal_token(logits, args, model, prompt_len)
+        if args.debug_load_prefill_kv:
+            load_prefill_kv_snapshot(args.debug_load_prefill_kv, model, tokens, prompt_len)
         if args.phase_timing:
             normal_prefill_end.record()
 
@@ -1205,6 +1231,7 @@ if __name__ == "__main__":
             "generated_token_ids": tokens[0, prompt_len:prompt_len + output_len].cpu(),
             "decode_step_index": output_len - 2,
             "debug_split_mpk_prefill": args.debug_split_mpk_prefill,
+            "debug_load_prefill_kv": args.debug_load_prefill_kv,
             "logits": output_logits.detach().cpu(),
             "normalized_hidden_state": hidden.detach().cpu(),
         }, args.save_intermediates)
