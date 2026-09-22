@@ -257,7 +257,7 @@ if __name__ == "__main__":
         help="Custom prompt text to generate from.",
     )
     parser.add_argument("--batch-prompts-file", type=str, default=None,
-                        help="JSON array of equal-token-length prompts for batched normal execution")
+                        help="JSON array of equal-token-length prompts for batched normal or decode-only execution")
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
@@ -279,9 +279,10 @@ if __name__ == "__main__":
     if args.max_num_batched_requests < 1:
         parser.error("--max-num-batched-requests must be positive")
     if args.batch_prompts_file and (
-        args.backend != "normal" or args.max_num_batched_requests < 2
+        args.max_num_batched_requests < 2
+        or (args.backend == "mpk" and args.mpk_policy != "decode-only")
     ):
-        parser.error("--batch-prompts-file requires batched normal execution")
+        parser.error("--batch-prompts-file requires batched normal or MPK decode-only execution")
     if args.backend == "normal" and args.max_num_batched_requests > 1:
         if (args.max_num_batched_requests > args.max_num_pages
             or not args.ignore_eos or args.do_sample or args.spec_decode
@@ -301,8 +302,18 @@ if __name__ == "__main__":
     ):
         parser.error("--debug-split-mpk-prefill requires MPK always, greedy decoding, no speculative decoding, and no profiling")
     if args.mpk_policy in ("prefill-only", "decode-only"):
-        if args.max_num_batched_requests != 1 or args.spec_decode or args.do_sample or args.profiling:
-            parser.error("Mixed backend policies currently require one request, greedy decoding, no speculative decoding, and no profiling")
+        if args.spec_decode or args.do_sample or args.profiling:
+            parser.error("Mixed backend policies require greedy decoding, no speculative decoding, and no profiling")
+    if args.mpk_policy == "prefill-only" and args.max_num_batched_requests != 1:
+        parser.error("MPK prefill-only currently requires one request")
+    if args.mpk_policy == "decode-only" and args.max_num_batched_requests > 1:
+        if (args.max_num_batched_requests > args.max_num_pages
+            or args.max_num_batched_requests > args.max_num_batched_tokens
+            or not args.ignore_eos or args.max_seq_length > args.page_size
+            or args.save_intermediates or args.save_prefill_kv
+            or args.debug_load_prefill_kv):
+            parser.error("Batched decode-only requires one KV page per request, "
+                         "enough batched-token slots, --ignore-eos, and no diagnostic snapshots")
     if args.save_intermediates and (
         args.backend == "mpk" and args.mpk_policy not in ("decode-only", "prefill-only", "always")
         or args.max_new_tokens is None
@@ -1091,7 +1102,10 @@ if __name__ == "__main__":
             normal_prefill_end = torch.cuda.Event(enable_timing=True)
             normal_prefill_start.record()
         logits = execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream)
-        tokens[0, prompt_len] = select_normal_token(logits, args, model, prompt_len)
+        if total_num_requests == 1:
+            tokens[0, prompt_len] = select_normal_token(logits, args, model, prompt_len)
+        else:
+            tokens[:, prompt_len] = logits[:, -1, :model.config.vocab_size].argmax(dim=-1)
         if args.debug_load_prefill_kv:
             load_prefill_kv_snapshot(args.debug_load_prefill_kv, model, tokens, prompt_len)
         if args.phase_timing:
@@ -1254,6 +1268,13 @@ if __name__ == "__main__":
                 "generate_length": tokens_generated,
                 "mode": "normal_prefill_mpk_decode" if args.mpk_policy == "decode-only" else "mpk",
             }
+            if total_num_requests > 1:
+                out["batch_size"] = total_num_requests
+                out["token_ids_by_request"] = [
+                    tokens[r, prompt_len:min(step[r].item() + 1,
+                                              prompt_len + MAX_SAVE_TOKENS)].tolist()
+                    for r in range(total_num_requests)
+                ]
             if phase_timing_data is not None:
                 out["phase_timing"] = phase_timing_data
             with open(save_path, "w") as f:

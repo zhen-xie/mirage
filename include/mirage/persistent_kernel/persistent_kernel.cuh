@@ -187,23 +187,32 @@ __global__ void init_kernel(RuntimeConfig config) {
 }
 
 #ifdef MODE_OFFLINE
-// Seed one request after its prompt was executed by the normal backend.
-// The normal Qwen3 path writes the shared KV cache into page zero.
+// Seed lockstep requests after normal prefill. The normal Qwen3 path writes
+// each request's KV cache into the page with the same request index.
 __global__ void resume_after_prefill_kernel(RuntimeConfig config) {
   if (blockIdx.x == 0 && threadIdx.x == 0) {
-    assert(MPK_MAX_NUM_BATCHED_REQUESTS == 1);
-    assert(config.total_num_requests == 1);
-    int prompt_len = config.prompt_length[0];
-    assert(prompt_len > 0 && prompt_len < MPK_PAGE_SIZE);
-    config.step[0] = prompt_len;
-    config.request_ids[0] = 0;
-    *config.next_request_id = 1;
-    config.qo_indptr_buffer[0] = 0;
-    config.qo_indptr_buffer[1] = 0;
-    config.paged_kv_indptr_buffer[0] = 0;
-    config.paged_kv_indptr_buffer[1] = 1;
-    config.paged_kv_indices_buffer[0] = 0;
-    *config.page_queue_head = 1;
+    int num_requests = config.total_num_requests;
+    assert(num_requests > 0 && num_requests <= MPK_MAX_NUM_BATCHED_REQUESTS);
+    assert(num_requests <= MPK_MAX_NUM_BATCHED_TOKENS);
+    assert(num_requests <= MPK_MAX_NUM_PAGES);
+    for (int request_id = 0; request_id < num_requests; request_id++) {
+      int prompt_len = config.prompt_length[request_id];
+      assert(prompt_len > 0 && prompt_len < MPK_PAGE_SIZE);
+      config.step[request_id] = prompt_len;
+      config.request_ids[request_id] = request_id;
+      config.qo_indptr_buffer[request_id] = 0;
+      config.paged_kv_indptr_buffer[request_id] = request_id;
+      config.paged_kv_indices_buffer[request_id] = request_id;
+    }
+    for (int slot = num_requests; slot < MPK_MAX_NUM_BATCHED_REQUESTS; slot++) {
+      config.request_ids[slot] = -1;
+    }
+    for (int slot = num_requests; slot <= MPK_MAX_NUM_BATCHED_REQUESTS; slot++) {
+      config.qo_indptr_buffer[slot] = 0;
+      config.paged_kv_indptr_buffer[slot] = num_requests;
+    }
+    *config.next_request_id = num_requests;
+    *config.page_queue_head = num_requests;
   }
 }
 #endif

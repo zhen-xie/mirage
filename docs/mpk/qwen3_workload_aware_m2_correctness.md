@@ -99,14 +99,21 @@ acceptance gate remains at least 20 matching positions among the first 30.
 
 ## Step 8 batch coverage
 
-The normal path now has an experimental lockstep batch implementation: each
-request uses its own KV page, batched attention, and its own greedy token
-output. It requires one GPU, greedy decoding, `--ignore-eos`, and one KV page
-per request. The existing B=1 path is preserved. This code still needs B=2
-GPU validation before its performance can be interpreted. MPK `decode-only`
-resume still assumes one request, so a B=8 backend comparison cannot yet be
-run. After B=2 normal correctness, the next implementation step is batched
-MPK resume, followed by B=8 correctness and timing.
+The normal path has a lockstep batch implementation: each request uses its
+own KV page, batched attention, and its own greedy token output. It requires
+one GPU, greedy decoding, `--ignore-eos`, and one KV page per request. On the
+H100 NVL, a B=2 run with two distinct 128-token prompts completed 128-token
+generation. Both requests matched their B=1 reference at 30/30 positions;
+the first 50 positions matched at 43/50 and 50/50. A separate B=1 rerun
+matched its existing diverse-prompt reference at 50/50. The B=2 path passes
+the agreed correctness gate for these two requests, though more prompts and
+batch sizes remain untested.
+
+MPK `decode-only` resume has now been extended to seed one prefilled KV page
+and one first generated token per request. This change has only local static
+checks so far; B=2 GPU correctness and timing must be validated before B=8
+comparisons. The default B=1 resume path remains covered by prior remote
+tests, and should be rerun after the CUDA change.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and
