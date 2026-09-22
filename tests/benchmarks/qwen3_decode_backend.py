@@ -39,10 +39,11 @@ def load_prompt(args):
         prompts = [path.read_text()]
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     for request_id, prompt in enumerate(prompts):
-        messages = [
-            {"role": "system", "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."},
-            {"role": "user", "content": prompt},
-        ]
+        messages = []
+        if not args.no_system_message:
+            messages.append({"role": "system", "content":
+                             "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."})
+        messages.append({"role": "user", "content": prompt})
         rendered = tokenizer.apply_chat_template(messages, tokenize=False,
                                                  add_generation_prompt=True)
         actual_length = len(tokenizer(rendered)["input_ids"])
@@ -61,14 +62,21 @@ def run_case(args, prompt, policy, index, warmup):
         "--prompt", prompt,
         "--max-seq-length", str(args.context_length + args.decode_steps + 1),
         "--max-new-tokens", str(args.decode_steps + 1),
-        "--ignore-eos", "--phase-timing", "--save-tokens", str(output),
+        "--ignore-eos", "--save-tokens", str(output),
         "--model", args.model,
     ]
+    if policy != "always-continuous":
+        command.append("--phase-timing")
+    if args.no_system_message:
+        command.append("--no-system-message")
     if policy != "normal":
-        command += ["--mpk-policy", policy]
+        command += ["--mpk-policy", "always" if policy == "always-continuous" else policy]
     if args.batch_size > 1:
         command += ["--max-num-batched-requests", str(args.batch_size),
                     "--batch-prompts-file", str(args.batch_prompts_file)]
+    command += ["--page-size", str(args.page_size),
+                "--max-num-pages", str(args.max_num_pages),
+                "--max-num-batched-tokens", str(args.max_num_batched_tokens)]
     with log.open("w") as log_file:
         try:
             completed = subprocess.run(command, cwd=ROOT, stdout=log_file,
@@ -88,6 +96,10 @@ def run_case(args, prompt, policy, index, warmup):
         requests = data.get("token_ids_by_request")
         if data.get("batch_size") != args.batch_size or not isinstance(requests, list) or len(requests) != args.batch_size:
             raise ValueError(f"Missing per-request tokens in {output}")
+    if policy == "always-continuous":
+        if data["mode"] != "mpk" or data["latency_ms_per_token"] <= 0:
+            raise ValueError(f"Missing continuous always timing in {output}")
+        return data
     timing = data["phase_timing"]
     if timing["prefill_ms"] <= 0 or timing["decode_ms"] <= 0:
         raise ValueError(f"Invalid phase timing in {output}")
@@ -129,14 +141,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--context-length", type=int, required=True)
+    parser.add_argument("--page-size", type=int, default=4096)
+    parser.add_argument("--max-num-pages", type=int)
+    parser.add_argument("--max-num-batched-tokens", type=int)
     parser.add_argument("--decode-steps", type=int, required=True,
                         help="Decode iterations after the first token from prefill")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--policies", nargs="+", choices=("always", "decode-only", "prefill-only"),
                         default=["decode-only"], help="MPK policies to compare with normal")
+    parser.add_argument("--include-continuous-always", action="store_true",
+                        help="Also run continuous MPK always and record its full kernel duration")
+    parser.add_argument("--allow-correctness-failures", action="store_true",
+                        help="Record first-30 mismatches without rejecting the timing sample")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
+    parser.add_argument("--no-system-message", action="store_true")
     parser.add_argument("--prompt-file", type=Path)
     parser.add_argument("--batch-prompts-file", type=Path,
                         help="JSON array of distinct, equal-length prompts for batch-size > 1")
@@ -145,18 +165,22 @@ def main():
     args = parser.parse_args()
     if len(set(args.policies)) != len(args.policies):
         parser.error("--policies must not contain duplicates")
-    if args.batch_size < 1 or args.batch_size > 8:
-        parser.error("batch-size must be in [1, 8] for this benchmark")
+    if args.batch_size < 1 or args.batch_size > 128:
+        parser.error("batch-size must be in [1, 128] for this benchmark")
+    args.max_num_pages = args.max_num_pages or max(16, args.batch_size)
+    args.max_num_batched_tokens = args.max_num_batched_tokens or max(8, args.batch_size)
+    if args.max_num_pages < args.batch_size or args.max_num_batched_tokens < args.batch_size:
+        parser.error("Page and batched-token capacities must cover every request")
     if args.batch_size > 1 and (args.batch_prompts_file is None or args.prompt_file is not None):
         parser.error("batch-size > 1 requires --batch-prompts-file and no --prompt-file")
     if args.batch_size == 1 and args.batch_prompts_file is not None:
         parser.error("--batch-prompts-file requires batch-size > 1")
-    if args.context_length < 1 or args.context_length >= 4096:
-        parser.error("Current decode-only resume requires context-length in [1, 4095]")
+    if args.context_length < 1 or args.context_length >= args.page_size:
+        parser.error("Context length must be positive and shorter than one KV page")
     if args.decode_steps < 1 or args.warmup < 0 or args.repeat < 1:
         parser.error("decode-steps and repeat must be positive; warmup must be nonnegative")
-    if args.context_length + args.decode_steps + 1 > 4096:
-        parser.error("Each batched sequence must fit in one 4096-token KV page")
+    if args.context_length + args.decode_steps + 1 > args.page_size:
+        parser.error("Each batched sequence must fit in one KV page")
     if args.batch_prompts_file is not None:
         args.batch_prompts_file = args.batch_prompts_file.resolve()
     args.output_dir = args.output_dir.resolve()
@@ -164,6 +188,10 @@ def main():
     prompt = load_prompt(args)
 
     policies = ["normal", *args.policies]
+    if args.include_continuous_always:
+        if "always" not in args.policies:
+            parser.error("--include-continuous-always requires --policies always")
+        policies.append("always-continuous")
     samples = {policy: [] for policy in policies}
     for index in range(args.warmup + args.repeat):
         warmup = index < args.warmup
@@ -175,7 +203,11 @@ def main():
                 samples[policy].append(data)
 
     match_counts = {}
-    for policy in args.policies:
+    compared_policies = [*args.policies]
+    if args.include_continuous_always:
+        compared_policies.append("always-continuous")
+    compared_tokens = min(30, args.decode_steps + 1)
+    for policy in compared_policies:
         token_match_counts = []
         for normal, mpk in zip(samples["normal"], samples[policy]):
             normal_requests = (normal["token_ids_by_request"] if args.batch_size > 1
@@ -184,11 +216,11 @@ def main():
                             else [mpk["token_ids"]])
             repeat_counts = []
             for request_id, (normal_tokens, mpk_tokens) in enumerate(zip(normal_requests, mpk_requests)):
-                if min(len(normal_tokens), len(mpk_tokens)) < 30:
-                    raise ValueError(f"Request {request_id} has fewer than 30 saved tokens")
-                matches = sum(a == b for a, b in zip(normal_tokens[:30], mpk_tokens[:30]))
+                if min(len(normal_tokens), len(mpk_tokens)) < compared_tokens:
+                    raise ValueError(f"Request {request_id} has fewer than {compared_tokens} saved tokens")
+                matches = sum(a == b for a, b in zip(normal_tokens[:compared_tokens], mpk_tokens[:compared_tokens]))
                 repeat_counts.append(matches)
-                if matches < 20:
+                if compared_tokens == 30 and matches < 20 and not args.allow_correctness_failures:
                     raise ValueError(f"Request {request_id}: normal and {policy} match only {matches}/30 positions")
             token_match_counts.append(repeat_counts)
         match_counts[policy] = token_match_counts
@@ -196,14 +228,24 @@ def main():
     summary = {
         "batch_size": args.batch_size,
         "context_length": args.context_length,
+        "page_size": args.page_size,
+        "max_num_pages": args.max_num_pages,
+        "max_num_batched_tokens": args.max_num_batched_tokens,
         "decode_steps": args.decode_steps,
         "warmup": args.warmup,
         "repeat": args.repeat,
-        "timing_scope": "CUDA events around decode only; separate cold demo process per sample",
+        "timing_scope": "CUDA events around each phase; continuous always uses one full-kernel CUDA duration; separate cold demo process per sample",
         "warmup_note": "Warmup runs are discarded processes; they do not warm subsequent processes",
         "per_step_note": "MPK persistent kernel exposes only whole-decode timing; its per-step percentiles are null",
         "always_timing_mode": "two MPK launches with a prefill boundary; continuous always may generate different tokens",
+        "continuous_always_note": "Continuous always has one kernel duration; prefill/decode timing is unavailable",
         "first_30_token_matches_by_policy": match_counts,
+        "compared_token_positions": compared_tokens,
+        "first_30_gate_passed_by_policy": {
+            policy: (all(min(counts) >= 20 for counts in repeats)
+                     if compared_tokens == 30 else None)
+            for policy, repeats in match_counts.items()
+        },
         "token_match_gate": "At least 20 of the first 30 positions match when at least 30 tokens are saved",
     }
     if args.policies == ["decode-only"]:
@@ -217,6 +259,20 @@ def main():
         summary[f"mpk_{policy.replace('-', '_')}"] = summarize(
             samples[policy], "mpk" if policy != "prefill-only" else "normal",
             args.decode_steps, args.batch_size)
+    if args.include_continuous_always:
+        totals = [sample["latency_ms_per_token"] *
+                  (sample["prompt_length"] + sample["generate_length"])
+                  for sample in samples["always-continuous"]]
+        mean_total = statistics.mean(totals)
+        summary["mpk_always_continuous"] = {
+            "backend": "mpk",
+            "repeat_total_ms": totals,
+            "mean_total_ms": mean_total,
+            "generated_tokens_per_second": (
+                1000 * (args.decode_steps + 1) * args.batch_size / mean_total),
+            "relative_total_range": ((max(totals) - min(totals)) / mean_total
+                                     if len(totals) > 1 else None),
+        }
     destination = args.output_dir / "summary.json"
     destination.write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
@@ -224,8 +280,9 @@ def main():
         print("WARNING: fewer than 3 repeats; stability is not established")
     if any(summary[name]["relative_total_range"] is not None
            and summary[name]["relative_total_range"] > 0.1
-           for name in ("normal", *(f"mpk_{policy.replace('-', '_')}" for policy in args.policies))):
-        print("WARNING: decode timing range exceeds 10%; investigate benchmark stability")
+           for name in ("normal", *(f"mpk_{policy.replace('-', '_')}" for policy in args.policies),
+                        *(("mpk_always_continuous",) if args.include_continuous_always else ()))):
+        print("WARNING: timing range exceeds 10%; investigate benchmark stability")
     print(f"Wrote {destination}")
 
 

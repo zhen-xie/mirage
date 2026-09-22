@@ -137,7 +137,112 @@ normal were 24/30, 22/30, and 22/30, respectively. Split and continuous
 request 5. Therefore split timing characterizes a two-launch MPK policy,
 not an exactly output-equivalent continuous `always` run. The smoke test
 reported split `always` prefill/decode at 949.892/795.216 ms and
-`prefill-only` at 906.431/2395.238 ms. Repeated timing is still pending.
+`prefill-only` at 906.431/2395.238 ms.
+
+The B=8, context=128, 127-decode-step benchmark then completed three cold
+processes per mode with `--warmup 0`. Means in milliseconds were:
+
+| Mode | Prefill | Decode | Prefill + decode | Aggregate decode tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| normal | 388.316 | 2044.670 | 2432.986 | 496.90 |
+| split `always` | 902.175 | 795.113 | 1697.288 | 1277.81 |
+| `decode-only` | 365.486 | 790.704 | 1156.190 | 1284.93 |
+| `prefill-only` | 901.464 | 2387.098 | 3288.562 | 425.62 |
+
+The decode latency range divided by its mean was 1.47%, 0.04%, 1.75%, and
+1.63%, respectively. Every repeat had the same first-30 positional match
+counts against normal: split `always` and `prefill-only` had minimum 22/30,
+and `decode-only` had minimum 20/30. These CUDA event numbers exclude model
+load and compilation, and the split `always` numbers must not be presented
+as continuous `always` timing.
+
+A B=8, context=1024, 127-decode-step smoke run used eight distinct seed
+prompts extended to exactly 1024 input tokens. All eight requests matched
+normal at 30/30 first-token positions for each MPK policy. The single-run
+prefill/decode CUDA event times in milliseconds were normal 663.929/2050.613,
+split `always` 7627.084/909.912, `decode-only` 641.646/925.826, and
+`prefill-only` 7695.472/2393.241. MPK prefill is much slower at this
+configuration with the current eight-token batch capacity; a three-repeat
+measurement is needed before treating the gap as stable. These results do
+not include model load or compilation.
+
+The B=8, context=1024 run was repeated three times with the same 127 decode
+iterations and `--warmup 0`. Mean CUDA event times in milliseconds were:
+
+| Mode | Prefill | Decode | Prefill + decode | Aggregate decode tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| normal | 659.384 | 2050.707 | 2710.091 | 495.44 |
+| split `always` | 7674.628 | 911.028 | 8585.655 | 1115.22 |
+| `decode-only` | 641.577 | 923.176 | 1564.753 | 1100.55 |
+| `prefill-only` | 7728.882 | 2375.681 | 10104.563 | 427.67 |
+
+Decode range/mean was 2.17%, 0.20%, 0.25%, and 1.19%, respectively.
+Each policy matched normal at all first 30 positions for all eight requests
+in every repeat. The normal/decode-only decode mean ratio was 2.22; the
+prefill-plus-decode ratio was 1.73. MPK prefill cost remains about 7.7 s
+under the current eight-token batch-capacity setting. These runs generated
+128 tokens, with the first token produced during prefill; thus they measured
+127 decode iterations. The Step 8 acceptance case calls for 128 decode
+iterations.
+
+The exact Step 8 B=8, context=1024, 128-decode-iteration case then ran three
+cold processes per mode. Mean CUDA event times in milliseconds were:
+
+| Mode | Prefill | Decode | Prefill + decode | Aggregate decode tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| normal | 663.180 | 2079.036 | 2742.216 | 492.54 |
+| split `always` | 7677.418 | 917.935 | 8595.353 | 1115.55 |
+| `decode-only` | 643.284 | 919.410 | 1562.695 | 1113.76 |
+| `prefill-only` | 7687.961 | 2378.708 | 10066.669 | 430.49 |
+
+The normal/decode-only decode latency ratio was 2.261. Decode range/mean
+was 0.68%, 0.16%, 0.72%, and 0.66%, respectively. All eight requests
+matched normal at 30/30 positions under each MPK policy in all three
+repeats. This meets the Step 8 B=8, context=1024, 128-step correctness and
+three-repeat stability check. It remains a fresh-process CUDA event
+measurement with `--warmup 0`; no same-process steady-state warmup was
+performed. Split `always` timing is a two-launch diagnostic and need not
+equal the continuous `always` path.
+
+For the first Step 9 batch pilot at context=1024 and 128 decode iterations,
+three cold processes per backend gave B=2 normal/`decode-only` mean decode
+latencies of 2062.421/905.803 ms (2.277 ratio), and B=4 means of
+2062.725/916.283 ms (2.251 ratio). Every request matched normal at 30/30
+first positions in each repeat. Alongside the B=8 result, the three tested
+batch sizes all favor MPK decode under this method. A context sweep and
+higher batch sizes remain unmeasured.
+
+For a resumable Step 9 pilot, `tests/benchmarks/qwen3_decode_sweep.py`
+generates equal-length prompts from eight distinct seeds and measures all
+four execution policies for each case: normal, `always`, `decode-only`, and
+`prefill-only`. It records `always` twice: split MPK launches for phase
+timing and one continuous MPK launch for its actual total duration and
+output. `raw_results.csv` has one row per timing mode and case, including
+prefill, decode, phase-sum timing, per-repeat values, variability, positional
+token matches, speedup versus normal, and environment metadata. Each case
+keeps its log and complete JSON summary. The sweep now enumerates the requested
+three-dimensional grid B={1,2,4,8,16,32,64,128},
+S_IN={16,32,64,128,256,512,1024}, and
+S_OUT={16,32,64,128,256,512,1024}: 392 configurations and five timing
+rows per configuration. S_OUT counts all generated tokens, including the
+first token produced during prefill, so decode iterations equal S_OUT−1.
+The sweep uses the user-only Qwen3 chat template to make S_IN=16 feasible;
+earlier baselines with a system message are separate experiments. It selects
+one power-of-two KV page per
+request that fits the prompt and decode output, passes the corresponding
+page/request/token capacities to the demo, and records memory-skipped or
+failed cells explicitly. The sweep also retains timing for a policy that
+misses the agreed 20/30 correctness gate and marks its row
+`correctness_failed`, so the grid does not silently lose that measurement.
+For S_OUT=16, the sweep compares all 16 saved positions and reports that
+the 20/30 gate is inapplicable.
+B>8 and contexts above 2048 remain experimental
+until remote GPU validation; a CSV row for such a cell is not evidence that
+the kernel supports it. The CSV is not an advantage map until sufficient
+cells complete with stable timing and correctness.
+The `--cases B:S_IN:S_OUT` option selects a few edge cases for GPU validation
+before the full grid. The three axes can also be set through `B_VALUES`,
+`S_IN_VALUES`, and `S_OUT_VALUES` environment variables.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and

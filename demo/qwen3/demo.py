@@ -258,6 +258,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--batch-prompts-file", type=str, default=None,
                         help="JSON array of equal-token-length prompts for batched execution")
+    parser.add_argument("--no-system-message", action="store_true",
+                        help="Use a user-only chat template for short input-length sweeps")
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
@@ -442,13 +444,13 @@ if __name__ == "__main__":
         prompts = [prompt] * total_num_requests
     texts = []
     for request_prompt in prompts:
-        messages = [
-            {
+        messages = []
+        if not args.no_system_message:
+            messages.append({
                 "role": "system",
                 "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
-            },
-            {"role": "user", "content": request_prompt},
-        ]
+            })
+        messages.append({"role": "user", "content": request_prompt})
         texts.append(tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         ))
