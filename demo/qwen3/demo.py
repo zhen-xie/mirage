@@ -207,6 +207,10 @@ if __name__ == "__main__":
             "If path omitted, saves to outputs/qwen3/{torch_output.json|mpk_output.json}."
         ),
     )
+    parser.add_argument(
+        "--save-intermediates", type=str, default=None,
+        help="Save final decode logits and normalized hidden state for a two-token correctness probe",
+    )
     parser.add_argument("--prompt",
         type=str,
         default="Give me a short introduction to large language model.",
@@ -237,6 +241,13 @@ if __name__ == "__main__":
     if args.mpk_policy in ("prefill-only", "decode-only"):
         if args.max_num_batched_requests != 1 or args.spec_decode or args.do_sample or args.profiling:
             parser.error("Mixed backend policies currently require one request, greedy decoding, no speculative decoding, and no profiling")
+    if args.save_intermediates and (
+        args.backend == "mpk" and args.mpk_policy != "decode-only"
+        or args.max_new_tokens != 2
+        or not args.ignore_eos
+        or args.do_sample
+    ):
+        parser.error("--save-intermediates requires normal or decode-only, two output tokens, ignore-eos, and greedy decoding")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -274,6 +285,8 @@ if __name__ == "__main__":
     print(f"world_size({world_size}) rank({rank})")
     if args.mpk_policy in ("prefill-only", "decode-only") and world_size != 1:
         parser.error("Mixed backend policies currently require a single GPU")
+    if args.save_intermediates and world_size != 1:
+        parser.error("--save-intermediates currently requires a single GPU")
     model_name = args.model
     torch.set_default_dtype(torch.bfloat16)
 
@@ -307,6 +320,11 @@ if __name__ == "__main__":
             tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     total_num_requests = 1 if not args.use_mirage else args.max_num_batched_requests
+    normal_hidden = {}
+    if args.save_intermediates and args.backend == "normal":
+        def capture_normal_hidden(_module, _inputs, output):
+            normal_hidden["last"] = output[:, -1, :].detach()
+        model.model.norm.register_forward_hook(capture_normal_hidden)
     # get all model weight tensors
     tokens = torch.full((total_num_requests, args.max_seq_length), 0, dtype=torch.long, device="cuda")
 
@@ -471,12 +489,17 @@ if __name__ == "__main__":
             name="embed_out",
             io_category="cuda_tensor",
         )
-        rmsnorm_out = mpk.new_tensor(
-            dims=(args.max_num_batched_tokens, hidden_size),
-            dtype=mi.bfloat16,
-            name="rmsnorm_out",
-            io_category="cuda_tensor",
-        )
+        if args.save_intermediates:
+            mpk_hidden = torch.empty((args.max_num_batched_tokens, hidden_size),
+                                     dtype=torch.bfloat16, device="cuda")
+            rmsnorm_out = mpk.attach_input(torch_tensor=mpk_hidden, name="rmsnorm_out")
+        else:
+            rmsnorm_out = mpk.new_tensor(
+                dims=(args.max_num_batched_tokens, hidden_size),
+                dtype=mi.bfloat16,
+                name="rmsnorm_out",
+                io_category="cuda_tensor",
+            )
         attn_in = mpk.new_tensor(
             dims=(args.max_num_batched_tokens, fused_outdim_1 // world_size), # [6, 6144]
             dtype=mi.bfloat16,
@@ -545,12 +568,17 @@ if __name__ == "__main__":
             name="mlp_final",
             io_category="nvshmem_tensor" if world_size > 1 else "cuda_tensor",
         )
-        argmax_in = mpk.new_tensor(
-            dims=(args.max_num_batched_tokens, vocab_size),
-            dtype=mi.bfloat16,
-            name="argmax_in",
-            io_category="cuda_tensor",
-        )
+        if args.save_intermediates:
+            mpk_logits = torch.empty((args.max_num_batched_tokens, vocab_size),
+                                     dtype=torch.bfloat16, device="cuda")
+            argmax_in = mpk.attach_input(torch_tensor=mpk_logits, name="argmax_in")
+        else:
+            argmax_in = mpk.new_tensor(
+                dims=(args.max_num_batched_tokens, vocab_size),
+                dtype=mi.bfloat16,
+                name="argmax_in",
+                io_category="cuda_tensor",
+            )
         argmax_part_value = mpk.new_tensor(
             dims=(args.max_num_batched_tokens, mpk.num_workers),
             dtype=mi.bfloat16,
@@ -1109,3 +1137,22 @@ if __name__ == "__main__":
 
     if world_size > 1:
         dist.destroy_process_group()
+    if args.save_intermediates:
+        prompt_len = prompt_lengths[0].item()
+        if args.backend == "normal":
+            hidden = normal_hidden["last"][0]
+            output_logits = logits[0, -1, :model.config.vocab_size]
+        else:
+            hidden = mpk_hidden[0]
+            output_logits = mpk_logits[0, :model.config.vocab_size]
+        os.makedirs(os.path.dirname(os.path.abspath(args.save_intermediates)), exist_ok=True)
+        torch.save({
+            "backend": args.backend,
+            "policy": args.mpk_policy,
+            "prompt_length": prompt_len,
+            "prefix_token_ids": tokens[0, :prompt_len + 1].cpu(),
+            "generated_token_ids": tokens[0, prompt_len:prompt_len + 2].cpu(),
+            "logits": output_logits.detach().cpu(),
+            "normalized_hidden_state": hidden.detach().cpu(),
+        }, args.save_intermediates)
+        print(f"Saved intermediates to {args.save_intermediates}")
