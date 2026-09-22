@@ -97,3 +97,13 @@ ranked token 323 at 31.625 and token 11 at 31.5, preserving the normal
 ordering. Thus the decode-only mismatch is specific to the mixed path in
 this case. More evidence is needed to separate prefill KV differences from
 resume-state effects.
+
+At the first decode step for this prompt, all tested modes generated token
+198. The top-logit gap from normal to the runner-up was 12.0, so these
+arithmetic differences did not affect token selection there. Relative to
+normal, `always` logits had mean absolute error 0.08029 and cosine 0.999610;
+`decode-only` had mean absolute error 0.04999 and cosine 0.999845. The
+corresponding normalized hidden-state mean absolute errors were 0.04453 and
+0.02921. Thus differences are present from the first decode step, but the
+decode-only path is closer to normal on these global metrics at that step.
+The `prefill-only` combination has not yet been measured numerically.

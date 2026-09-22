@@ -242,13 +242,13 @@ if __name__ == "__main__":
         if args.max_num_batched_requests != 1 or args.spec_decode or args.do_sample or args.profiling:
             parser.error("Mixed backend policies currently require one request, greedy decoding, no speculative decoding, and no profiling")
     if args.save_intermediates and (
-        args.backend == "mpk" and args.mpk_policy not in ("decode-only", "always")
+        args.backend == "mpk" and args.mpk_policy not in ("decode-only", "prefill-only", "always")
         or args.max_new_tokens is None
         or args.max_new_tokens < 2
         or not args.ignore_eos
         or args.do_sample
     ):
-        parser.error("--save-intermediates requires normal, always, or decode-only, at least two output tokens, ignore-eos, and greedy decoding")
+        parser.error("--save-intermediates requires a static policy, at least two output tokens, ignore-eos, and greedy decoding")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -322,7 +322,7 @@ if __name__ == "__main__":
 
     total_num_requests = 1 if not args.use_mirage else args.max_num_batched_requests
     normal_hidden = {}
-    if args.save_intermediates and args.backend == "normal":
+    if args.save_intermediates and (args.backend == "normal" or args.mpk_policy == "prefill-only"):
         def capture_normal_hidden(_module, _inputs, output):
             normal_hidden["last"] = output[:, -1, :].detach()
         model.model.norm.register_forward_hook(capture_normal_hidden)
@@ -1140,7 +1140,7 @@ if __name__ == "__main__":
         dist.destroy_process_group()
     if args.save_intermediates:
         prompt_len = prompt_lengths[0].item()
-        if args.backend == "normal":
+        if args.backend == "normal" or args.mpk_policy == "prefill-only":
             hidden = normal_hidden["last"][0]
             output_logits = logits[0, -1, :model.config.vocab_size]
         else:

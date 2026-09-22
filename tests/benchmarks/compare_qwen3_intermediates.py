@@ -32,8 +32,8 @@ def main():
 
     normal = torch.load(args.normal, map_location="cpu", weights_only=True)
     mpk = torch.load(args.mpk_probe, map_location="cpu", weights_only=True)
-    if normal["backend"] != "normal" or mpk["policy"] not in ("decode-only", "always"):
-        raise ValueError("Expected normal and MPK always/decode-only probes")
+    if normal["backend"] != "normal" or mpk["policy"] not in ("decode-only", "prefill-only", "always"):
+        raise ValueError("Expected normal and a static MPK-policy probe")
     if normal["prompt_length"] != mpk["prompt_length"]:
         raise ValueError("Prompt lengths differ")
     if not torch.equal(normal["prefix_token_ids"], mpk["prefix_token_ids"]):
