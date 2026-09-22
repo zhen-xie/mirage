@@ -256,6 +256,15 @@ The 32+32 case passed; two B=8 cases had policies with only 4/30 positional
 matches on at least one request. The sweep accepts `--min-page-size 4096`
 to compare the same prompts against the formerly tested page size before
 attributing those divergences to a particular backend.
+The 64-page 16+16 rerun completed for all policies and matched all 16
+generated positions. A 4096-page control of the B=8 cases retained the
+4/30 minimum, so a smaller KV page is not the cause of those mismatches.
+For B=8, S_IN=128, S_OUT=128, request 5 first diverged at generated token
+index 4 for all three MPK policies; requests 1, 2, and 3 also diverged in
+one or more policies. For B=8, S_IN=1024, S_OUT=1024, only request 6 in
+prefill-only diverged early (index 4). The next check replays those prompts
+as B=1 to distinguish batch effects from backend arithmetic on the same
+prompt.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and
