@@ -355,7 +355,15 @@ def main():
     kv_budget_bytes = gpu_total_bytes - args.reserve_gib * 2**30
     if environment_path.is_file():
         if json.loads(environment_path.read_text()) != environment:
-            raise ValueError(f"Environment changed since previous sweep: {environment_path}")
+            completed_summaries = list(args.output_dir.glob("b*_in*_out*/summary.json"))
+            if completed_summaries:
+                raise ValueError(
+                    f"Environment changed after successful cases were recorded in "
+                    f"{args.output_dir}; start a new output directory"
+                )
+            environment_path.write_text(json.dumps(environment, indent=2) + "\n")
+            print("Updated environment metadata; no successful cases exist in this directory",
+                  flush=True)
     else:
         environment_path.write_text(json.dumps(environment, indent=2) + "\n")
     rows = []
