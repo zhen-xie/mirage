@@ -9,8 +9,12 @@ import csv
 import hashlib
 import json
 import os
+import queue
+import re
 import subprocess
 import sys
+import threading
+import time
 from importlib import metadata
 from pathlib import Path
 
@@ -36,7 +40,8 @@ FIELDS = (
     "minimum_first30_matches",
     "compared_token_positions", "correctness_gate_applicable",
     "first30_matches_by_request_per_repeat", "decode_speedup_vs_normal",
-    "phase_sum_speedup_vs_normal", "summary_path",
+    "phase_sum_speedup_vs_normal", "continuous_total_speedup_vs_normal",
+    "summary_path",
 )
 POLICIES = ("normal", "always", "always-continuous", "decode-only", "prefill-only")
 BACKENDS = {
@@ -56,6 +61,104 @@ DEFAULT_SEEDS = (
     "Describe a database consistency problem.",
     "Analyze an energy demand forecast.",
 )
+
+
+def format_duration(seconds):
+    if seconds is None:
+        return "--"
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+class SweepProgress:
+    def __init__(self, total, path):
+        self.total = total
+        self.path = path
+        self.completed = 0
+        self.started = time.monotonic()
+        self.run_durations = []
+        self.show("Starting sweep")
+
+    def show(self, status):
+        elapsed = time.monotonic() - self.started
+        remaining = self.total - self.completed
+        mean_duration = (sum(self.run_durations) / len(self.run_durations)
+                         if self.run_durations else None)
+        eta = remaining * mean_duration if mean_duration is not None else None
+        width = 24
+        filled = width * self.completed // self.total
+        bar = "#" * filled + "-" * (width - filled)
+        print(f"[{bar}] {self.completed}/{self.total} "
+              f"({100 * self.completed / self.total:.1f}%) "
+              f"elapsed={format_duration(elapsed)} ETA~{format_duration(eta)} "
+              f"| {status}", flush=True)
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps({
+            "completed_cases": self.completed,
+            "total_cases": self.total,
+            "elapsed_seconds": round(elapsed, 1),
+            "estimated_remaining_seconds": round(eta, 1) if eta is not None else None,
+            "status": status,
+        }, indent=2) + "\n")
+        temporary.replace(self.path)
+
+    def finish_case(self, label, outcome, duration=None):
+        if duration is not None:
+            self.run_durations.append(duration)
+        self.completed += 1
+        self.show(f"{label}: {outcome}")
+
+
+def run_benchmark(command, log_path, progress, case_label):
+    """Save the child log while reporting policy starts and idle heartbeats."""
+    with log_path.open("w") as log_file:
+        process = subprocess.Popen(
+            command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+        events = queue.Queue()
+
+        def read_output():
+            try:
+                for line in process.stdout:
+                    events.put(line)
+            finally:
+                events.put(None)
+
+        threading.Thread(target=read_output, daemon=True).start()
+        stage = "starting benchmark"
+        stage_started = time.monotonic()
+        try:
+            while True:
+                try:
+                    line = events.get(timeout=30)
+                except queue.Empty:
+                    progress.show(f"{case_label}: {stage} "
+                                  f"({format_duration(time.monotonic() - stage_started)})")
+                    continue
+                if line is None:
+                    break
+                log_file.write(line)
+                log_file.flush()
+                match = re.match(
+                    r"^(normal|always|always-continuous|decode-only|prefill-only) "
+                    r"(warmup|repeat) \d+/\d+", line,
+                )
+                if match:
+                    stage = line.strip()
+                    stage_started = time.monotonic()
+                    progress.show(f"{case_label}: {stage}")
+        except KeyboardInterrupt:
+            process.terminate()
+            process.wait()
+            raise
+        return process.wait()
 
 
 def prompt_length(tokenizer, prompt):
@@ -243,6 +346,9 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             "phase_sum_speedup_vs_normal": (
                 None if continuous else normal["mean_prefill_plus_decode_ms"] /
                 item["mean_prefill_plus_decode_ms"]),
+            "continuous_total_speedup_vs_normal": (
+                normal["mean_prefill_plus_decode_ms"] / item["mean_total_ms"]
+                if continuous else None),
             "summary_path": str(summary_path),
         })
     return rows
@@ -372,6 +478,9 @@ def main():
         environment_path.write_text(json.dumps(environment, indent=2) + "\n")
     rows = []
     csv_path = args.output_dir / "raw_results.csv"
+    total_cases = (len(selected_cases) if selected_cases is not None else
+                   len(args.batch_sizes) * len(args.s_in_values) * len(args.s_out_values))
+    progress = SweepProgress(total_cases, args.output_dir / "progress.json")
 
     for context_length in args.s_in_values:
         for s_out in args.s_out_values:
@@ -399,6 +508,7 @@ def main():
                     continue
                 estimated_kv_gib = kv_bytes_for(model_config, batch_size, page_size) / 2**30
                 case_dir = args.output_dir / f"b{batch_size}_in{context_length}_out{s_out}"
+                case_label = f"B={batch_size} S_IN={context_length} S_OUT={s_out}"
                 case_dir.mkdir(parents=True, exist_ok=True)
                 if batch_size not in feasible_batches:
                     reason = (f"Estimated KV cache {estimated_kv_gib:.2f} GiB exceeds "
@@ -411,6 +521,7 @@ def main():
                     write_csv(csv_path, rows)
                     print(f"Skipping B={batch_size}, S_IN={context_length}, S_OUT={s_out}: {reason}",
                           flush=True)
+                    progress.finish_case(case_label, "skipped_memory")
                     continue
                 if prompt_error is not None:
                     case_rows = unavailable_rows(batch_size, context_length, s_out, args,
@@ -421,6 +532,7 @@ def main():
                     print(f"Prompt preparation failed for B={batch_size}, "
                           f"S_IN={context_length}, S_OUT={s_out}: {prompt_error}",
                           flush=True)
+                    progress.finish_case(case_label, "failed_prompt")
                     continue
                 prompt_args = []
                 if batch_size == 1:
@@ -434,6 +546,7 @@ def main():
                     prompt_args = ["--batch-prompts-file", str(prompt_path)]
 
                 summary_path = case_dir / "summary.json"
+                case_duration = None
                 prompt_sha256 = hashlib.sha256(
                     json.dumps(prompts[:batch_size], ensure_ascii=False).encode("utf-8")
                 ).hexdigest()
@@ -483,13 +596,13 @@ def main():
                         *prompt_args,
                     ]
                     log_path = case_dir / "benchmark.log"
-                    print(f"Running B={batch_size}, S_IN={context_length}, S_OUT={s_out}", flush=True)
-                    with log_path.open("w") as log_file:
-                        completed = subprocess.run(command, cwd=ROOT, stdout=log_file,
-                                                   stderr=subprocess.STDOUT, check=False)
-                    if completed.returncode:
+                    progress.show(f"{case_label}: starting")
+                    case_started = time.monotonic()
+                    returncode = run_benchmark(command, log_path, progress, case_label)
+                    case_duration = time.monotonic() - case_started
+                    if returncode:
                         tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-80:])
-                        reason = f"Benchmark exited {completed.returncode}; see {log_path}"
+                        reason = f"Benchmark exited {returncode}; see {log_path}"
                         case_rows = unavailable_rows(batch_size, context_length, s_out, args,
                                                      environment, page_size,
                                                      estimated_kv_gib, gpu_total_gib,
@@ -498,6 +611,7 @@ def main():
                         write_csv(csv_path, rows)
                         print(f"Case B={batch_size}, S_IN={context_length}, S_OUT={s_out} failed:\n{tail}",
                               flush=True)
+                        progress.finish_case(case_label, "failed", case_duration)
                         continue
                 case_rows = load_rows(summary_path, batch_size, context_length, s_out, args,
                                       environment, prompt_sha256, page_size,
@@ -516,6 +630,10 @@ def main():
                               f"phase-sum speedup={row['phase_sum_speedup_vs_normal']:.3f}, "
                               f"minimum first-30 matches={row['minimum_first30_matches']}",
                               flush=True)
+                outcome = ("correctness_failed" if any(
+                    row["status"] == "correctness_failed" for row in case_rows
+                ) else "completed")
+                progress.finish_case(case_label, outcome, case_duration)
 
     case_statuses = {}
     for row in rows:

@@ -219,7 +219,8 @@ four execution policies for each case: normal, `always`, `decode-only`, and
 timing and one continuous MPK launch for its actual total duration and
 output. `raw_results.csv` has one row per timing mode and case, including
 prefill, decode, phase-sum timing, per-repeat values, variability, positional
-token matches, speedup versus normal, and environment metadata. Each case
+token matches, speedup versus normal (including continuous always total
+speedup), and environment metadata. Each case
 keeps its log and complete JSON summary. The sweep now enumerates the requested
 three-dimensional grid B={1,2,4,8,16,32,64,128},
 S_IN={16,32,64,128,256,512,1024}, and
@@ -243,6 +244,11 @@ cells complete with stable timing and correctness.
 The `--cases B:S_IN:S_OUT` option selects a few edge cases for GPU validation
 before the full grid. The three axes can also be set through `B_VALUES`,
 `S_IN_VALUES`, and `S_OUT_VALUES` environment variables.
+The sweep prints a 392-case progress bar with elapsed time, an approximate
+remaining time after the first measured case, the active policy/repeat, and
+a 30-second heartbeat during long samples. It also writes the latest state
+to `progress.json` beside `raw_results.csv`; rerunning an unchanged sweep
+still reuses completed case summaries.
 The first 3D smoke run failed all four cases during model construction:
 `Qwen3Attention` asserted a fixed KV cache shape with 16 pages of 4096
 tokens, while the sweep allocated per-case page counts and sizes. That
@@ -287,6 +293,21 @@ selected by MPK. The Ampere/Hopper and Blackwell argmax reductions now
 choose the lowest vocabulary index when scores tie, matching PyTorch.
 GPU validation is still needed; this change does not remove the separate
 normal-versus-MPK logit differences in always or prefill-only.
+The H100 rerun of the index-4 decode-only probes validated the tie change.
+For both the 128- and 1024-token prompts, saved decode-only BF16 logits
+tied IDs 279 and 773 exactly, and MPK selected 279, matching the normal
+generated token and `torch.argmax`. The probe comparison now passes for
+both cases. Full-length correctness across all policies still needs a new
+run, since always and prefill-only retain separate arithmetic differences.
+The B=8 full-output rerun after the argmax change produced policy-specific
+results. At S_IN=S_OUT=128, all four MPK timing paths had at least one
+request below the 20/30 positional gate; request 5 still had 4/30 matches.
+At S_IN=S_OUT=1024, split always and decode-only matched all eight requests
+at 30/30, while continuous always and prefill-only had request 6 at 4/30.
+This confirms the tie fix, but also shows that split always cannot stand in
+for continuous always in correctness reporting. The full three-axis sweep
+must retain `correctness_failed` rows and exclude them from an MPK advantage
+map even when their latency is favorable.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and
