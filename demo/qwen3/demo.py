@@ -257,7 +257,7 @@ if __name__ == "__main__":
         help="Custom prompt text to generate from.",
     )
     parser.add_argument("--batch-prompts-file", type=str, default=None,
-                        help="JSON array of equal-token-length prompts for batched normal or decode-only execution")
+                        help="JSON array of equal-token-length prompts for batched execution")
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
@@ -280,9 +280,8 @@ if __name__ == "__main__":
         parser.error("--max-num-batched-requests must be positive")
     if args.batch_prompts_file and (
         args.max_num_batched_requests < 2
-        or (args.backend == "mpk" and args.mpk_policy != "decode-only")
     ):
-        parser.error("--batch-prompts-file requires batched normal or MPK decode-only execution")
+        parser.error("--batch-prompts-file requires at least two requests")
     if args.backend == "normal" and args.max_num_batched_requests > 1:
         if (args.max_num_batched_requests > args.max_num_pages
             or not args.ignore_eos or args.do_sample or args.spec_decode
@@ -292,8 +291,6 @@ if __name__ == "__main__":
                          "speculative decoding, or diagnostic snapshots")
         if args.max_seq_length > args.page_size:
             parser.error("Batched normal currently requires each sequence to fit in one KV page")
-    if args.phase_timing and args.mpk_policy == "always":
-        parser.error("--phase-timing requires a separate prefill/decode boundary")
     if args.mpk_policy == "workload-aware":
         parser.error("workload-aware requires a measured MPK advantage map; complete Steps 9–10 first")
     if args.debug_split_mpk_prefill and (
@@ -304,15 +301,13 @@ if __name__ == "__main__":
     if args.mpk_policy in ("prefill-only", "decode-only"):
         if args.spec_decode or args.do_sample or args.profiling:
             parser.error("Mixed backend policies require greedy decoding, no speculative decoding, and no profiling")
-    if args.mpk_policy == "prefill-only" and args.max_num_batched_requests != 1:
-        parser.error("MPK prefill-only currently requires one request")
-    if args.mpk_policy == "decode-only" and args.max_num_batched_requests > 1:
+    if args.backend == "mpk" and args.max_num_batched_requests > 1:
         if (args.max_num_batched_requests > args.max_num_pages
             or args.max_num_batched_requests > args.max_num_batched_tokens
             or not args.ignore_eos or args.max_seq_length > args.page_size
             or args.save_intermediates or args.save_prefill_kv
             or args.debug_load_prefill_kv):
-            parser.error("Batched decode-only requires one KV page per request, "
+            parser.error("Batched MPK requires one KV page per request, "
                          "enough batched-token slots, --ignore-eos, and no diagnostic snapshots")
     if args.save_intermediates and (
         args.backend == "mpk" and args.mpk_policy not in ("decode-only", "prefill-only", "always")
@@ -1066,11 +1061,14 @@ if __name__ == "__main__":
     # Decode up to user cap or buffer size
     output_len = args.max_new_tokens if args.max_new_tokens is not None else (tokens.size(1) - prompt_lengths[0].item())
     output_len = max(0, min(output_len, tokens.size(1) - prompt_lengths[0].item()))
-    if args.debug_split_mpk_prefill and (
+    split_mpk_prefill = args.debug_split_mpk_prefill or (
+        args.phase_timing and args.mpk_policy == "always"
+    )
+    if split_mpk_prefill and (
         prompt_lengths[0].item() >= args.page_size or output_len < 2
         or args.max_seq_length != prompt_lengths[0].item() + output_len
     ):
-        parser.error("--debug-split-mpk-prefill requires prompt shorter than one KV page and max-seq-length = prompt length + at least two output tokens")
+        parser.error("Split MPK prefill requires prompt shorter than one KV page and max-seq-length = prompt length + at least two output tokens")
     if prefill_use_mpk and not decode_use_mpk:
         if output_len == 0:
             parser.error("prefill-only requires at least one output token")
@@ -1084,8 +1082,8 @@ if __name__ == "__main__":
             mpk_prefill_end.record()
         torch.cuda.synchronize()
         prompt_len = prompt_lengths[0].item()
-        if step[0].item() != prompt_len:
-            raise RuntimeError("MPK did not stop at the prefill boundary")
+        if not torch.all(step == prompt_len).item():
+            raise RuntimeError("MPK did not stop every request at the prefill boundary")
         if args.save_prefill_kv:
             save_prefill_kv_snapshot(args.save_prefill_kv, model, tokens,
                                      prompt_len, args.backend, args.mpk_policy)
@@ -1208,16 +1206,26 @@ if __name__ == "__main__":
     else:
         if args.mpk_policy != "decode-only":
             starter.record()
-        if args.phase_timing:
+        if args.phase_timing and not split_mpk_prefill:
             mpk_decode_start = torch.cuda.Event(enable_timing=True)
             mpk_decode_end = torch.cuda.Event(enable_timing=True)
             mpk_decode_start.record()
-        if args.debug_split_mpk_prefill:
+        if split_mpk_prefill:
+            if args.phase_timing:
+                mpk_decode_start = torch.cuda.Event(enable_timing=True)
+                mpk_decode_end = torch.cuda.Event(enable_timing=True)
+                mpk_prefill_start = torch.cuda.Event(enable_timing=True)
+                mpk_prefill_end = torch.cuda.Event(enable_timing=True)
+                mpk_prefill_start.record()
             mpk(stop_after_prefill=True)
+            if args.phase_timing:
+                mpk_prefill_end.record()
             torch.cuda.synchronize()
-            if step[0].item() != prompt_lengths[0].item():
-                raise RuntimeError("MPK did not stop at the prefill boundary")
-        mpk(resume_after_prefill=args.mpk_policy == "decode-only" or args.debug_split_mpk_prefill)
+            if not torch.all(step == prompt_lengths[0]).item():
+                raise RuntimeError("MPK did not stop every request at the prefill boundary")
+            if args.phase_timing:
+                mpk_decode_start.record()
+        mpk(resume_after_prefill=args.mpk_policy == "decode-only" or split_mpk_prefill)
         if args.phase_timing:
             mpk_decode_end.record()
         ender.record()
@@ -1226,7 +1234,9 @@ if __name__ == "__main__":
         phase_timing_data = None
         if args.phase_timing:
             phase_timing_data = {
-                "prefill_ms": normal_prefill_start.elapsed_time(normal_prefill_end),
+                "prefill_ms": (mpk_prefill_start.elapsed_time(mpk_prefill_end)
+                               if args.mpk_policy == "always"
+                               else normal_prefill_start.elapsed_time(normal_prefill_end)),
                 "decode_ms": mpk_decode_start.elapsed_time(mpk_decode_end),
                 "decode_steps": output_len - 1,
                 "decode_step_ms": None,

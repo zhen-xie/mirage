@@ -1,4 +1,4 @@
-"""Exploratory single-request Qwen3 decode timing on normal and MPK.
+"""Exploratory Qwen3 decode timing across normal and MPK policies.
 
 Each sample starts a fresh demo process. CUDA event timing excludes model load,
 prefill, and MPK compilation, but each process still has cold runtime state.
@@ -28,63 +28,77 @@ def percentile(values, fraction):
 
 
 def load_prompt(args):
-    path = args.prompt_file or (ROOT / "tests" / "benchmarks" / "baselines"
-                                / f"new_server_prompt_{args.context_length}.txt")
-    prompt = path.read_text()
+    if args.batch_size > 1:
+        prompts = json.loads(args.batch_prompts_file.read_text())
+        if (not isinstance(prompts, list) or len(prompts) != args.batch_size
+            or any(not isinstance(prompt, str) for prompt in prompts)):
+            raise ValueError("Batch prompt file must contain one string per request")
+    else:
+        path = args.prompt_file or (ROOT / "tests" / "benchmarks" / "baselines"
+                                    / f"new_server_prompt_{args.context_length}.txt")
+        prompts = [path.read_text()]
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    messages = [
-        {"role": "system", "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."},
-        {"role": "user", "content": prompt},
-    ]
-    rendered = tokenizer.apply_chat_template(messages, tokenize=False,
-                                             add_generation_prompt=True)
-    actual_length = len(tokenizer(rendered)["input_ids"])
-    if actual_length != args.context_length:
-        raise ValueError(f"Prompt has {actual_length} tokens, expected {args.context_length}")
-    return prompt
+    for request_id, prompt in enumerate(prompts):
+        messages = [
+            {"role": "system", "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."},
+            {"role": "user", "content": prompt},
+        ]
+        rendered = tokenizer.apply_chat_template(messages, tokenize=False,
+                                                 add_generation_prompt=True)
+        actual_length = len(tokenizer(rendered)["input_ids"])
+        if actual_length != args.context_length:
+            raise ValueError(f"Request {request_id} has {actual_length} input tokens, expected {args.context_length}")
+    return prompts[0]
 
 
-def run_case(args, prompt, backend, index, warmup):
+def run_case(args, prompt, policy, index, warmup):
     label = "warmup" if warmup else "repeat"
-    stem = f"{label}_{index}_{backend}"
+    stem = f"{label}_{index}_{policy}"
     output = args.output_dir / f"{stem}.json"
     log = args.output_dir / f"{stem}.log"
     command = [
-        sys.executable, str(DEMO), "--backend", "normal" if backend == "normal" else "mpk",
+        sys.executable, str(DEMO), "--backend", "normal" if policy == "normal" else "mpk",
         "--prompt", prompt,
         "--max-seq-length", str(args.context_length + args.decode_steps + 1),
         "--max-new-tokens", str(args.decode_steps + 1),
         "--ignore-eos", "--phase-timing", "--save-tokens", str(output),
         "--model", args.model,
     ]
-    if backend == "mpk":
-        command += ["--mpk-policy", "decode-only"]
+    if policy != "normal":
+        command += ["--mpk-policy", policy]
+    if args.batch_size > 1:
+        command += ["--max-num-batched-requests", str(args.batch_size),
+                    "--batch-prompts-file", str(args.batch_prompts_file)]
     with log.open("w") as log_file:
         try:
             completed = subprocess.run(command, cwd=ROOT, stdout=log_file,
                                        stderr=subprocess.STDOUT, timeout=args.timeout,
                                        check=False)
         except subprocess.TimeoutExpired as error:
-            raise RuntimeError(f"{backend} timed out; see {log}") from error
+            raise RuntimeError(f"{policy} timed out; see {log}") from error
     if completed.returncode:
         tail = "\n".join(log.read_text(errors="replace").splitlines()[-80:])
-        raise RuntimeError(f"{backend} exited {completed.returncode}; {log}\n{tail}")
+        raise RuntimeError(f"{policy} exited {completed.returncode}; {log}\n{tail}")
     data = json.loads(output.read_text())
     if data["prompt_length"] != args.context_length:
         raise ValueError(f"Unexpected prompt length in {output}")
     if data["generate_length"] != args.decode_steps + 1:
         raise ValueError(f"Unexpected generation length in {output}")
+    if args.batch_size > 1:
+        requests = data.get("token_ids_by_request")
+        if data.get("batch_size") != args.batch_size or not isinstance(requests, list) or len(requests) != args.batch_size:
+            raise ValueError(f"Missing per-request tokens in {output}")
     timing = data["phase_timing"]
     if timing["prefill_ms"] <= 0 or timing["decode_ms"] <= 0:
         raise ValueError(f"Invalid phase timing in {output}")
-    if backend == "normal" and len(timing["decode_step_ms"]) != args.decode_steps:
+    if policy in ("normal", "prefill-only") and len(timing["decode_step_ms"]) != args.decode_steps:
         raise ValueError(f"Missing normal decode steps in {output}")
-    if backend == "mpk" and timing["decode_steps"] != args.decode_steps:
+    if policy in ("always", "decode-only") and timing["decode_steps"] != args.decode_steps:
         raise ValueError(f"Wrong MPK decode step count in {output}")
     return data
 
 
-def summarize(samples, backend, decode_steps):
+def summarize(samples, backend, decode_steps, batch_size):
     totals = [sample["phase_timing"]["decode_ms"] for sample in samples]
     mean_total = statistics.mean(totals)
     per_step = [value for sample in samples
@@ -97,7 +111,7 @@ def summarize(samples, backend, decode_steps):
         "median_step_latency_ms": percentile(per_step, 0.5) if per_step else None,
         "p90_step_latency_ms": percentile(per_step, 0.9) if per_step else None,
         "p99_step_latency_ms": percentile(per_step, 0.99) if per_step else None,
-        "tokens_per_second": 1000 * decode_steps / mean_total,
+        "tokens_per_second": 1000 * decode_steps * batch_size / mean_total,
         "relative_total_range": ((max(totals) - min(totals)) / mean_total
                                  if len(totals) > 1 else None),
     }
@@ -111,41 +125,65 @@ def main():
                         help="Decode iterations after the first token from prefill")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeat", type=int, default=3)
+    parser.add_argument("--policies", nargs="+", choices=("always", "decode-only", "prefill-only"),
+                        default=["decode-only"], help="MPK policies to compare with normal")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--prompt-file", type=Path)
+    parser.add_argument("--batch-prompts-file", type=Path,
+                        help="JSON array of distinct, equal-length prompts for batch-size > 1")
     parser.add_argument("--output-dir", type=Path,
                         default=ROOT / "results" / "qwen3_decode_b1")
     args = parser.parse_args()
-    if args.batch_size != 1:
-        parser.error("Current normal/decode-only demo supports batch-size=1 only")
+    if len(set(args.policies)) != len(args.policies):
+        parser.error("--policies must not contain duplicates")
+    if args.batch_size < 1 or args.batch_size > 8:
+        parser.error("batch-size must be in [1, 8] for this benchmark")
+    if args.batch_size > 1 and (args.batch_prompts_file is None or args.prompt_file is not None):
+        parser.error("batch-size > 1 requires --batch-prompts-file and no --prompt-file")
+    if args.batch_size == 1 and args.batch_prompts_file is not None:
+        parser.error("--batch-prompts-file requires batch-size > 1")
     if args.context_length < 1 or args.context_length >= 4096:
         parser.error("Current decode-only resume requires context-length in [1, 4095]")
     if args.decode_steps < 1 or args.warmup < 0 or args.repeat < 1:
         parser.error("decode-steps and repeat must be positive; warmup must be nonnegative")
+    if args.context_length + args.decode_steps + 1 > 4096:
+        parser.error("Each batched sequence must fit in one 4096-token KV page")
+    if args.batch_prompts_file is not None:
+        args.batch_prompts_file = args.batch_prompts_file.resolve()
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     prompt = load_prompt(args)
 
-    samples = {"normal": [], "mpk": []}
+    policies = ["normal", *args.policies]
+    samples = {policy: [] for policy in policies}
     for index in range(args.warmup + args.repeat):
         warmup = index < args.warmup
-        for backend in (("normal", "mpk") if index % 2 == 0 else ("mpk", "normal")):
-            print(f"{backend} {'warmup' if warmup else 'repeat'} {index + 1}/{args.warmup + args.repeat}",
+        for policy in (policies if index % 2 == 0 else list(reversed(policies))):
+            print(f"{policy} {'warmup' if warmup else 'repeat'} {index + 1}/{args.warmup + args.repeat}",
                   flush=True)
-            data = run_case(args, prompt, backend, index, warmup)
+            data = run_case(args, prompt, policy, index, warmup)
             if not warmup:
-                samples[backend].append(data)
+                samples[policy].append(data)
 
-    token_match_counts = []
-    for normal, mpk in zip(samples["normal"], samples["mpk"]):
-        if min(len(normal["token_ids"]), len(mpk["token_ids"])) < 30:
-            continue
-        matches = sum(a == b for a, b in zip(normal["token_ids"][:30],
-                                             mpk["token_ids"][:30]))
-        token_match_counts.append(matches)
-        if matches < 20:
-            raise ValueError(f"Normal and MPK decode-only match only {matches}/30 token positions")
+    match_counts = {}
+    for policy in args.policies:
+        token_match_counts = []
+        for normal, mpk in zip(samples["normal"], samples[policy]):
+            normal_requests = (normal["token_ids_by_request"] if args.batch_size > 1
+                               else [normal["token_ids"]])
+            mpk_requests = (mpk["token_ids_by_request"] if args.batch_size > 1
+                            else [mpk["token_ids"]])
+            repeat_counts = []
+            for request_id, (normal_tokens, mpk_tokens) in enumerate(zip(normal_requests, mpk_requests)):
+                if min(len(normal_tokens), len(mpk_tokens)) < 30:
+                    raise ValueError(f"Request {request_id} has fewer than 30 saved tokens")
+                matches = sum(a == b for a, b in zip(normal_tokens[:30], mpk_tokens[:30]))
+                repeat_counts.append(matches)
+                if matches < 20:
+                    raise ValueError(f"Request {request_id}: normal and {policy} match only {matches}/30 positions")
+            token_match_counts.append(repeat_counts)
+        match_counts[policy] = token_match_counts
 
     summary = {
         "batch_size": args.batch_size,
@@ -156,11 +194,20 @@ def main():
         "timing_scope": "CUDA events around decode only; separate cold demo process per sample",
         "warmup_note": "Warmup runs are discarded processes; they do not warm subsequent processes",
         "per_step_note": "MPK persistent kernel exposes only whole-decode timing; its per-step percentiles are null",
-        "first_30_token_matches_per_repeat": token_match_counts or None,
+        "first_30_token_matches_by_policy": match_counts,
         "token_match_gate": "At least 20 of the first 30 positions match when at least 30 tokens are saved",
-        "normal": summarize(samples["normal"], "normal", args.decode_steps),
-        "mpk_decode_only": summarize(samples["mpk"], "mpk", args.decode_steps),
     }
+    if args.policies == ["decode-only"]:
+        summary["first_30_token_matches_by_request_per_repeat"] = match_counts["decode-only"]
+        summary["first_30_token_matches_per_repeat"] = (
+            [counts[0] for counts in match_counts["decode-only"]]
+            if args.batch_size == 1 else None
+        )
+    summary["normal"] = summarize(samples["normal"], "normal", args.decode_steps, args.batch_size)
+    for policy in args.policies:
+        summary[f"mpk_{policy.replace('-', '_')}"] = summarize(
+            samples[policy], "mpk" if policy != "prefill-only" else "normal",
+            args.decode_steps, args.batch_size)
     destination = args.output_dir / "summary.json"
     destination.write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
@@ -168,7 +215,7 @@ def main():
         print("WARNING: fewer than 3 repeats; stability is not established")
     if any(summary[name]["relative_total_range"] is not None
            and summary[name]["relative_total_range"] > 0.1
-           for name in ("normal", "mpk_decode_only")):
+           for name in ("normal", *(f"mpk_{policy.replace('-', '_')}" for policy in args.policies))):
         print("WARNING: decode timing range exceeds 10%; investigate benchmark stability")
     print(f"Wrote {destination}")
 

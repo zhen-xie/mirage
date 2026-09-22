@@ -312,13 +312,16 @@ __device__ __forceinline__ bool
       {
         // Request is done
         config.request_ids[i] = -1;
-        // Free pages
-        int kv_indptr = config.paged_kv_indptr_buffer[i];
-        int num_pages = config.paged_kv_indptr_buffer[i + 1] - kv_indptr;
-        for (int j = 0; j < num_pages; j++) {
-          config.page_queue[page_queue_tail % MPK_MAX_NUM_PAGES] =
-              config.paged_kv_indices_buffer[kv_indptr + j];
-          page_queue_tail++;
+        // A split MPK prefill hands these pages to normal or MPK decode.
+        // Keep them reserved so every completed request retains its KV cache.
+        if (!config.stop_after_prefill) {
+          int kv_indptr = config.paged_kv_indptr_buffer[i];
+          int num_pages = config.paged_kv_indptr_buffer[i + 1] - kv_indptr;
+          for (int j = 0; j < num_pages; j++) {
+            config.page_queue[page_queue_tail % MPK_MAX_NUM_PAGES] =
+                config.paged_kv_indices_buffer[kv_indptr + j];
+            page_queue_tail++;
+          }
         }
       }
     }

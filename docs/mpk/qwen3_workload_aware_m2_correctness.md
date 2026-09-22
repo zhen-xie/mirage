@@ -109,11 +109,28 @@ matched its existing diverse-prompt reference at 50/50. The B=2 path passes
 the agreed correctness gate for these two requests, though more prompts and
 batch sizes remain untested.
 
-MPK `decode-only` resume has now been extended to seed one prefilled KV page
-and one first generated token per request. This change has only local static
-checks so far; B=2 GPU correctness and timing must be validated before B=8
-comparisons. The default B=1 resume path remains covered by prior remote
-tests, and should be rerun after the CUDA change.
+MPK `decode-only` resume seeds one prefilled KV page and one first generated
+token per request. On the H100 NVL, the updated B=1 path matched its prior
+output at 50/50 positions. In B=2, the two requests matched B=2 normal at
+30/30 and 24/30 positions, respectively; their first-50 counts were 43/50
+and 29/50. Both passed the agreed correctness gate.
+
+A B=8 run with eight distinct 128-token prompts completed 128-token generation
+for normal and `decode-only`. Against each request's B=1 normal result, B=8
+normal matched at least 22/30 positions. Against B=8 normal, B=8
+`decode-only` matched at least 20/30 positions, with request 5 exactly at
+the threshold. The individual first-50 counts for normal versus B=1 were
+43, 50, 50, 50, 50, 22, 50, and 50; for `decode-only` versus B=8 normal
+they were 43, 29, 50, 47, 50, 20, 50, and 50. These are correctness smoke
+tests, not timing results. The benchmark driver now accepts a JSON list of
+distinct equal-length prompts for B>1 and reports aggregate generated tokens
+per second over the batch. Remote timing validation is next.
+
+The next batch change permits distinct prompts for `always` and
+`prefill-only`. Split MPK prefill now reserves every request's KV page so
+normal decode can consume it, and `--phase-timing` splits `always` at the
+prefill boundary to measure decode separately. This path still needs a
+remote B=8 correctness run and should not be counted as validated yet.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and
