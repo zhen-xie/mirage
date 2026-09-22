@@ -99,19 +99,27 @@ def run_case(args, prompt, policy, index, warmup):
 
 
 def summarize(samples, backend, decode_steps, batch_size):
+    prefills = [sample["phase_timing"]["prefill_ms"] for sample in samples]
     totals = [sample["phase_timing"]["decode_ms"] for sample in samples]
     mean_total = statistics.mean(totals)
+    mean_prefill = statistics.mean(prefills)
     per_step = [value for sample in samples
                 for value in (sample["phase_timing"]["decode_step_ms"] or [])]
     return {
         "backend": backend,
+        "repeat_prefill_ms": prefills,
+        "mean_prefill_ms": mean_prefill,
         "repeat_total_decode_ms": totals,
         "mean_total_decode_ms": mean_total,
+        "mean_prefill_plus_decode_ms": statistics.mean(
+            prefill + decode for prefill, decode in zip(prefills, totals)),
         "mean_step_latency_ms": mean_total / decode_steps,
         "median_step_latency_ms": percentile(per_step, 0.5) if per_step else None,
         "p90_step_latency_ms": percentile(per_step, 0.9) if per_step else None,
         "p99_step_latency_ms": percentile(per_step, 0.99) if per_step else None,
         "tokens_per_second": 1000 * decode_steps * batch_size / mean_total,
+        "generated_tokens_per_second_including_prefill": (
+            1000 * (decode_steps + 1) * batch_size / (mean_prefill + mean_total)),
         "relative_total_range": ((max(totals) - min(totals)) / mean_total
                                  if len(totals) > 1 else None),
     }
@@ -194,6 +202,7 @@ def main():
         "timing_scope": "CUDA events around decode only; separate cold demo process per sample",
         "warmup_note": "Warmup runs are discarded processes; they do not warm subsequent processes",
         "per_step_note": "MPK persistent kernel exposes only whole-decode timing; its per-step percentiles are null",
+        "always_timing_mode": "two MPK launches with a prefill boundary; continuous always may generate different tokens",
         "first_30_token_matches_by_policy": match_counts,
         "token_match_gate": "At least 20 of the first 30 positions match when at least 30 tokens are saved",
     }

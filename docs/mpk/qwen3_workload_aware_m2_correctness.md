@@ -127,10 +127,17 @@ distinct equal-length prompts for B>1 and reports aggregate generated tokens
 per second over the batch. Remote timing validation is next.
 
 The next batch change permits distinct prompts for `always` and
-`prefill-only`. Split MPK prefill now reserves every request's KV page so
-normal decode can consume it, and `--phase-timing` splits `always` at the
-prefill boundary to measure decode separately. This path still needs a
-remote B=8 correctness run and should not be counted as validated yet.
+`prefill-only`. Split MPK prefill reserves every request's KV page so normal
+decode can consume it, and `--phase-timing` splits `always` at the prefill
+boundary to measure decode separately. On the H100 NVL, B=8 continuous
+`always`, split timed `always`, and `prefill-only` all completed with eight
+distinct prompts. Their minimum first-30 positional matches against B=8
+normal were 24/30, 22/30, and 22/30, respectively. Split and continuous
+`always` matched at 50/50 positions for seven requests but only 22/50 for
+request 5. Therefore split timing characterizes a two-launch MPK policy,
+not an exactly output-equivalent continuous `always` run. The smoke test
+reported split `always` prefill/decode at 949.892/795.216 ms and
+`prefill-only` at 906.431/2395.238 ms. Repeated timing is still pending.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and
