@@ -98,7 +98,8 @@ def summarize(samples, backend, decode_steps):
         "p90_step_latency_ms": percentile(per_step, 0.9) if per_step else None,
         "p99_step_latency_ms": percentile(per_step, 0.99) if per_step else None,
         "tokens_per_second": 1000 * decode_steps / mean_total,
-        "relative_total_range": (max(totals) - min(totals)) / mean_total,
+        "relative_total_range": ((max(totals) - min(totals)) / mean_total
+                                 if len(totals) > 1 else None),
     }
 
 
@@ -147,6 +148,7 @@ def main():
         "warmup": args.warmup,
         "repeat": args.repeat,
         "timing_scope": "CUDA events around decode only; separate cold demo process per sample",
+        "warmup_note": "Warmup runs are discarded processes; they do not warm subsequent processes",
         "per_step_note": "MPK persistent kernel exposes only whole-decode timing; its per-step percentiles are null",
         "normal": summarize(samples["normal"], "normal", args.decode_steps),
         "mpk_decode_only": summarize(samples["mpk"], "mpk", args.decode_steps),
@@ -154,7 +156,10 @@ def main():
     destination = args.output_dir / "summary.json"
     destination.write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
-    if any(summary[name]["relative_total_range"] > 0.1
+    if args.repeat < 3:
+        print("WARNING: fewer than 3 repeats; stability is not established")
+    if any(summary[name]["relative_total_range"] is not None
+           and summary[name]["relative_total_range"] > 0.1
            for name in ("normal", "mpk_decode_only")):
         print("WARNING: decode timing range exceeds 10%; investigate benchmark stability")
     print(f"Wrote {destination}")

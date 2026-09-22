@@ -46,3 +46,13 @@ the 128-token prompt on the second server at the time of the probe. A later
 1024-input, 128-output normal/decode-only run also matched on the first 30
 tokens. No numeric threshold or full-output correctness claim follows from
 these observations.
+
+## Step 8 initial timing smoke test
+
+On the H100 NVL, a single B=1, context=128, 16-decode-step run completed
+through `tests/benchmarks/qwen3_decode_backend.py`. Decode-only CUDA event
+totals were 362.881 ms for normal and 96.988 ms for MPK. These are one sample
+per backend, with each backend in a separate cold process. The script's
+original `relative_total_range=0` for one sample had no stability meaning;
+the script now emits `null` until there are at least two samples. This is
+only a smoke test of the measurement path, not a performance conclusion.
