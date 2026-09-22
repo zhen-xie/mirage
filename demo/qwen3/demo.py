@@ -209,7 +209,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--save-intermediates", type=str, default=None,
-        help="Save final decode logits and normalized hidden state for a two-token correctness probe",
+        help="Save final decode logits and normalized hidden state for a correctness probe",
     )
     parser.add_argument("--prompt",
         type=str,
@@ -243,11 +243,12 @@ if __name__ == "__main__":
             parser.error("Mixed backend policies currently require one request, greedy decoding, no speculative decoding, and no profiling")
     if args.save_intermediates and (
         args.backend == "mpk" and args.mpk_policy != "decode-only"
-        or args.max_new_tokens != 2
+        or args.max_new_tokens is None
+        or args.max_new_tokens < 2
         or not args.ignore_eos
         or args.do_sample
     ):
-        parser.error("--save-intermediates requires normal or decode-only, two output tokens, ignore-eos, and greedy decoding")
+        parser.error("--save-intermediates requires normal or decode-only, at least two output tokens, ignore-eos, and greedy decoding")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -1150,8 +1151,9 @@ if __name__ == "__main__":
             "backend": args.backend,
             "policy": args.mpk_policy,
             "prompt_length": prompt_len,
-            "prefix_token_ids": tokens[0, :prompt_len + 1].cpu(),
-            "generated_token_ids": tokens[0, prompt_len:prompt_len + 2].cpu(),
+            "prefix_token_ids": tokens[0, :prompt_len + output_len - 1].cpu(),
+            "generated_token_ids": tokens[0, prompt_len:prompt_len + output_len].cpu(),
+            "decode_step_index": output_len - 2,
             "logits": output_logits.detach().cpu(),
             "normalized_hidden_state": hidden.detach().cpu(),
         }, args.save_intermediates)

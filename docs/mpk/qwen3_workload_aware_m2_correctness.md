@@ -56,3 +56,20 @@ per backend, with each backend in a separate cold process. The script's
 original `relative_total_range=0` for one sample had no stability meaning;
 the script now emits `null` until there are at least two samples. This is
 only a smoke test of the measurement path, not a performance conclusion.
+
+A subsequent B=1, context=128 run used 128 decode steps and three separate
+processes per backend, alternating backend order. Normal decode totals were
+2660.576, 2629.949, and 2636.320 ms (mean 2642.282 ms; range/mean 1.16%).
+MPK decode-only totals were 772.649, 779.367, and 779.796 ms (mean 777.270
+ms; range/mean 0.92%). The ratio of these decode-only CUDA event means is
+3.40. Each process began cold and the persistent MPK kernel provides no
+per-step latency distribution. This result supports stability for this one
+B=1, context=128 configuration under the current method; it is not a broad
+performance boundary or a whole-request speedup.
+
+The same three-process method at B=1, context=1024, and 128 decode steps
+gave normal totals of 2643.205, 2638.188, and 2664.494 ms (mean 2648.629
+ms; range/mean 0.99%). MPK decode-only totals were 905.400, 904.684, and
+899.262 ms (mean 903.115 ms; range/mean 0.68%). The decode CUDA event mean
+ratio was 2.93. Both tested B=1 contexts have under 2% range/mean in this
+method. These results do not validate B>1 or other context lengths.

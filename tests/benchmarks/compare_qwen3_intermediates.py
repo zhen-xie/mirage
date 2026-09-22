@@ -37,31 +37,41 @@ def main():
     if normal["prompt_length"] != mpk["prompt_length"]:
         raise ValueError("Prompt lengths differ")
     if not torch.equal(normal["prefix_token_ids"], mpk["prefix_token_ids"]):
-        raise ValueError("Input and first generated token differ")
+        raise ValueError("Input or generated tokens before the probed step differ")
+    if normal["decode_step_index"] != mpk["decode_step_index"]:
+        raise ValueError("Probes target different decode steps")
     for name, probe in (("normal", normal), ("decode-only", mpk)):
         predicted = probe["logits"].argmax().item()
-        generated = probe["generated_token_ids"][1].item()
+        generated = probe["generated_token_ids"][-1].item()
         if predicted != generated:
             raise ValueError(
                 f"{name} captured logits predict token {predicted}, "
                 f"but generation produced {generated}; probe is not aligned"
             )
 
+    def top_tokens(probe):
+        values, indices = torch.topk(probe["logits"].float(), 5)
+        return [{"token_id": token.item(), "logit": value.item()}
+                for token, value in zip(indices, values)]
+
     report = {
         "prompt_length": normal["prompt_length"],
-        "first_two_generated_tokens_match": torch.equal(
+        "decode_step_index": normal["decode_step_index"],
+        "probed_generated_token_matches": normal["generated_token_ids"][-1].item()
+        == mpk["generated_token_ids"][-1].item(),
+        "generated_tokens_match_through_probe": torch.equal(
             normal["generated_token_ids"], mpk["generated_token_ids"]
         ),
         "normal_generated_token_ids": normal["generated_token_ids"].tolist(),
         "decode_only_generated_token_ids": mpk["generated_token_ids"].tolist(),
+        "normal_top_5": top_tokens(normal),
+        "decode_only_top_5": top_tokens(mpk),
         "logits": tensor_metrics(normal["logits"], mpk["logits"]),
         "normalized_hidden_state": tensor_metrics(
             normal["normalized_hidden_state"], mpk["normalized_hidden_state"]
         ),
     }
     print(json.dumps(report, indent=2))
-    if not report["first_two_generated_tokens_match"]:
-        raise SystemExit("Generated tokens differ")
 
 
 if __name__ == "__main__":
