@@ -243,6 +243,14 @@ cells complete with stable timing and correctness.
 The `--cases B:S_IN:S_OUT` option selects a few edge cases for GPU validation
 before the full grid. The three axes can also be set through `B_VALUES`,
 `S_IN_VALUES`, and `S_OUT_VALUES` environment variables.
+The first 3D smoke run failed all four cases during model construction:
+`Qwen3Attention` asserted a fixed KV cache shape with 16 pages of 4096
+tokens, while the sweep allocated per-case page counts and sizes. That
+assertion now checks the invariant layer, head, and key/value dimensions
+without fixing page count or page size. The smoke command should use
+`--fail-on-failed-cases` so a CSV containing failed rows does not report a
+successful process exit. The corrected 3D path still needs remote GPU
+validation.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and

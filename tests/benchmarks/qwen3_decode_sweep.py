@@ -301,6 +301,8 @@ def main():
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=900,
                         help="Timeout in seconds for each demo process")
+    parser.add_argument("--fail-on-failed-cases", action="store_true",
+                        help="Return a nonzero status if any selected case fails")
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--reserve-gib", type=float, default=32.0,
                         help="Keep this much GPU memory outside the estimated KV cache")
@@ -512,6 +514,8 @@ def main():
     print(f"Completed={completed}, correctness_failed={correctness_failed}, "
           f"skipped_memory={skipped}, failed={failed}")
     print(f"Wrote {csv_path}")
+    if args.fail_on_failed_cases and (failed or correctness_failed):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
