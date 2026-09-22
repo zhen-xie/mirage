@@ -265,6 +265,28 @@ one or more policies. For B=8, S_IN=1024, S_OUT=1024, only request 6 in
 prefill-only diverged early (index 4). The next check replays those prompts
 as B=1 to distinguish batch effects from backend arithmetic on the same
 prompt.
+The B=1 replays also diverged at index 4 for all three MPK policies on both
+prompts, so the mismatch is not confined to B=8. For the 128-token prompt,
+B=8 and B=1 agreed within each policy for the first 30 positions; normal
+and MPK each followed different paths. For the 1024-token prompt, B=8
+normal itself differed from B=1 normal at index 4 while B=8 always and
+decode-only matched their respective B=1 outputs. This batch-dependent
+normal result needs a logit-margin probe before treating the 4/30 result
+as an independent implementation error at every output position.
+The index-4 probe found a BF16 tie between token IDs 279 and 773 in the
+normal 128-token case (both 28.0), while always ranked 773 at 28.0 versus
+279 at 27.875 and prefill-only ranked 773 at 28.125 versus 279 at 28.0.
+Logit cosine similarities exceeded 0.9998. For the 1024-token case,
+normal BF16 again tied 279 and 773 at 27.75; its fp32 candidate rescore
+separated them by only 0.00038. Always and prefill-only ranked 773 above
+279 by 0.125 BF16. These are early near-tie trajectory switches, not 26
+independent erroneous token computations.
+The decode-only probe exposed an additional deterministic argmax issue:
+its saved BF16 logits had a different `torch.argmax` winner than the token
+selected by MPK. The Ampere/Hopper and Blackwell argmax reductions now
+choose the lowest vocabulary index when scores tie, matching PyTorch.
+GPU validation is still needed; this change does not remove the separate
+normal-versus-MPK logit differences in always or prefill-only.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and

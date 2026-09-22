@@ -22,7 +22,10 @@ __device__ __forceinline__ void warp_reduce_max_idx(T &val, long long &idx) {
     float tmp = __shfl_down_sync(0xffffffff, (float)val, offset);
     T other_val = (T)tmp;
     long long other_idx = __shfl_down_sync(0xffffffff, idx, offset);
-    if (other_val > val) {
+    // Match torch.argmax: equal scores select the lowest vocabulary index.
+    if (other_idx >= 0 &&
+        (other_val > val ||
+         (other_val == val && (idx < 0 || other_idx < idx)))) {
       val = other_val;
       idx = other_idx;
     }
