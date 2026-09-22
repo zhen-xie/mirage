@@ -73,3 +73,21 @@ ms; range/mean 0.99%). MPK decode-only totals were 905.400, 904.684, and
 899.262 ms (mean 903.115 ms; range/mean 0.68%). The decode CUDA event mean
 ratio was 2.93. Both tested B=1 contexts have under 2% range/mean in this
 method. These results do not validate B>1 or other context lengths.
+
+## Diverse prompt correctness failure
+
+A 128-token prompt derived from the Milestone 1 notes produced a different
+result from the repeated `hello` prompt. All four modes generated 128 tokens.
+`prefill-only` matched normal across the 100 saved tokens. `always` first
+diverged at zero-based generated token 35. `decode-only` first diverged at
+zero-based generated token 20, so the agreed first-30-token gate fails for
+this case. No performance sweep should use this configuration as a validated
+correctness case yet.
+
+At the step predicting generated token 20, normal logits ranked token 323 at
+31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and
+selected token 11. Their logit cosine similarity was 0.999928 and normalized
+hidden-state cosine similarity was 0.999953; max absolute errors were 0.25
+for both tensors. The near tie explains the immediate token difference, but
+does not yet identify whether the underlying numeric difference comes from
+prefill KV values, MPK decode arithmetic, or both.

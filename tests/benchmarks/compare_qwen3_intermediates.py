@@ -1,4 +1,4 @@
-"""Compare a two-token normal/decode-only Qwen3 correctness probe."""
+"""Compare normal and MPK Qwen3 correctness probes at one decode step."""
 
 import argparse
 import json
@@ -27,20 +27,20 @@ def tensor_metrics(reference, actual):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("normal")
-    parser.add_argument("decode_only")
+    parser.add_argument("mpk_probe")
     args = parser.parse_args()
 
     normal = torch.load(args.normal, map_location="cpu", weights_only=True)
-    mpk = torch.load(args.decode_only, map_location="cpu", weights_only=True)
-    if normal["backend"] != "normal" or mpk["policy"] != "decode-only":
-        raise ValueError("Expected normal and MPK decode-only probes")
+    mpk = torch.load(args.mpk_probe, map_location="cpu", weights_only=True)
+    if normal["backend"] != "normal" or mpk["policy"] not in ("decode-only", "always"):
+        raise ValueError("Expected normal and MPK always/decode-only probes")
     if normal["prompt_length"] != mpk["prompt_length"]:
         raise ValueError("Prompt lengths differ")
     if not torch.equal(normal["prefix_token_ids"], mpk["prefix_token_ids"]):
         raise ValueError("Input or generated tokens before the probed step differ")
     if normal["decode_step_index"] != mpk["decode_step_index"]:
         raise ValueError("Probes target different decode steps")
-    for name, probe in (("normal", normal), ("decode-only", mpk)):
+    for name, probe in (("normal", normal), (mpk["policy"], mpk)):
         predicted = probe["logits"].argmax().item()
         generated = probe["generated_token_ids"][-1].item()
         if predicted != generated:
@@ -55,6 +55,7 @@ def main():
                 for token, value in zip(indices, values)]
 
     report = {
+        "mpk_policy": mpk["policy"],
         "prompt_length": normal["prompt_length"],
         "decode_step_index": normal["decode_step_index"],
         "probed_generated_token_matches": normal["generated_token_ids"][-1].item()

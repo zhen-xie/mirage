@@ -242,13 +242,13 @@ if __name__ == "__main__":
         if args.max_num_batched_requests != 1 or args.spec_decode or args.do_sample or args.profiling:
             parser.error("Mixed backend policies currently require one request, greedy decoding, no speculative decoding, and no profiling")
     if args.save_intermediates and (
-        args.backend == "mpk" and args.mpk_policy != "decode-only"
+        args.backend == "mpk" and args.mpk_policy not in ("decode-only", "always")
         or args.max_new_tokens is None
         or args.max_new_tokens < 2
         or not args.ignore_eos
         or args.do_sample
     ):
-        parser.error("--save-intermediates requires normal or decode-only, at least two output tokens, ignore-eos, and greedy decoding")
+        parser.error("--save-intermediates requires normal, always, or decode-only, at least two output tokens, ignore-eos, and greedy decoding")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
