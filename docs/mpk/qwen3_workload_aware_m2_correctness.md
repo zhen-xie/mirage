@@ -30,3 +30,17 @@ Both runs generated `[151667, 198]`. The measurements are from one prompt
 and one decode position. No numeric error acceptance threshold has been set.
 The probe should be repeated at other context lengths before treating these
 values as representative.
+
+A second two-token diagnostic used a 1024-token prompt on the same server.
+Both runs again generated `[151667, 198]`:
+
+| Tensor | Max absolute error | Mean absolute error | Cosine similarity |
+| --- | ---: | ---: | ---: |
+| Logits | 0.3125 | 0.05400776490569115 | 0.999839723110199 |
+| Normalized hidden state | 0.75 | 0.03082827851176262 | 0.999851405620575 |
+
+Both prompts repeat `hello`, so these two cases vary context length but do
+not provide diverse text or generated continuations. The numeric probe covers
+one decode position per prompt, while the 30-token artifact check covers only
+the 128-token prompt on the second server. No numeric threshold or full-output
+correctness claim follows from these observations.
