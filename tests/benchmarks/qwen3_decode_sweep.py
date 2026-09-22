@@ -127,9 +127,9 @@ def make_distinct_seeds(tokenizer, source_seeds, count, minimum_length):
     return seeds
 
 
-def page_size_for(context_length, decode_steps):
+def page_size_for(context_length, decode_steps, minimum=64):
     max_sequence = context_length + decode_steps + 1
-    return 1 << (max_sequence - 1).bit_length()
+    return max(minimum, 1 << (max_sequence - 1).bit_length())
 
 
 def kv_bytes_for(model_config, batch_size, page_size):
@@ -306,6 +306,8 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--reserve-gib", type=float, default=32.0,
                         help="Keep this much GPU memory outside the estimated KV cache")
+    parser.add_argument("--min-page-size", type=int, default=64,
+                        help="Minimum KV page size; use 4096 to compare with established runs")
     parser.add_argument("--source-prompts-file", type=Path,
                         default=ROOT / "tests/benchmarks/baselines/batch_b8_smoke/eight_prompts.json")
     parser.add_argument("--output-dir", type=Path,
@@ -337,6 +339,8 @@ def main():
     if (args.repeat < 1 or args.warmup < 0
         or args.timeout < 1 or args.reserve_gib < 0):
         parser.error("Repeat and timeout must be positive; warmup and reserve must be nonnegative")
+    if args.min_page_size < 64 or args.min_page_size & (args.min_page_size - 1):
+        parser.error("--min-page-size must be a power of two and at least 64")
 
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -371,7 +375,7 @@ def main():
 
     for context_length in args.s_in_values:
         for s_out in args.s_out_values:
-            page_size = page_size_for(context_length, (s_out - 1))
+            page_size = page_size_for(context_length, (s_out - 1), args.min_page_size)
             feasible_batches = [
                 batch_size for batch_size in args.batch_sizes
                 if selected_cases is None or (batch_size, context_length, s_out) in selected_cases
@@ -444,6 +448,7 @@ def main():
                     "repeat": args.repeat,
                     "warmup": args.warmup,
                     "page_size": page_size,
+                    "min_page_size": args.min_page_size,
                     "max_num_pages": batch_size,
                     "max_num_batched_tokens": max(8, batch_size),
                     "reserve_gib": args.reserve_gib,

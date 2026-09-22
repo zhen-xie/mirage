@@ -249,8 +249,13 @@ tokens, while the sweep allocated per-case page counts and sizes. That
 assertion now checks the invariant layer, head, and key/value dimensions
 without fixing page count or page size. The smoke command should use
 `--fail-on-failed-cases` so a CSV containing failed rows does not report a
-successful process exit. The corrected 3D path still needs remote GPU
-validation.
+successful process exit. The next smoke run reached inference: the 16+16
+case failed MPK compilation because the 32-token KV page was smaller than
+Hopper's 64-token attention tile. The sweep now uses a 64-token page minimum.
+The 32+32 case passed; two B=8 cases had policies with only 4/30 positional
+matches on at least one request. The sweep accepts `--min-page-size 4096`
+to compare the same prompts against the formerly tested page size before
+attributing those divergences to a particular backend.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and
