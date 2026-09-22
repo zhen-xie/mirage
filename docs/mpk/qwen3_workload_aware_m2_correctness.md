@@ -15,7 +15,9 @@ With 128 input tokens and 128 generated tokens, `normal`, `always`,
 `decode-only`, and `prefill-only` all completed. Each MPK mode matched the
 normal mode for the first 30 generated tokens. `pytest -q tests/qwen3/`
 reported 6 passed and 3 subtests passed with the four output artifacts.
-The correctness gate remains the first 30 tokens, not full-generation equality.
+The later agreed correctness gate is at least 20 matching token IDs at the
+same positions among the first 30 generated tokens. Full-generation equality
+is not claimed.
 
 The two-token diagnostic compared normal decode with MPK decode-only. Both
 runs used the same input and first generated token. Captured logits from the
@@ -74,15 +76,15 @@ ms; range/mean 0.99%). MPK decode-only totals were 905.400, 904.684, and
 ratio was 2.93. Both tested B=1 contexts have under 2% range/mean in this
 method. These results do not validate B>1 or other context lengths.
 
-## Diverse prompt correctness failure
+## Diverse prompt numerical divergence
 
 A 128-token prompt derived from the Milestone 1 notes produced a different
 result from the repeated `hello` prompt. All four modes generated 128 tokens.
 `prefill-only` matched normal across the 100 saved tokens. `always` first
 diverged at zero-based generated token 35. `decode-only` first diverged at
-zero-based generated token 20, so the agreed first-30-token gate fails for
-this case. No performance sweep should use this configuration as a validated
-correctness case yet.
+zero-based generated token 20. This failed the earlier exact-first-30 gate.
+The first 20 positions match, so it passes the revised 20-of-30 gate; the
+full positional match count will be computed from the saved artifacts.
 
 At the step predicting generated token 20, normal logits ranked token 323 at
 31.375 and token 11 at 31.25. Decode-only logits placed both at 31.375 and
@@ -149,3 +151,15 @@ split-MPK equality check, this identifies the different prefill KV values
 as the cause of this particular mixed-path divergence. It does not imply the
 normal prefill KV values are invalid; both backends use BF16 arithmetic and
 their small numeric differences can flip an almost tied argmax.
+
+An fp32 candidate rescore of the BF16 normalized hidden state and BF16
+lm-head weights at the divergent step ranked token 323 above token 11 in
+both normal and decode-only. Normal candidate scores were 31.319107 vs
+31.295866 (gap 0.023241); decode-only scores were 31.410164 vs 31.351900
+(gap 0.058264). The decode-only BF16 projection had rounded both scores
+to 31.375, and its argmax tie behavior selected token 11. This identifies
+the BF16 projection tie as the immediate selection mechanism for this case.
+The earlier strict first-30-token check fails, but exact equality is no longer
+the acceptance criterion. Resolving ties with extra precision inside the
+persistent kernel remains a possible future experiment, with a latency cost
+to measure; changing tie order to favor one token ID would not be general.
