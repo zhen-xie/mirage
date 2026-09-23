@@ -2229,11 +2229,13 @@ class PersistentKernel:
         elif self.target_cc >= 100 and self.target_cc < 120:
             self.kn_graph.register_task(tb_graph, "linear_sm100")
         elif self.target_cc >= 90 and self.target_cc < 100:
-            if weight.dim(0) // grid_dim[0] <= 64:
+            if input.dim(0) <= 16:
                 self.kn_graph.register_task(tb_graph, "linear_swapAB_hopper")
-                # self.kn_graph.register_task(tb_graph, "linear_cutlass_hopper")
             else:
-                self.kn_graph.register_task(tb_graph, "linear_swapAB_hopper")
+                assert input.dim(0) <= 128 and input.dim(0) % 8 == 0, (
+                    "Hopper batches above 16 require an 8-token aligned "
+                    "compile-time batch size no larger than 128")
+                self.kn_graph.register_task(tb_graph, "linear_cutlass_hopper")
         elif self.target_cc >= 80 and self.target_cc < 90:
             self.kn_graph.register_task(tb_graph, "linear")
         else:
@@ -2268,11 +2270,14 @@ class PersistentKernel:
         if self.target_cc >= 100 and self.target_cc < 120:
             self.kn_graph.register_task(tb_graph, "linear_with_residual_sm100", params)
         elif self.target_cc >= 90 and self.target_cc < 100:
-            if weight.dim(0) // grid_dim[0] <= 64:
-                # self.kn_graph.register_task(tb_graph, "linear_cutlass_with_residual_hopper")
+            if input.dim(0) <= 16:
                 self.kn_graph.register_task(tb_graph, "linear_swapAB_with_residual_hopper", params)
             else:
-                self.kn_graph.register_task(tb_graph, "linear_swapAB_with_residual_hopper", params)
+                assert input.dim(0) <= 128 and input.dim(0) % 8 == 0, (
+                    "Hopper batches above 16 require an 8-token aligned "
+                    "compile-time batch size no larger than 128")
+                self.kn_graph.register_task(
+                    tb_graph, "linear_cutlass_with_residual_hopper", params)
         elif self.target_cc >= 80 and self.target_cc < 90:
             self.kn_graph.register_task(tb_graph, "linear_with_residual")
         else:

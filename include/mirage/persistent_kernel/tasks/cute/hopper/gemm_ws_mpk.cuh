@@ -124,10 +124,10 @@ CUTLASS_DEVICE void linear_cutlass_ws_hopper(const TMA_A &tma_a,
   constexpr int SWIZZLE_B = 3, SWIZZLE_M = 3, SWIZZLE_S = 3;
   constexpr int TILE_SIZE = 128;
 
-  // NOTE(Yu): Assume batch size is smaller than 16, and padding the batch size
-  // to 16
-  static_assert(BATCH_SIZE <= 16,
-                "Batch size must be smaller or equal to 16 in swapAB");
+  // The swapAB fast path is limited to 16. This CUTLASS path handles the
+  // larger, aligned decode batches selected by PersistentKernel.linear_layer.
+  static_assert(BATCH_SIZE > 16 && BATCH_SIZE <= 128 && BATCH_SIZE % 8 == 0,
+                "Large Hopper batch must be 8-token aligned and in (16, 128]");
   constexpr int SMEM_M_SIZE = BATCH_SIZE;
   using InputSmem = smem_tma<cutlass::bfloat16_t,
                              SWIZZLE_B,

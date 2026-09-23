@@ -532,7 +532,9 @@ if __name__ == "__main__":
             args.max_num_batched_requests + 1, dtype=torch.int32, device="cuda")
         paged_kv_indices_buffer = torch.empty(
             args.max_num_pages, dtype=torch.int32, device="cuda")
-        paged_kv_last_page_len_buffer = torch.empty(
+        # Keep this deterministic before a scheduler seeds its first batch.
+        # Resume-after-prefill overwrites active slots with their valid lengths.
+        paged_kv_last_page_len_buffer = torch.zeros(
             args.max_num_batched_requests, dtype=torch.int32, device="cuda")
         mpk = mi.PersistentKernel(
             mode="offline",

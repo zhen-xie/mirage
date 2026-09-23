@@ -38,7 +38,7 @@ FIELDS = (
     "generated_tokens_per_second_including_prefill", "decode_relative_range",
     "repeat_prefill_ms", "repeat_decode_ms", "repeat_continuous_total_ms",
     "minimum_first30_matches",
-    "compared_token_positions", "correctness_gate_applicable",
+    "compared_token_positions", "required_token_matches", "correctness_gate_applicable",
     "first30_matches_by_request_per_repeat", "decode_speedup_vs_normal",
     "phase_sum_speedup_vs_normal", "continuous_total_speedup_vs_normal",
     "summary_path",
@@ -61,6 +61,11 @@ DEFAULT_SEEDS = (
     "Describe a database consistency problem.",
     "Analyze an energy demand forecast.",
 )
+
+
+def required_token_matches(compared_tokens):
+    """Scale the agreed 20/30 positional gate to shorter generations."""
+    return (compared_tokens * 20 + 29) // 30
 
 
 def format_duration(seconds):
@@ -297,8 +302,20 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
         prefill_backend, decode_backend = BACKENDS[policy]
         minimum = min(min(repeat_counts) for repeat_counts in counts) if counts else None
         compared_positions = summary["compared_token_positions"]
-        gate_applicable = compared_positions == 30
-        gate_passed = not gate_applicable or minimum is None or minimum >= 20
+        required_matches = summary.get(
+            "required_token_matches", required_token_matches(compared_positions))
+        gate_applicable = compared_positions > 0
+        gate_passed = minimum is None or minimum >= required_matches
+        if policy == "normal":
+            status = "completed"
+            reason = None
+        elif gate_passed:
+            status = "completed"
+            reason = None
+        else:
+            status = "correctness_failed"
+            reason = (f"Minimum positional matches: {minimum}/{compared_positions}; "
+                      f"required: {required_matches}/{compared_positions}")
         rows.append({
             **expected,
             "s_in": context_length,
@@ -307,9 +324,8 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             "prompt_sha256": prompt_sha256,
             "estimated_kv_gib": estimated_kv_gib,
             "gpu_total_gib": gpu_total_gib,
-            "status": "completed" if gate_passed else "correctness_failed",
-            "status_reason": (None if gate_passed else
-                              f"Minimum first-30 positional matches: {minimum}/30"),
+            "status": status,
+            "status_reason": reason,
             "policy": policy,
             "prefill_backend": prefill_backend,
             "decode_backend": decode_backend,
@@ -338,6 +354,7 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
                 json.dumps(item["repeat_total_ms"]) if continuous else None),
             "minimum_first30_matches": minimum,
             "compared_token_positions": compared_positions,
+            "required_token_matches": required_matches,
             "correctness_gate_applicable": gate_applicable,
             "first30_matches_by_request_per_repeat": json.dumps(counts) if counts else None,
             "decode_speedup_vs_normal": (
@@ -409,11 +426,15 @@ def main():
                         help="Timeout in seconds for each demo process")
     parser.add_argument("--fail-on-failed-cases", action="store_true",
                         help="Return a nonzero status if any selected case fails")
+    parser.add_argument("--allow-code-change-resume", action="store_true",
+                        help="Reuse case summaries when only the recorded Git commit changed")
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--reserve-gib", type=float, default=32.0,
                         help="Keep this much GPU memory outside the estimated KV cache")
     parser.add_argument("--min-page-size", type=int, default=64,
                         help="Minimum KV page size; use 4096 to compare with established runs")
+    parser.add_argument("--max-mpk-batch-size", type=int, default=128,
+                        help="Largest batch enabled for MPK; Hopper uses the large-batch CUTLASS path above 16")
     parser.add_argument("--source-prompts-file", type=Path,
                         default=ROOT / "tests/benchmarks/baselines/batch_b8_smoke/eight_prompts.json")
     parser.add_argument("--output-dir", type=Path,
@@ -447,6 +468,8 @@ def main():
         parser.error("Repeat and timeout must be positive; warmup and reserve must be nonnegative")
     if args.min_page_size < 64 or args.min_page_size & (args.min_page_size - 1):
         parser.error("--min-page-size must be a power of two and at least 64")
+    if args.max_mpk_batch_size < 1:
+        parser.error("--max-mpk-batch-size must be positive")
 
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -464,16 +487,28 @@ def main():
     gpu_total_gib = gpu_total_bytes / 2**30
     kv_budget_bytes = gpu_total_bytes - args.reserve_gib * 2**30
     if environment_path.is_file():
-        if json.loads(environment_path.read_text()) != environment:
+        previous_environment = json.loads(environment_path.read_text())
+        if previous_environment != environment:
             completed_summaries = list(args.output_dir.glob("b*_in*_out*/summary.json"))
-            if completed_summaries:
+            previous_without_commit = {
+                key: value for key, value in previous_environment.items()
+                if key != "git_commit"
+            }
+            current_without_commit = {
+                key: value for key, value in environment.items()
+                if key != "git_commit"
+            }
+            code_only_change = previous_without_commit == current_without_commit
+            if completed_summaries and not (
+                args.allow_code_change_resume and code_only_change
+            ):
                 raise ValueError(
                     f"Environment changed after successful cases were recorded in "
-                    f"{args.output_dir}; start a new output directory"
+                    f"{args.output_dir}; start a new output directory or use "
+                    f"--allow-code-change-resume when only the Git commit changed"
                 )
             environment_path.write_text(json.dumps(environment, indent=2) + "\n")
-            print("Updated environment metadata; no successful cases exist in this directory",
-                  flush=True)
+            print("Updated environment metadata for resumed sweep", flush=True)
     else:
         environment_path.write_text(json.dumps(environment, indent=2) + "\n")
     rows = []
@@ -488,6 +523,7 @@ def main():
             feasible_batches = [
                 batch_size for batch_size in args.batch_sizes
                 if selected_cases is None or (batch_size, context_length, s_out) in selected_cases
+                if batch_size <= args.max_mpk_batch_size
                 if kv_bytes_for(model_config, batch_size, page_size) <= kv_budget_bytes
             ]
             prompts = []
@@ -510,6 +546,16 @@ def main():
                 case_dir = args.output_dir / f"b{batch_size}_in{context_length}_out{s_out}"
                 case_label = f"B={batch_size} S_IN={context_length} S_OUT={s_out}"
                 case_dir.mkdir(parents=True, exist_ok=True)
+                if batch_size > args.max_mpk_batch_size:
+                    reason = (f"Batch size exceeds the configured MPK limit of "
+                              f"{args.max_mpk_batch_size}")
+                    case_rows = unavailable_rows(batch_size, context_length, s_out, args,
+                                                 environment, page_size, estimated_kv_gib,
+                                                 gpu_total_gib, "unsupported_kernel", reason)
+                    rows.extend(case_rows)
+                    write_csv(csv_path, rows)
+                    progress.finish_case(case_label, "unsupported_kernel")
+                    continue
                 if batch_size not in feasible_batches:
                     reason = (f"Estimated KV cache {estimated_kv_gib:.2f} GiB exceeds "
                               f"the {max(0, kv_budget_bytes / 2**30):.2f} GiB budget "
@@ -641,9 +687,10 @@ def main():
     completed = sum(states == {"completed"} for states in case_statuses.values())
     correctness_failed = sum("correctness_failed" in states for states in case_statuses.values())
     skipped = sum("skipped_memory" in states for states in case_statuses.values())
+    unsupported = sum("unsupported_kernel" in states for states in case_statuses.values())
     failed = sum(bool({"failed", "failed_prompt"} & states) for states in case_statuses.values())
     print(f"Completed={completed}, correctness_failed={correctness_failed}, "
-          f"skipped_memory={skipped}, failed={failed}")
+          f"skipped_memory={skipped}, unsupported_kernel={unsupported}, failed={failed}")
     print(f"Wrote {csv_path}")
     if args.fail_on_failed_cases and (failed or correctness_failed):
         raise SystemExit(1)

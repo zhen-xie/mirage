@@ -18,6 +18,10 @@ reported 6 passed and 3 subtests passed with the four output artifacts.
 The later agreed correctness gate is at least 20 matching token IDs at the
 same positions among the first 30 generated tokens. Full-generation equality
 is not claimed.
+For generations shorter than 30 tokens, the benchmark applies the same ratio
+to every available generated position and rounds the required count up. For
+example, a 16-token generation must match at least 11 positions. These cases
+are assessed normally rather than reported as unassessed.
 
 The two-token diagnostic compared normal decode with MPK decode-only. Both
 runs used the same input and first generated token. Captured logits from the
@@ -249,6 +253,16 @@ remaining time after the first measured case, the active policy/repeat, and
 a 30-second heartbeat during long samples. It also writes the latest state
 to `progress.json` beside `raw_results.csv`; rerunning an unchanged sweep
 still reuses completed case summaries.
+The first broad pilot reached 384/392 cases before a B=1, 1024+1024
+decode-only sample remained active for more than 46 minutes. The observed
+MPK Hopper `linear_swapAB` implementation has a compile-time BATCH_SIZE<=16
+limit, so B=32, 64, and 128 are now recorded as `unsupported_kernel`
+without compilation. Outputs shorter than 30 tokens are now recorded as
+`correctness_unassessed` rather than completed because the agreed 20/30
+gate cannot be applied. `--allow-code-change-resume` permits reuse of the
+pilot summaries only when the recorded environment differs solely by Git
+commit; this is intended for sweep-control changes that do not alter the
+measured inference implementation.
 The first 3D smoke run failed all four cases during model construction:
 `Qwen3Attention` asserted a fixed KV cache shape with 16 pages of 4096
 tokens, while the sweep allocated per-case page counts and sizes. That
@@ -386,3 +400,23 @@ The earlier strict first-30-token check fails, but exact equality is no longer
 the acceptance criterion. Resolving ties with extra precision inside the
 persistent kernel remains a possible future experiment, with a latency cost
 to measure; changing tie order to favor one token ID would not be general.
+
+The first broad three-axis pilot also exposed a decode-only resume-state bug.
+After normal prefill, `resume_after_prefill_kernel` restored each request's
+step and page index but left `paged_kv_last_page_len_buffer` uninitialized.
+Because the Python buffer was allocated with `torch.empty`, a long decode
+could pass an arbitrary last-page length to attention and stall. The resume
+kernel now derives the valid length from the prompt length, and the Python
+buffer starts at zero as a defensive initialization. The online scheduler's
+two page-boundary paths were fixed at the same time: a zero modulo result now
+means a full page rather than a zero-length page. A targeted H100 regression
+is required before resuming the sweep.
+
+The pilot's deterministic compilation failures above B=16 came from the
+specialized Hopper `linear_swapAB` kernel, whose WGMMA tile is limited to 16
+tokens. The existing CUTLASS Hopper linear implementation is now selected for
+aligned compile-time batches from 24 through 128, while B<=16 keeps the
+established swapAB path. The same selection applies to residual linears and
+preserves the rank-specific residual behavior. This path must first pass a
+B=32 compile and correctness smoke test; B=64 and B=128 remain unvalidated
+until that succeeds.

@@ -203,6 +203,9 @@ __global__ void resume_after_prefill_kernel(RuntimeConfig config) {
       config.qo_indptr_buffer[request_id] = 0;
       config.paged_kv_indptr_buffer[request_id] = request_id;
       config.paged_kv_indices_buffer[request_id] = request_id;
+      int last_page_len = prompt_len % MPK_PAGE_SIZE;
+      config.paged_kv_last_page_len_buffer[request_id] =
+          (last_page_len == 0) ? MPK_PAGE_SIZE : last_page_len;
     }
     for (int slot = num_requests; slot < MPK_MAX_NUM_BATCHED_REQUESTS; slot++) {
       config.request_ids[slot] = -1;
@@ -626,8 +629,9 @@ __device__ __forceinline__ bool
 
     int num_new_pages =
         (step + num_new_tokens + MPK_PAGE_SIZE - 1) / MPK_PAGE_SIZE;
+    int last_page_len = (step + num_new_tokens) % MPK_PAGE_SIZE;
     config.paged_kv_last_page_len_buffer[num_reqs] =
-        (step + num_new_tokens) % MPK_PAGE_SIZE;
+        (last_page_len == 0) ? MPK_PAGE_SIZE : last_page_len;
 
     for (int j = 0; j < num_old_pages; j++) {
       config.paged_kv_indices_buffer[num_pages + j] =
@@ -694,8 +698,9 @@ __device__ __forceinline__ bool
 
     int num_new_pages =
         (initial_step + num_new_tokens + MPK_PAGE_SIZE - 1) / MPK_PAGE_SIZE;
+    int last_page_len = (initial_step + num_new_tokens) % MPK_PAGE_SIZE;
     config.paged_kv_last_page_len_buffer[num_reqs] =
-        (initial_step + num_new_tokens) % MPK_PAGE_SIZE;
+        (last_page_len == 0) ? MPK_PAGE_SIZE : last_page_len;
 
     for (int j = 0; j < num_new_pages; j++) {
       config.paged_kv_indices_buffer[num_pages + j] =
@@ -1835,6 +1840,7 @@ extern "C" void launch_persistent_kernel(cudaStream_t default_stream,
   if (resume_after_prefill) {
     resume_after_prefill_kernel<<<1, 1, 0, default_stream>>>(
         global_runtime_config);
+    CUDA_CHECK(cudaGetLastError());
   }
 #else
   assert(!resume_after_prefill);

@@ -17,6 +17,14 @@ from transformers import AutoTokenizer
 
 ROOT = Path(__file__).resolve().parents[2]
 DEMO = ROOT / "demo" / "qwen3" / "demo.py"
+TOKEN_MATCH_NUMERATOR = 20
+TOKEN_MATCH_DENOMINATOR = 30
+
+
+def required_token_matches(compared_tokens):
+    """Scale the agreed 20/30 positional gate to shorter generations."""
+    return ((compared_tokens * TOKEN_MATCH_NUMERATOR
+             + TOKEN_MATCH_DENOMINATOR - 1) // TOKEN_MATCH_DENOMINATOR)
 
 
 def percentile(values, fraction):
@@ -207,6 +215,7 @@ def main():
     if args.include_continuous_always:
         compared_policies.append("always-continuous")
     compared_tokens = min(30, args.decode_steps + 1)
+    required_matches = required_token_matches(compared_tokens)
     for policy in compared_policies:
         token_match_counts = []
         for normal, mpk in zip(samples["normal"], samples[policy]):
@@ -220,8 +229,11 @@ def main():
                     raise ValueError(f"Request {request_id} has fewer than {compared_tokens} saved tokens")
                 matches = sum(a == b for a, b in zip(normal_tokens[:compared_tokens], mpk_tokens[:compared_tokens]))
                 repeat_counts.append(matches)
-                if compared_tokens == 30 and matches < 20 and not args.allow_correctness_failures:
-                    raise ValueError(f"Request {request_id}: normal and {policy} match only {matches}/30 positions")
+                if matches < required_matches and not args.allow_correctness_failures:
+                    raise ValueError(
+                        f"Request {request_id}: normal and {policy} match only "
+                        f"{matches}/{compared_tokens} positions; "
+                        f"at least {required_matches} are required")
             token_match_counts.append(repeat_counts)
         match_counts[policy] = token_match_counts
 
@@ -241,12 +253,14 @@ def main():
         "continuous_always_note": "Continuous always has one kernel duration; prefill/decode timing is unavailable",
         "first_30_token_matches_by_policy": match_counts,
         "compared_token_positions": compared_tokens,
+        "required_token_matches": required_matches,
         "first_30_gate_passed_by_policy": {
-            policy: (all(min(counts) >= 20 for counts in repeats)
-                     if compared_tokens == 30 else None)
+            policy: all(min(counts) >= required_matches for counts in repeats)
             for policy, repeats in match_counts.items()
         },
-        "token_match_gate": "At least 20 of the first 30 positions match when at least 30 tokens are saved",
+        "token_match_gate": (
+            "At least two thirds of the first min(30, generated tokens) "
+            "positions match, rounded up"),
     }
     if args.policies == ["decode-only"]:
         summary["first_30_token_matches_by_request_per_repeat"] = match_counts["decode-only"]

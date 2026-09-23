@@ -1727,7 +1727,13 @@ int TaskRegister::register_linear_cutlass_hopper_task(
     threadblock::Graph const &bgraph,
     std::vector<int> const &params,
     bool with_residual) {
-  assert(params.size() == 0);
+  bool rank_with_residual = with_residual;
+  if (with_residual) {
+    assert(params.size() == 1);
+    rank_with_residual = (params[0] == 1);
+  } else {
+    assert(params.empty());
+  }
   int batch_size = 0, output_size = 0, reduction_size = 0, output_stride = 0;
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
@@ -1823,7 +1829,7 @@ int TaskRegister::register_linear_cutlass_hopper_task(
   constexpr int S = 3;
   constexpr int TMA_CP_ASYNC_SIZE = 64;
   constexpr int Kstages = 5;
-  assert(batch_size <= 16);
+  assert(batch_size > 16 && batch_size <= 128 && batch_size % 8 == 0);
   int const SMEM_M_SIZE = batch_size;
   int const output_tma_cp_size = output_size < 64 ? output_size : 64;
   int const output_atom_size = 64;
@@ -1879,7 +1885,7 @@ int TaskRegister::register_linear_cutlass_hopper_task(
          output_size,
          reduction_size,
          output_stride,
-         with_residual);
+         rank_with_residual);
   code.e("    tma_a,");
   code.e("    tma_b,");
   code.e("    task_desc->output_ptrs[0],");
