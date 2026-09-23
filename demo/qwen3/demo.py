@@ -422,6 +422,15 @@ if __name__ == "__main__":
         def capture_layer0_attention_output(_module, inputs):
             normal_layer0["attention_output"] = inputs[0][:, -1, :].detach()
 
+        def capture_layer0_q(_module, _inputs, output):
+            normal_layer0["q"] = output[:, -1, :].detach()
+
+        def capture_layer0_k(_module, _inputs, output):
+            normal_layer0["k"] = output[:, -1, :].detach()
+
+        def capture_layer0_v(_module, _inputs, output):
+            normal_layer0["v"] = output[:, -1, :].detach()
+
         def capture_layer0_after_attention(_module, inputs):
             normal_layer0["after_attention"] = inputs[1][:, -1, :].detach()
 
@@ -434,6 +443,15 @@ if __name__ == "__main__":
         )
         model.model.layers[0].self_attn.o_proj.register_forward_pre_hook(
             capture_layer0_attention_output
+        )
+        model.model.layers[0].self_attn.q_proj.register_forward_hook(
+            capture_layer0_q
+        )
+        model.model.layers[0].self_attn.k_proj.register_forward_hook(
+            capture_layer0_k
+        )
+        model.model.layers[0].self_attn.v_proj.register_forward_hook(
+            capture_layer0_v
         )
         model.model.layers[0].mlp.register_forward_pre_hook(
             capture_layer0_after_attention
@@ -650,6 +668,15 @@ if __name__ == "__main__":
             mpk_layer0_attention_output_dt = mpk.attach_input(
                 torch_tensor=mpk_layer0_attention_output,
                 name="layer0_attention_output_snapshot",
+            )
+            mpk_layer0_qkv = torch.empty(
+                (args.max_num_batched_tokens, fused_outdim_1 // world_size),
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            mpk_layer0_qkv_dt = mpk.attach_input(
+                torch_tensor=mpk_layer0_qkv,
+                name="layer0_qkv_snapshot",
             )
             mpk_layer0_after_attention = torch.empty(
                 (args.max_num_batched_tokens, hidden_size),
@@ -871,6 +898,13 @@ if __name__ == "__main__":
                 grid_dim=(grid_for_rmsnorm_linear_layer(w_qkv.dim(0), args.use_cutlass_kernel), 1, 1),
                 block_dim=(128, 1, 1),
             )
+            if args.save_intermediates and i == 0:
+                mpk.copy_layer(
+                    input=attn_in,
+                    output=mpk_layer0_qkv_dt,
+                    grid_dim=(1, 1, 1),
+                    block_dim=(128, 1, 1),
+                )
             #mpk.rmsnorm_linear_layer(
             #    input=x,
             #    weight_norm=w_norm,
@@ -1415,6 +1449,26 @@ if __name__ == "__main__":
             layer0_input_all = normal_layer0.get("input")
             layer0_norm_all = normal_layer0.get("norm")
             layer0_attention_output_all = normal_layer0.get("attention_output")
+            normal_q = normal_layer0.get("q")
+            normal_k = normal_layer0.get("k")
+            normal_v = normal_layer0.get("v")
+            if normal_q is None or normal_k is None or normal_v is None:
+                layer0_qkv_all = None
+            else:
+                q_per_kv = num_local_q_heads // num_local_kv_heads
+                batch_size = normal_q.shape[0]
+                grouped_q = normal_q.reshape(
+                    batch_size, num_local_kv_heads, q_per_kv, head_dim
+                )
+                grouped_k = normal_k.reshape(
+                    batch_size, num_local_kv_heads, 1, head_dim
+                )
+                grouped_v = normal_v.reshape(
+                    batch_size, num_local_kv_heads, 1, head_dim
+                )
+                layer0_qkv_all = torch.cat(
+                    (grouped_q, grouped_k, grouped_v), dim=2
+                ).reshape(batch_size, -1)
         else:
             hidden_all = mpk_hidden
             output_logits_all = mpk_logits[:, :model.config.vocab_size]
@@ -1450,6 +1504,7 @@ if __name__ == "__main__":
             layer0_attention_output_all = (
                 mpk_layer0_attention_output.index_select(0, snapshot_indices)
             )
+            layer0_qkv_all = mpk_layer0_qkv.index_select(0, snapshot_indices)
         if total_num_requests == 1:
             hidden = hidden_all[0]
             output_logits = output_logits_all[0]
@@ -1477,6 +1532,9 @@ if __name__ == "__main__":
                 None if layer0_attention_output_all is None
                 else layer0_attention_output_all[0]
             )
+            layer0_qkv = (
+                None if layer0_qkv_all is None else layer0_qkv_all[0]
+            )
         else:
             hidden = hidden_all
             output_logits = output_logits_all
@@ -1492,6 +1550,7 @@ if __name__ == "__main__":
             layer0_input = layer0_input_all
             layer0_norm = layer0_norm_all
             layer0_attention_output = layer0_attention_output_all
+            layer0_qkv = layer0_qkv_all
         os.makedirs(os.path.dirname(os.path.abspath(args.save_intermediates)), exist_ok=True)
         snapshot = {
             "backend": args.backend,
@@ -1521,5 +1580,7 @@ if __name__ == "__main__":
             snapshot["layer0_attention_output"] = (
                 layer0_attention_output.detach().cpu()
             )
+        if layer0_qkv is not None:
+            snapshot["layer0_qkv"] = layer0_qkv.detach().cpu()
         torch.save(snapshot, args.save_intermediates)
         print(f"Saved intermediates to {args.save_intermediates}")

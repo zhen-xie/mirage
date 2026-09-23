@@ -128,6 +128,7 @@ def main():
     layer_keys = (
         "layer0_input",
         "layer0_norm",
+        "layer0_qkv",
         "layer0_attention_output",
         "layer0_after_attention",
         "layer0_output",
