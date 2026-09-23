@@ -43,35 +43,56 @@ def main():
     if normal["decode_step_index"] != mpk["decode_step_index"]:
         raise ValueError("Probes target different decode steps")
     for name, probe in (("normal", normal), (mpk["policy"], mpk)):
-        predicted = probe["logits"].argmax().item()
-        generated = probe["generated_token_ids"][-1].item()
-        if predicted != generated:
+        predicted = probe["logits"].argmax(dim=-1)
+        generated = probe["generated_token_ids"][..., -1]
+        if not torch.equal(predicted, generated):
             raise ValueError(
-                f"{name} captured logits predict token {predicted}, "
-                f"but generation produced {generated}; probe is not aligned"
+                f"{name} captured logits do not predict the saved generated "
+                "tokens; probe is not aligned"
             )
 
     def top_tokens(probe):
-        values, indices = torch.topk(probe["logits"].float(), 5)
-        return [{"token_id": token.item(), "logit": value.item()}
-                for token, value in zip(indices, values)]
+        values, indices = torch.topk(probe["logits"].float(), 5, dim=-1)
+        if probe["logits"].ndim == 1:
+            return [{"token_id": token.item(), "logit": value.item()}
+                    for token, value in zip(indices, values)]
+        return [
+            [{"token_id": token.item(), "logit": value.item()}
+             for token, value in zip(row_indices, row_values)]
+            for row_indices, row_values in zip(indices, values)
+        ]
 
     def fp32_candidates(probe):
         if "fp32_recomputed_candidate_logits" not in probe:
             return None
-        candidates = [
-            {"token_id": token.item(), "logit": score.item()}
-            for token, score in zip(probe["candidate_token_ids"],
-                                    probe["fp32_recomputed_candidate_logits"])
+        token_ids = probe["candidate_token_ids"]
+        scores = probe["fp32_recomputed_candidate_logits"]
+        if token_ids.ndim == 1:
+            candidates = [
+                {"token_id": token.item(), "logit": score.item()}
+                for token, score in zip(token_ids, scores)
+            ]
+            return sorted(
+                candidates, key=lambda item: item["logit"], reverse=True
+            )
+        return [
+            sorted(
+                [{"token_id": token.item(), "logit": score.item()}
+                 for token, score in zip(row_tokens, row_scores)],
+                key=lambda item: item["logit"],
+                reverse=True,
+            )
+            for row_tokens, row_scores in zip(token_ids, scores)
         ]
-        return sorted(candidates, key=lambda item: item["logit"], reverse=True)
 
     report = {
         "mpk_policy": mpk["policy"],
         "prompt_length": normal["prompt_length"],
         "decode_step_index": normal["decode_step_index"],
-        "probed_generated_token_matches": normal["generated_token_ids"][-1].item()
-        == mpk["generated_token_ids"][-1].item(),
+        "probed_generated_token_matches": torch.equal(
+            normal["generated_token_ids"][..., -1],
+            mpk["generated_token_ids"][..., -1],
+        ),
         "generated_tokens_match_through_probe": torch.equal(
             normal["generated_token_ids"], mpk["generated_token_ids"]
         ),
@@ -86,6 +107,30 @@ def main():
             normal["normalized_hidden_state"], mpk["normalized_hidden_state"]
         ),
     }
+    if normal["logits"].ndim == 2:
+        report["per_request"] = []
+        for request_id in range(normal["logits"].shape[0]):
+            report["per_request"].append({
+                "request_id": request_id,
+                "generated_token_matches": (
+                    normal["generated_token_ids"][request_id, -1].item()
+                    == mpk["generated_token_ids"][request_id, -1].item()
+                ),
+                "normal_generated_token": normal[
+                    "generated_token_ids"
+                ][request_id, -1].item(),
+                "mpk_generated_token": mpk[
+                    "generated_token_ids"
+                ][request_id, -1].item(),
+                "logits": tensor_metrics(
+                    normal["logits"][request_id],
+                    mpk["logits"][request_id],
+                ),
+                "normalized_hidden_state": tensor_metrics(
+                    normal["normalized_hidden_state"][request_id],
+                    mpk["normalized_hidden_state"][request_id],
+                ),
+            })
     print(json.dumps(report, indent=2))
 
 

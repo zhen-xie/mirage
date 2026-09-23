@@ -307,18 +307,18 @@ if __name__ == "__main__":
         if (args.max_num_batched_requests > args.max_num_pages
             or args.max_num_batched_requests > args.max_num_batched_tokens
             or not args.ignore_eos or args.max_seq_length > args.page_size
-            or args.save_intermediates or args.save_prefill_kv
+            or args.save_prefill_kv
             or args.debug_load_prefill_kv):
             parser.error("Batched MPK requires one KV page per request, "
                          "enough batched-token slots, --ignore-eos, and no diagnostic snapshots")
     if args.save_intermediates and (
         args.backend == "mpk" and args.mpk_policy not in ("decode-only", "prefill-only", "always")
         or args.max_new_tokens is None
-        or args.max_new_tokens < 2
+        or args.max_new_tokens < 1
         or not args.ignore_eos
         or args.do_sample
     ):
-        parser.error("--save-intermediates requires a static policy, at least two output tokens, ignore-eos, and greedy decoding")
+        parser.error("--save-intermediates requires a static policy, at least one output token, ignore-eos, and greedy decoding")
     if args.save_prefill_kv and (
         args.backend == "mpk" and args.mpk_policy != "prefill-only"
         or args.do_sample or args.spec_decode or args.profiling
@@ -1299,22 +1299,40 @@ if __name__ == "__main__":
         dist.destroy_process_group()
     if args.save_intermediates:
         prompt_len = prompt_lengths[0].item()
-        if args.backend == "normal" or args.mpk_policy == "prefill-only":
-            hidden = normal_hidden["last"][0]
-            output_logits = logits[0, -1, :model.config.vocab_size]
+        if (args.backend == "normal"
+                or (args.mpk_policy == "prefill-only" and output_len > 1)):
+            hidden_all = normal_hidden["last"]
+            output_logits_all = logits[:, -1, :model.config.vocab_size]
         else:
-            hidden = mpk_hidden[0]
-            output_logits = mpk_logits[0, :model.config.vocab_size]
-        candidate_ids = torch.topk(output_logits.float(), 8).indices
-        candidate_weights = model.lm_head.weight.index_select(0, candidate_ids)
-        fp32_candidate_logits = torch.mv(candidate_weights.float(), hidden.float())
+            hidden_all = mpk_hidden
+            output_logits_all = mpk_logits[:, :model.config.vocab_size]
+        if total_num_requests == 1:
+            hidden = hidden_all[0]
+            output_logits = output_logits_all[0]
+            candidate_ids = torch.topk(output_logits.float(), 8).indices
+            candidate_weights = model.lm_head.weight.index_select(0, candidate_ids)
+            fp32_candidate_logits = torch.mv(
+                candidate_weights.float(), hidden.float()
+            )
+            prefix_token_ids = tokens[0, :prompt_len + max(output_len - 1, 0)]
+            generated_token_ids = tokens[0, prompt_len:prompt_len + output_len]
+        else:
+            hidden = hidden_all
+            output_logits = output_logits_all
+            candidate_ids = torch.topk(output_logits.float(), 8, dim=-1).indices
+            candidate_weights = model.lm_head.weight[candidate_ids]
+            fp32_candidate_logits = torch.einsum(
+                "bkh,bh->bk", candidate_weights.float(), hidden.float()
+            )
+            prefix_token_ids = tokens[:, :prompt_len + max(output_len - 1, 0)]
+            generated_token_ids = tokens[:, prompt_len:prompt_len + output_len]
         os.makedirs(os.path.dirname(os.path.abspath(args.save_intermediates)), exist_ok=True)
         torch.save({
             "backend": args.backend,
             "policy": args.mpk_policy,
             "prompt_length": prompt_len,
-            "prefix_token_ids": tokens[0, :prompt_len + output_len - 1].cpu(),
-            "generated_token_ids": tokens[0, prompt_len:prompt_len + output_len].cpu(),
+            "prefix_token_ids": prefix_token_ids.cpu(),
+            "generated_token_ids": generated_token_ids.cpu(),
             "decode_step_index": output_len - 2,
             "debug_split_mpk_prefill": args.debug_split_mpk_prefill,
             "debug_load_prefill_kv": args.debug_load_prefill_kv,
