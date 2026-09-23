@@ -352,8 +352,9 @@ __device__ __forceinline__ bool
       int num_new_tokens = config.prompt_length[request_id] - step;
       if (num_new_tokens > 0) {
         // Prefill requests
-        num_new_tokens =
-            min(num_new_tokens, MPK_MAX_NUM_BATCHED_TOKENS - num_tokens);
+        num_new_tokens = min(
+            num_new_tokens,
+            min(16, MPK_MAX_NUM_BATCHED_TOKENS - num_tokens));
       } else {
         // Decode requests
 #ifdef MPK_SPEC_DECODE
@@ -404,8 +405,9 @@ __device__ __forceinline__ bool
     config.qo_indptr_buffer[num_reqs] = num_tokens;
     config.paged_kv_indptr_buffer[num_reqs] = num_pages;
     // Prefill request
-    int num_new_tokens = min(config.prompt_length[next_request_id],
-                             MPK_MAX_NUM_BATCHED_TOKENS - num_tokens);
+    int num_new_tokens =
+        min(config.prompt_length[next_request_id],
+            min(16, MPK_MAX_NUM_BATCHED_TOKENS - num_tokens));
     // Move tokens to input tokens
     for (int j = 0; j < num_new_tokens; j++) {
       config.input_tokens[num_tokens + j] =
@@ -617,7 +619,8 @@ __device__ __forceinline__ bool
     int remaining = config.prompt_length[row] - step;
     int num_new_tokens;
     if (remaining > 0) {
-      num_new_tokens = min(remaining, MPK_MAX_NUM_BATCHED_TOKENS - num_tokens);
+      num_new_tokens =
+          min(remaining, min(16, MPK_MAX_NUM_BATCHED_TOKENS - num_tokens));
     } else {
       num_new_tokens = min(1, MPK_MAX_NUM_BATCHED_TOKENS - num_tokens);
     }
@@ -688,8 +691,11 @@ __device__ __forceinline__ bool
     config.paged_kv_indptr_buffer[num_reqs] = num_pages;
 
     int remaining = prompt_len - initial_step;
-    int num_new_tokens = min(remaining > 0 ? remaining : 1,
-                             MPK_MAX_NUM_BATCHED_TOKENS - num_tokens);
+    int num_new_tokens =
+        remaining > 0
+            ? min(remaining,
+                  min(16, MPK_MAX_NUM_BATCHED_TOKENS - num_tokens))
+            : min(1, MPK_MAX_NUM_BATCHED_TOKENS - num_tokens);
 
     for (int j = 0; j < num_new_tokens; j++) {
       config.input_tokens[num_tokens + j] =
