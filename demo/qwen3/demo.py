@@ -434,6 +434,20 @@ if __name__ == "__main__":
         def capture_layer0_after_attention(_module, inputs):
             normal_layer0["after_attention"] = inputs[1][:, -1, :].detach()
 
+        def capture_layer0_post_attention_norm(_module, _inputs, output):
+            normal_layer0["post_attention_norm"] = output[:, -1, :].detach()
+
+        def capture_layer0_gate(_module, _inputs, output):
+            normal_layer0["gate"] = output[:, -1, :].detach()
+
+        def capture_layer0_up(_module, _inputs, output):
+            normal_layer0["up"] = output[:, -1, :].detach()
+            gate = normal_layer0.get("gate")
+            if gate is not None:
+                normal_layer0["silu_mul"] = (
+                    torch.nn.functional.silu(gate) * output[:, -1, :]
+                ).detach()
+
         def capture_layer0_output(_module, _inputs, output):
             normal_layer0["output"] = output[0][:, -1, :].detach()
 
@@ -455,6 +469,15 @@ if __name__ == "__main__":
         )
         model.model.layers[0].mlp.register_forward_pre_hook(
             capture_layer0_after_attention
+        )
+        model.model.layers[0].post_attention_layernorm.register_forward_hook(
+            capture_layer0_post_attention_norm
+        )
+        model.model.layers[0].mlp.gate_proj.register_forward_hook(
+            capture_layer0_gate
+        )
+        model.model.layers[0].mlp.up_proj.register_forward_hook(
+            capture_layer0_up
         )
         model.model.layers[0].register_forward_hook(capture_layer0_output)
     # get all model weight tensors
@@ -695,6 +718,33 @@ if __name__ == "__main__":
             mpk_layer0_output_dt = mpk.attach_input(
                 torch_tensor=mpk_layer0_output,
                 name="layer0_output_snapshot",
+            )
+            mpk_layer0_post_attention_norm = torch.empty(
+                (args.max_num_batched_tokens, hidden_size),
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            mpk_layer0_post_attention_norm_dt = mpk.attach_input(
+                torch_tensor=mpk_layer0_post_attention_norm,
+                name="layer0_post_attention_norm_snapshot",
+            )
+            mpk_layer0_mlp_mid = torch.empty(
+                (args.max_num_batched_tokens, fused_outdim_2 // world_size),
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            mpk_layer0_mlp_mid_dt = mpk.attach_input(
+                torch_tensor=mpk_layer0_mlp_mid,
+                name="layer0_mlp_mid_snapshot",
+            )
+            mpk_layer0_silu_mul = torch.empty(
+                (args.max_num_batched_tokens, intermediate_size // world_size),
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            mpk_layer0_silu_mul_dt = mpk.attach_input(
+                torch_tensor=mpk_layer0_silu_mul,
+                name="layer0_silu_mul_snapshot",
             )
         else:
             rmsnorm_out = mpk.new_tensor(
@@ -1051,6 +1101,13 @@ if __name__ == "__main__":
                 grid_dim=(mpk.max_num_batched_tokens, 1, 1),
                 block_dim=(128, 1, 1),
             )
+            if args.save_intermediates and i == 0:
+                mpk.copy_layer(
+                    input=rmsnorm_out,
+                    output=mpk_layer0_post_attention_norm_dt,
+                    grid_dim=(1, 1, 1),
+                    block_dim=(128, 1, 1),
+                )
             mpk.linear_layer(
                 input=rmsnorm_out,
                 weight=w_gatedup,
@@ -1058,6 +1115,13 @@ if __name__ == "__main__":
                 grid_dim=(rmsnorm_num_tasks, 1, 1),
                 block_dim=(128, 1, 1),
             )
+            if args.save_intermediates and i == 0:
+                mpk.copy_layer(
+                    input=mlp_mid,
+                    output=mpk_layer0_mlp_mid_dt,
+                    grid_dim=(1, 1, 1),
+                    block_dim=(128, 1, 1),
+                )
             #mpk.rmsnorm_linear_layer(
             #    input=x,
             #    weight_norm=w_norm,
@@ -1072,6 +1136,13 @@ if __name__ == "__main__":
                 grid_dim=(rmsnorm_num_tasks//2, 1, 1),
                 block_dim=(128, 1, 1),
             )
+            if args.save_intermediates and i == 0:
+                mpk.copy_layer(
+                    input=silu_mul_out,
+                    output=mpk_layer0_silu_mul_dt,
+                    grid_dim=(1, 1, 1),
+                    block_dim=(128, 1, 1),
+                )
             # add silu_mul_linear layer
             w = mpk.attach_input(
                 torch_tensor=layer.mlp.down_proj.weight, name=f"layer_{i}_down_proj"
@@ -1449,6 +1520,16 @@ if __name__ == "__main__":
             layer0_input_all = normal_layer0.get("input")
             layer0_norm_all = normal_layer0.get("norm")
             layer0_attention_output_all = normal_layer0.get("attention_output")
+            layer0_post_attention_norm_all = normal_layer0.get(
+                "post_attention_norm"
+            )
+            normal_gate = normal_layer0.get("gate")
+            normal_up = normal_layer0.get("up")
+            if normal_gate is None or normal_up is None:
+                layer0_mlp_mid_all = None
+            else:
+                layer0_mlp_mid_all = torch.cat((normal_gate, normal_up), dim=-1)
+            layer0_silu_mul_all = normal_layer0.get("silu_mul")
             normal_q = normal_layer0.get("q")
             normal_k = normal_layer0.get("k")
             normal_v = normal_layer0.get("v")
@@ -1508,6 +1589,17 @@ if __name__ == "__main__":
                 mpk_layer0_attention_output.index_select(0, snapshot_indices)
             )
             layer0_qkv_all = mpk_layer0_qkv.index_select(0, snapshot_indices)
+            layer0_post_attention_norm_all = (
+                mpk_layer0_post_attention_norm.index_select(
+                    0, snapshot_indices
+                )
+            )
+            layer0_mlp_mid_all = mpk_layer0_mlp_mid.index_select(
+                0, snapshot_indices
+            )
+            layer0_silu_mul_all = mpk_layer0_silu_mul.index_select(
+                0, snapshot_indices
+            )
         if total_num_requests == 1:
             hidden = hidden_all[0]
             output_logits = output_logits_all[0]
@@ -1538,6 +1630,17 @@ if __name__ == "__main__":
             layer0_qkv = (
                 None if layer0_qkv_all is None else layer0_qkv_all[0]
             )
+            layer0_post_attention_norm = (
+                None if layer0_post_attention_norm_all is None
+                else layer0_post_attention_norm_all[0]
+            )
+            layer0_mlp_mid = (
+                None if layer0_mlp_mid_all is None else layer0_mlp_mid_all[0]
+            )
+            layer0_silu_mul = (
+                None if layer0_silu_mul_all is None
+                else layer0_silu_mul_all[0]
+            )
         else:
             hidden = hidden_all
             output_logits = output_logits_all
@@ -1554,6 +1657,9 @@ if __name__ == "__main__":
             layer0_norm = layer0_norm_all
             layer0_attention_output = layer0_attention_output_all
             layer0_qkv = layer0_qkv_all
+            layer0_post_attention_norm = layer0_post_attention_norm_all
+            layer0_mlp_mid = layer0_mlp_mid_all
+            layer0_silu_mul = layer0_silu_mul_all
         os.makedirs(os.path.dirname(os.path.abspath(args.save_intermediates)), exist_ok=True)
         snapshot = {
             "backend": args.backend,
@@ -1585,5 +1691,13 @@ if __name__ == "__main__":
             )
         if layer0_qkv is not None:
             snapshot["layer0_qkv"] = layer0_qkv.detach().cpu()
+        if layer0_post_attention_norm is not None:
+            snapshot["layer0_post_attention_norm"] = (
+                layer0_post_attention_norm.detach().cpu()
+            )
+        if layer0_mlp_mid is not None:
+            snapshot["layer0_mlp_mid"] = layer0_mlp_mid.detach().cpu()
+        if layer0_silu_mul is not None:
+            snapshot["layer0_silu_mul"] = layer0_silu_mul.detach().cpu()
         torch.save(snapshot, args.save_intermediates)
         print(f"Saved intermediates to {args.save_intermediates}")

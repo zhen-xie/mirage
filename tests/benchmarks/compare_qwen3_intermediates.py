@@ -131,6 +131,9 @@ def main():
         "layer0_qkv",
         "layer0_attention_output",
         "layer0_after_attention",
+        "layer0_post_attention_norm",
+        "layer0_mlp_mid",
+        "layer0_silu_mul",
         "layer0_output",
     )
     for key in layer_keys:
