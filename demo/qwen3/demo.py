@@ -1455,16 +1455,19 @@ if __name__ == "__main__":
             if normal_q is None or normal_k is None or normal_v is None:
                 layer0_qkv_all = None
             else:
-                q_per_kv = num_local_q_heads // num_local_kv_heads
+                q_heads = model.config.num_attention_heads
+                kv_heads = model.config.num_key_value_heads
+                q_per_kv = q_heads // kv_heads
+                qkv_head_dim = model.config.head_dim
                 batch_size = normal_q.shape[0]
                 grouped_q = normal_q.reshape(
-                    batch_size, num_local_kv_heads, q_per_kv, head_dim
+                    batch_size, kv_heads, q_per_kv, qkv_head_dim
                 )
                 grouped_k = normal_k.reshape(
-                    batch_size, num_local_kv_heads, 1, head_dim
+                    batch_size, kv_heads, 1, qkv_head_dim
                 )
                 grouped_v = normal_v.reshape(
-                    batch_size, num_local_kv_heads, 1, head_dim
+                    batch_size, kv_heads, 1, qkv_head_dim
                 )
                 layer0_qkv_all = torch.cat(
                     (grouped_q, grouped_k, grouped_v), dim=2
