@@ -407,10 +407,22 @@ if __name__ == "__main__":
 
     total_num_requests = args.max_num_batched_requests
     normal_hidden = {}
+    normal_layer0 = {}
     if args.save_intermediates and (args.backend == "normal" or args.mpk_policy == "prefill-only"):
         def capture_normal_hidden(_module, _inputs, output):
             normal_hidden["last"] = output[:, -1, :].detach()
         model.model.norm.register_forward_hook(capture_normal_hidden)
+    if args.save_intermediates and args.backend == "normal":
+        def capture_layer0_after_attention(_module, inputs):
+            normal_layer0["after_attention"] = inputs[1][:, -1, :].detach()
+
+        def capture_layer0_output(_module, _inputs, output):
+            normal_layer0["output"] = output[0][:, -1, :].detach()
+
+        model.model.layers[0].mlp.register_forward_pre_hook(
+            capture_layer0_after_attention
+        )
+        model.model.layers[0].register_forward_hook(capture_layer0_output)
     # get all model weight tensors
     tokens = torch.full((total_num_requests, args.max_seq_length), 0, dtype=torch.long, device="cuda")
 
@@ -596,6 +608,24 @@ if __name__ == "__main__":
             mpk_hidden = torch.empty((args.max_num_batched_tokens, hidden_size),
                                      dtype=torch.bfloat16, device="cuda")
             rmsnorm_out = mpk.attach_input(torch_tensor=mpk_hidden, name="rmsnorm_out")
+            mpk_layer0_after_attention = torch.empty(
+                (args.max_num_batched_tokens, hidden_size),
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            mpk_layer0_after_attention_dt = mpk.attach_input(
+                torch_tensor=mpk_layer0_after_attention,
+                name="layer0_after_attention_snapshot",
+            )
+            mpk_layer0_output = torch.empty(
+                (args.max_num_batched_tokens, hidden_size),
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            mpk_layer0_output_dt = mpk.attach_input(
+                torch_tensor=mpk_layer0_output,
+                name="layer0_output_snapshot",
+            )
         else:
             rmsnorm_out = mpk.new_tensor(
                 dims=(args.max_num_batched_tokens, hidden_size),
@@ -892,6 +922,13 @@ if __name__ == "__main__":
                     block_dim=(128, 1, 1),
                 )
                 x = attn_allreduce_out
+            if args.save_intermediates and i == 0:
+                mpk.copy_layer(
+                    input=x,
+                    output=mpk_layer0_after_attention_dt,
+                    grid_dim=(1, 1, 1),
+                    block_dim=(128, 1, 1),
+                )
             # add rmsnorm_linear layer
             w_norm = mpk.attach_input(
                 torch_tensor=layer.post_attention_layernorm.weight,
@@ -971,6 +1008,13 @@ if __name__ == "__main__":
                     block_dim=(128, 1, 1),
                 )
                 x = mlp_final
+            if args.save_intermediates and i == 0:
+                mpk.copy_layer(
+                    input=x,
+                    output=mpk_layer0_output_dt,
+                    grid_dim=(1, 1, 1),
+                    block_dim=(128, 1, 1),
+                )
 
         # add rmsnorm_linear layer
         w_norm = mpk.attach_input(
@@ -1303,9 +1347,14 @@ if __name__ == "__main__":
                 or (args.mpk_policy == "prefill-only" and output_len > 1)):
             hidden_all = normal_hidden["last"]
             output_logits_all = logits[:, -1, :model.config.vocab_size]
+            layer0_after_attention_all = normal_layer0.get("after_attention")
+            layer0_output_all = normal_layer0.get("output")
         else:
             hidden_all = mpk_hidden
             output_logits_all = mpk_logits[:, :model.config.vocab_size]
+            snapshot_indices = torch.arange(
+                total_num_requests, device=mpk_hidden.device
+            )
             if output_len == 1 and args.mpk_policy in ("always", "prefill-only"):
                 total_prompt_tokens = int(prompt_lengths.sum().item())
                 if total_prompt_tokens > args.max_num_batched_tokens:
@@ -1315,10 +1364,17 @@ if __name__ == "__main__":
                         "of requests or increase --max-num-batched-tokens"
                     )
                 terminal_slots = torch.cumsum(prompt_lengths, dim=0) - 1
+                snapshot_indices = terminal_slots
                 hidden_all = hidden_all.index_select(0, terminal_slots)
                 output_logits_all = output_logits_all.index_select(
                     0, terminal_slots
                 )
+            layer0_after_attention_all = mpk_layer0_after_attention.index_select(
+                0, snapshot_indices
+            )
+            layer0_output_all = mpk_layer0_output.index_select(
+                0, snapshot_indices
+            )
         if total_num_requests == 1:
             hidden = hidden_all[0]
             output_logits = output_logits_all[0]
@@ -1329,6 +1385,13 @@ if __name__ == "__main__":
             )
             prefix_token_ids = tokens[0, :prompt_len + max(output_len - 1, 0)]
             generated_token_ids = tokens[0, prompt_len:prompt_len + output_len]
+            layer0_after_attention = (
+                None if layer0_after_attention_all is None
+                else layer0_after_attention_all[0]
+            )
+            layer0_output = (
+                None if layer0_output_all is None else layer0_output_all[0]
+            )
         else:
             hidden = hidden_all
             output_logits = output_logits_all
@@ -1339,8 +1402,10 @@ if __name__ == "__main__":
             )
             prefix_token_ids = tokens[:, :prompt_len + max(output_len - 1, 0)]
             generated_token_ids = tokens[:, prompt_len:prompt_len + output_len]
+            layer0_after_attention = layer0_after_attention_all
+            layer0_output = layer0_output_all
         os.makedirs(os.path.dirname(os.path.abspath(args.save_intermediates)), exist_ok=True)
-        torch.save({
+        snapshot = {
             "backend": args.backend,
             "policy": args.mpk_policy,
             "prompt_length": prompt_len,
@@ -1353,5 +1418,12 @@ if __name__ == "__main__":
             "normalized_hidden_state": hidden.detach().cpu(),
             "candidate_token_ids": candidate_ids.detach().cpu(),
             "fp32_recomputed_candidate_logits": fp32_candidate_logits.detach().cpu(),
-        }, args.save_intermediates)
+        }
+        if layer0_after_attention is not None:
+            snapshot["layer0_after_attention"] = (
+                layer0_after_attention.detach().cpu()
+            )
+        if layer0_output is not None:
+            snapshot["layer0_output"] = layer0_output.detach().cpu()
+        torch.save(snapshot, args.save_intermediates)
         print(f"Saved intermediates to {args.save_intermediates}")

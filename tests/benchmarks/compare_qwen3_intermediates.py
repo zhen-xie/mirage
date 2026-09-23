@@ -125,10 +125,13 @@ def main():
             normal["normalized_hidden_state"], mpk["normalized_hidden_state"]
         ),
     }
+    for key in ("layer0_after_attention", "layer0_output"):
+        if key in normal and key in mpk:
+            report[key] = tensor_metrics(normal[key], mpk[key])
     if normal["logits"].ndim == 2:
         report["per_request"] = []
         for request_id in range(normal["logits"].shape[0]):
-            report["per_request"].append({
+            request_report = {
                 "request_id": request_id,
                 "generated_token_matches": (
                     normal["generated_token_ids"][request_id, -1].item()
@@ -154,7 +157,13 @@ def main():
                     normal["normalized_hidden_state"][request_id],
                     mpk["normalized_hidden_state"][request_id],
                 ),
-            })
+            }
+            for key in ("layer0_after_attention", "layer0_output"):
+                if key in normal and key in mpk:
+                    request_report[key] = tensor_metrics(
+                        normal[key][request_id], mpk[key][request_id]
+                    )
+            report["per_request"].append(request_report)
     print(json.dumps(report, indent=2))
 
 
