@@ -1889,7 +1889,7 @@ int TaskRegister::register_linear_cutlass_hopper_task(
   code.e("    tma_a,");
   code.e("    tma_b,");
   code.e("    task_desc->output_ptrs[0],");
-  code.e("    task_desc->input_ptrs[2]");
+  code.e("    $", with_residual ? "task_desc->input_ptrs[2]" : "nullptr");
   code.e(");");
 
   if (with_residual) {
