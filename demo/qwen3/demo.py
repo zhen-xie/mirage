@@ -413,12 +413,28 @@ if __name__ == "__main__":
             normal_hidden["last"] = output[:, -1, :].detach()
         model.model.norm.register_forward_hook(capture_normal_hidden)
     if args.save_intermediates and args.backend == "normal":
+        def capture_layer0_input(_module, _inputs, output):
+            normal_layer0["input"] = output[:, -1, :].detach()
+
+        def capture_layer0_norm(_module, _inputs, output):
+            normal_layer0["norm"] = output[:, -1, :].detach()
+
+        def capture_layer0_attention_output(_module, inputs):
+            normal_layer0["attention_output"] = inputs[0][:, -1, :].detach()
+
         def capture_layer0_after_attention(_module, inputs):
             normal_layer0["after_attention"] = inputs[1][:, -1, :].detach()
 
         def capture_layer0_output(_module, _inputs, output):
             normal_layer0["output"] = output[0][:, -1, :].detach()
 
+        model.model.embed_tokens.register_forward_hook(capture_layer0_input)
+        model.model.layers[0].input_layernorm.register_forward_hook(
+            capture_layer0_norm
+        )
+        model.model.layers[0].self_attn.o_proj.register_forward_pre_hook(
+            capture_layer0_attention_output
+        )
         model.model.layers[0].mlp.register_forward_pre_hook(
             capture_layer0_after_attention
         )
@@ -608,6 +624,33 @@ if __name__ == "__main__":
             mpk_hidden = torch.empty((args.max_num_batched_tokens, hidden_size),
                                      dtype=torch.bfloat16, device="cuda")
             rmsnorm_out = mpk.attach_input(torch_tensor=mpk_hidden, name="rmsnorm_out")
+            mpk_layer0_input = torch.empty(
+                (args.max_num_batched_tokens, hidden_size),
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            mpk_layer0_input_dt = mpk.attach_input(
+                torch_tensor=mpk_layer0_input,
+                name="layer0_input_snapshot",
+            )
+            mpk_layer0_norm = torch.empty(
+                (args.max_num_batched_tokens, hidden_size),
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            mpk_layer0_norm_dt = mpk.attach_input(
+                torch_tensor=mpk_layer0_norm,
+                name="layer0_norm_snapshot",
+            )
+            mpk_layer0_attention_output = torch.empty(
+                (args.max_num_batched_tokens, hidden_size),
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            mpk_layer0_attention_output_dt = mpk.attach_input(
+                torch_tensor=mpk_layer0_attention_output,
+                name="layer0_attention_output_snapshot",
+            )
             mpk_layer0_after_attention = torch.empty(
                 (args.max_num_batched_tokens, hidden_size),
                 dtype=torch.bfloat16,
@@ -774,6 +817,13 @@ if __name__ == "__main__":
             input_source=1,
         )
         x = y
+        if args.save_intermediates:
+            mpk.copy_layer(
+                input=x,
+                output=mpk_layer0_input_dt,
+                grid_dim=(1, 1, 1),
+                block_dim=(128, 1, 1),
+            )
         target_cc = torch.cuda.get_device_properties(0).major * 10 + torch.cuda.get_device_properties(0).minor
         # A current workaround to use splitk for only B200 GPUs
         use_splitk = (target_cc == 100)
@@ -807,6 +857,13 @@ if __name__ == "__main__":
                 grid_dim=(mpk.max_num_batched_tokens, 1, 1),
                 block_dim=(128, 1, 1),
             )
+            if args.save_intermediates and i == 0:
+                mpk.copy_layer(
+                    input=rmsnorm_out,
+                    output=mpk_layer0_norm_dt,
+                    grid_dim=(1, 1, 1),
+                    block_dim=(128, 1, 1),
+                )
             mpk.linear_layer(
                 input=rmsnorm_out,
                 weight=w_qkv,
@@ -886,8 +943,14 @@ if __name__ == "__main__":
                     grid_dim=(mpk.max_num_batched_requests, num_local_kv_heads, 1),
                     block_dim=(128, 1, 1),
                 )
-            
-            
+            if args.save_intermediates and i == 0:
+                mpk.copy_layer(
+                    input=attn_out,
+                    output=mpk_layer0_attention_output_dt,
+                    grid_dim=(1, 1, 1),
+                    block_dim=(128, 1, 1),
+                )
+
             # add linear w/ residual
             w = mpk.attach_input(
                 torch_tensor=layer.self_attn.o_proj.weight, name=f"layer_{i}_o_proj"
@@ -1349,6 +1412,9 @@ if __name__ == "__main__":
             output_logits_all = logits[:, -1, :model.config.vocab_size]
             layer0_after_attention_all = normal_layer0.get("after_attention")
             layer0_output_all = normal_layer0.get("output")
+            layer0_input_all = normal_layer0.get("input")
+            layer0_norm_all = normal_layer0.get("norm")
+            layer0_attention_output_all = normal_layer0.get("attention_output")
         else:
             hidden_all = mpk_hidden
             output_logits_all = mpk_logits[:, :model.config.vocab_size]
@@ -1375,6 +1441,15 @@ if __name__ == "__main__":
             layer0_output_all = mpk_layer0_output.index_select(
                 0, snapshot_indices
             )
+            layer0_input_all = mpk_layer0_input.index_select(
+                0, snapshot_indices
+            )
+            layer0_norm_all = mpk_layer0_norm.index_select(
+                0, snapshot_indices
+            )
+            layer0_attention_output_all = (
+                mpk_layer0_attention_output.index_select(0, snapshot_indices)
+            )
         if total_num_requests == 1:
             hidden = hidden_all[0]
             output_logits = output_logits_all[0]
@@ -1392,6 +1467,16 @@ if __name__ == "__main__":
             layer0_output = (
                 None if layer0_output_all is None else layer0_output_all[0]
             )
+            layer0_input = (
+                None if layer0_input_all is None else layer0_input_all[0]
+            )
+            layer0_norm = (
+                None if layer0_norm_all is None else layer0_norm_all[0]
+            )
+            layer0_attention_output = (
+                None if layer0_attention_output_all is None
+                else layer0_attention_output_all[0]
+            )
         else:
             hidden = hidden_all
             output_logits = output_logits_all
@@ -1404,6 +1489,9 @@ if __name__ == "__main__":
             generated_token_ids = tokens[:, prompt_len:prompt_len + output_len]
             layer0_after_attention = layer0_after_attention_all
             layer0_output = layer0_output_all
+            layer0_input = layer0_input_all
+            layer0_norm = layer0_norm_all
+            layer0_attention_output = layer0_attention_output_all
         os.makedirs(os.path.dirname(os.path.abspath(args.save_intermediates)), exist_ok=True)
         snapshot = {
             "backend": args.backend,
@@ -1425,5 +1513,13 @@ if __name__ == "__main__":
             )
         if layer0_output is not None:
             snapshot["layer0_output"] = layer0_output.detach().cpu()
+        if layer0_input is not None:
+            snapshot["layer0_input"] = layer0_input.detach().cpu()
+        if layer0_norm is not None:
+            snapshot["layer0_norm"] = layer0_norm.detach().cpu()
+        if layer0_attention_output is not None:
+            snapshot["layer0_attention_output"] = (
+                layer0_attention_output.detach().cpu()
+            )
         torch.save(snapshot, args.save_intermediates)
         print(f"Saved intermediates to {args.save_intermediates}")
