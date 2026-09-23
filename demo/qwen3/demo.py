@@ -38,22 +38,13 @@ MAX_SAVE_TOKENS = 100
 # torch.set_printoptions(threshold=2000)
 
 def grid_for_rmsnorm_linear_layer(size: int, use_cutlass_kernel: bool = True):
-    # 96 and 64 are enough to cover all Qwen3 model? Please update the method
-    # if you meet any incompatibility.
-    if size % 64 == 0 and not use_cutlass_kernel:
-        # TODO(Wenqin): If we set OUTPUT_SIZE too much for PTX linear kernel,
-        # there is some regression.
+    # Hopper linear tasks currently compute one 64-column output tile. Keep
+    # every task slice at 64 columns for QKV, gate/up, and LM-head projections.
+    if size % 64 == 0:
         return size // 64
-    if size / 96 > 400:
-        # TODO: An add-hoc workaround for linear kernel, both MPK ptx and
-        # cutlass version will output unexpected result (not same output for
-        # same prompt) if the OUTPUT_SIZE is too big, try to figure it out.
-        assert size % 256 == 0, "FATAL: Linear layer size not supported, it's {size}."
-        return size // 256
     if size % 96 == 0:
         return 96
-    elif size % 64 == 0:
-        return 64
+    raise ValueError(f"Unsupported linear output size: {size}")
     
 # Return the largest factor of m that is less than or equal to n
 # This is used to determine the grid size
@@ -1200,7 +1191,13 @@ if __name__ == "__main__":
             input=rmsnorm_out,
             weight=w_proj,
             output=argmax_in,
-            grid_dim=(mpk.num_workers, 1, 1),
+            grid_dim=(
+                grid_for_rmsnorm_linear_layer(
+                    w_proj.dim(0), args.use_cutlass_kernel
+                ),
+                1,
+                1,
+            ),
             block_dim=(128, 1, 1),
         )
         #mpk.rmsnorm_linear_layer(
