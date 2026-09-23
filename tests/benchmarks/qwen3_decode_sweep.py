@@ -120,7 +120,8 @@ class SweepProgress:
         self.show(f"{label}: {outcome}")
 
 
-def run_benchmark(command, log_path, progress, case_label):
+def run_benchmark(command, log_path, progress, case_label,
+                  progress_interval_seconds):
     """Save the child log while reporting policy starts and idle heartbeats."""
     with log_path.open("w") as log_file:
         process = subprocess.Popen(
@@ -142,7 +143,9 @@ def run_benchmark(command, log_path, progress, case_label):
         try:
             while True:
                 try:
-                    line = events.get(timeout=30)
+                    timeout = (progress_interval_seconds
+                               if progress_interval_seconds > 0 else None)
+                    line = events.get(timeout=timeout)
                 except queue.Empty:
                     progress.show(f"{case_label}: {stage} "
                                   f"({format_duration(time.monotonic() - stage_started)})")
@@ -435,6 +438,8 @@ def main():
                         help="Minimum KV page size; use 4096 to compare with established runs")
     parser.add_argument("--max-mpk-batch-size", type=int, default=128,
                         help="Largest batch enabled for MPK; Hopper uses the large-batch CUTLASS path above 16")
+    parser.add_argument("--progress-interval-seconds", type=int, default=30,
+                        help="Seconds between idle progress heartbeats; use 0 to disable them")
     parser.add_argument("--source-prompts-file", type=Path,
                         default=ROOT / "tests/benchmarks/baselines/batch_b8_smoke/eight_prompts.json")
     parser.add_argument("--output-dir", type=Path,
@@ -464,8 +469,12 @@ def main():
         or any(length < 2 or length > 8192 for length in args.s_out_values)):
         parser.error("Output lengths must be distinct integers in [2, 8192]")
     if (args.repeat < 1 or args.warmup < 0
-        or args.timeout < 1 or args.reserve_gib < 0):
-        parser.error("Repeat and timeout must be positive; warmup and reserve must be nonnegative")
+        or args.timeout < 1 or args.reserve_gib < 0
+        or args.progress_interval_seconds < 0):
+        parser.error(
+            "Repeat and timeout must be positive; warmup, reserve, and progress "
+            "interval must be nonnegative"
+        )
     if args.min_page_size < 64 or args.min_page_size & (args.min_page_size - 1):
         parser.error("--min-page-size must be a power of two and at least 64")
     if args.max_mpk_batch_size < 1:
@@ -644,7 +653,10 @@ def main():
                     log_path = case_dir / "benchmark.log"
                     progress.show(f"{case_label}: starting")
                     case_started = time.monotonic()
-                    returncode = run_benchmark(command, log_path, progress, case_label)
+                    returncode = run_benchmark(
+                        command, log_path, progress, case_label,
+                        args.progress_interval_seconds,
+                    )
                     case_duration = time.monotonic() - case_started
                     if returncode:
                         tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-80:])
