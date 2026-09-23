@@ -20,6 +20,7 @@
 #include "tasks/hopper/multitoken_paged_attention_hopper.cuh"
 #include "tasks/hopper/rmsnorm_hopper.cuh"
 #include "tasks/hopper/silu_mul_hopper.cuh"
+#include "tasks/speculative_decoding/eagle3_ops.cuh"
 // Blackwell task impls
 
 #include "tasks/blackwell/argmax_sm100.cuh"
