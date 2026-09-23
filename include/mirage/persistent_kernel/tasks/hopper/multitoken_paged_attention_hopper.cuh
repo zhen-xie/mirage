@@ -683,7 +683,10 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         convert_32_f32_to_16_bf16_uint32(x_frag_f[m], x_frag[m]);
 #pragma unroll
         for (int n = 0; n < HEAD_DIM / 64; n++) {
-          V_DESC v_desc(v_smem(m * 64, n * 64));
+          // Each M tile is a different group of query rows, but all of them
+          // multiply the same current KV tile.  Offsetting V by m * 64 reads
+          // beyond the 64-row KV shared-memory tile when MMA_ITERS_M > 1.
+          V_DESC v_desc(v_smem(0, n * 64));
           wgmma::warpgroup_arrive();
           wgmma::mma_rs<T, 64, 64, 16, KVSmem, V_DESC, true>(
               o[m][n], x_frag[m], v_desc);
