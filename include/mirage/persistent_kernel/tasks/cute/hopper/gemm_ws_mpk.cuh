@@ -542,7 +542,7 @@ CUTLASS_DEVICE void linear_cutlass_ws_hopper(const TMA_A &tma_a,
 
         CUTLASS_PRAGMA_UNROLL
         for (int i = 0; i < size(accum); ++i) {
-          FragCType fragC;
+          FragCType fragC{};
           bool pred = elem_less(tCcD(i), residue_tCcD);
           FragDType fragD = epilogue_op(accum(i), fragC);
           cutlass::arch::global_store<FragDType, sizeof(FragDType)>(
