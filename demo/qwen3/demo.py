@@ -287,10 +287,10 @@ if __name__ == "__main__":
     if args.backend == "normal" and args.max_num_batched_requests > 1:
         if (args.max_num_batched_requests > args.max_num_pages
             or not args.ignore_eos or args.do_sample or args.spec_decode
-            or args.profiling or args.save_intermediates or args.save_prefill_kv):
+            or args.profiling or args.save_prefill_kv):
             parser.error("Batched normal currently requires one KV page per request, "
                          "--ignore-eos, greedy decoding, and no profiling, "
-                         "speculative decoding, or diagnostic snapshots")
+                         "speculative decoding, or prefill KV snapshots")
         if args.max_seq_length > args.page_size:
             parser.error("Batched normal currently requires each sequence to fit in one KV page")
     if args.mpk_policy == "workload-aware":
@@ -310,7 +310,7 @@ if __name__ == "__main__":
             or args.save_prefill_kv
             or args.debug_load_prefill_kv):
             parser.error("Batched MPK requires one KV page per request, "
-                         "enough batched-token slots, --ignore-eos, and no diagnostic snapshots")
+                         "enough batched-token slots, --ignore-eos, and no prefill KV snapshots")
     if args.save_intermediates and (
         args.backend == "mpk" and args.mpk_policy not in ("decode-only", "prefill-only", "always")
         or args.max_new_tokens is None
