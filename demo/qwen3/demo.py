@@ -1560,14 +1560,18 @@ if __name__ == "__main__":
                 total_num_requests, device=mpk_hidden.device
             )
             if output_len == 1 and args.mpk_policy in ("always", "prefill-only"):
-                total_prompt_tokens = int(prompt_lengths.sum().item())
-                if total_prompt_tokens > args.max_num_batched_tokens:
+                # MPK prefill schedules at most 16 tokens per request in one
+                # internal batch. Snapshot tensors therefore use positions in
+                # the final packed chunk, rather than logical prompt offsets.
+                final_chunk_lengths = ((prompt_lengths - 1) % 16) + 1
+                total_final_chunk_tokens = int(final_chunk_lengths.sum().item())
+                if total_final_chunk_tokens > args.max_num_batched_tokens:
                     raise RuntimeError(
-                        "Batched prefill snapshots require all prompt tokens "
-                        "to fit in one internal MPK batch; reduce the number "
-                        "of requests or increase --max-num-batched-tokens"
+                        "Final prefill chunks do not fit in one internal MPK "
+                        "batch; reduce the number of requests or increase "
+                        "--max-num-batched-tokens"
                     )
-                terminal_slots = torch.cumsum(prompt_lengths, dim=0) - 1
+                terminal_slots = torch.cumsum(final_chunk_lengths, dim=0) - 1
                 snapshot_indices = terminal_slots
                 hidden_all = hidden_all.index_select(0, terminal_slots)
                 output_logits_all = output_logits_all.index_select(
