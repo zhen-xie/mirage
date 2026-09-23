@@ -193,8 +193,8 @@ struct MMAKernelTraits {
 
   using SharedStorage = SharedStorageMMA<MainloopPipeline,
                                          DataType,
-                                         SmemLayoutAtomA,
-                                         SmemLayoutAtomB,
+                                         SmemLayoutA,
+                                         SmemLayoutB,
                                          SmemLayoutAtomC>;
 
   static constexpr bool SwapAB = IS_SWAPAB::value;
