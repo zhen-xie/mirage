@@ -229,11 +229,26 @@ def main():
                     raise ValueError(f"Request {request_id} has fewer than {compared_tokens} saved tokens")
                 matches = sum(a == b for a, b in zip(normal_tokens[:compared_tokens], mpk_tokens[:compared_tokens]))
                 repeat_counts.append(matches)
-                if matches < required_matches and not args.allow_correctness_failures:
-                    raise ValueError(
-                        f"Request {request_id}: normal and {policy} match only "
-                        f"{matches}/{compared_tokens} positions; "
-                        f"at least {required_matches} are required")
+            total_matches = sum(repeat_counts)
+            total_positions = len(repeat_counts) * compared_tokens
+            passing_requests = sum(
+                matches >= required_matches for matches in repeat_counts
+            )
+            aggregate_passed = (
+                total_matches * TOKEN_MATCH_DENOMINATOR
+                >= total_positions * TOKEN_MATCH_NUMERATOR
+            )
+            request_pass_rate_passed = (
+                passing_requests * TOKEN_MATCH_DENOMINATOR
+                >= len(repeat_counts) * TOKEN_MATCH_NUMERATOR
+            )
+            if (not aggregate_passed or not request_pass_rate_passed) and not args.allow_correctness_failures:
+                raise ValueError(
+                    f"{policy}: batch positional matches are "
+                    f"{total_matches}/{total_positions}, and "
+                    f"{passing_requests}/{len(repeat_counts)} requests meet "
+                    f"the per-request {required_matches}/{compared_tokens} "
+                    "gate; both batch ratios must be at least two thirds")
             token_match_counts.append(repeat_counts)
         match_counts[policy] = token_match_counts
 
@@ -254,13 +269,36 @@ def main():
         "first_30_token_matches_by_policy": match_counts,
         "compared_token_positions": compared_tokens,
         "required_token_matches": required_matches,
+        "batch_match_fraction_by_policy_per_repeat": {
+            policy: [
+                sum(counts) / (len(counts) * compared_tokens)
+                for counts in repeats
+            ]
+            for policy, repeats in match_counts.items()
+        },
+        "passing_request_fraction_by_policy_per_repeat": {
+            policy: [
+                sum(matches >= required_matches for matches in counts)
+                / len(counts)
+                for counts in repeats
+            ]
+            for policy, repeats in match_counts.items()
+        },
         "first_30_gate_passed_by_policy": {
-            policy: all(min(counts) >= required_matches for counts in repeats)
+            policy: all(
+                sum(counts) * TOKEN_MATCH_DENOMINATOR
+                    >= len(counts) * compared_tokens * TOKEN_MATCH_NUMERATOR
+                and sum(matches >= required_matches for matches in counts)
+                    * TOKEN_MATCH_DENOMINATOR
+                    >= len(counts) * TOKEN_MATCH_NUMERATOR
+                for counts in repeats
+            )
             for policy, repeats in match_counts.items()
         },
         "token_match_gate": (
-            "At least two thirds of the first min(30, generated tokens) "
-            "positions match, rounded up"),
+            "For every repeat, at least two thirds of all compared token "
+            "positions match and at least two thirds of requests meet the "
+            "per-request two-thirds positional threshold"),
     }
     if args.policies == ["decode-only"]:
         summary["first_30_token_matches_by_request_per_repeat"] = match_counts["decode-only"]

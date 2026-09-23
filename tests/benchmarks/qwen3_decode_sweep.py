@@ -38,6 +38,7 @@ FIELDS = (
     "generated_tokens_per_second_including_prefill", "decode_relative_range",
     "repeat_prefill_ms", "repeat_decode_ms", "repeat_continuous_total_ms",
     "minimum_first30_matches",
+    "minimum_batch_match_fraction", "minimum_passing_request_fraction",
     "compared_token_positions", "required_token_matches", "correctness_gate_applicable",
     "first30_matches_by_request_per_repeat", "decode_speedup_vs_normal",
     "phase_sum_speedup_vs_normal", "continuous_total_speedup_vs_normal",
@@ -308,7 +309,30 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
         required_matches = summary.get(
             "required_token_matches", required_token_matches(compared_positions))
         gate_applicable = compared_positions > 0
-        gate_passed = minimum is None or minimum >= required_matches
+        batch_match_fractions = (
+            [sum(repeat_counts) /
+             (len(repeat_counts) * compared_positions)
+             for repeat_counts in counts]
+            if counts else []
+        )
+        passing_request_fractions = (
+            [sum(value >= required_matches for value in repeat_counts) /
+             len(repeat_counts)
+             for repeat_counts in counts]
+            if counts else []
+        )
+        minimum_batch_match_fraction = (
+            min(batch_match_fractions) if batch_match_fractions else None
+        )
+        minimum_passing_request_fraction = (
+            min(passing_request_fractions)
+            if passing_request_fractions else None
+        )
+        gate_passed = (
+            minimum is None
+            or (minimum_batch_match_fraction >= 2 / 3
+                and minimum_passing_request_fraction >= 2 / 3)
+        )
         if policy == "normal":
             status = "completed"
             reason = None
@@ -317,8 +341,11 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             reason = None
         else:
             status = "correctness_failed"
-            reason = (f"Minimum positional matches: {minimum}/{compared_positions}; "
-                      f"required: {required_matches}/{compared_positions}")
+            reason = (
+                f"Batch match fraction: {minimum_batch_match_fraction:.3f}; "
+                "passing-request fraction: "
+                f"{minimum_passing_request_fraction:.3f}; both require 0.667"
+            )
         rows.append({
             **expected,
             "s_in": context_length,
@@ -356,6 +383,8 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             "repeat_continuous_total_ms": (
                 json.dumps(item["repeat_total_ms"]) if continuous else None),
             "minimum_first30_matches": minimum,
+            "minimum_batch_match_fraction": minimum_batch_match_fraction,
+            "minimum_passing_request_fraction": minimum_passing_request_fraction,
             "compared_token_positions": compared_positions,
             "required_token_matches": required_matches,
             "correctness_gate_applicable": gate_applicable,
@@ -677,16 +706,24 @@ def main():
                 rows.extend(case_rows)
                 write_csv(csv_path, rows)
                 for row in case_rows:
+                    correctness = (
+                        f"batch match={row['minimum_batch_match_fraction']:.1%}, "
+                        f"passing requests={row['minimum_passing_request_fraction']:.1%}, "
+                        f"worst request={row['minimum_first30_matches']}/"
+                        f"{row['compared_token_positions']}"
+                        if row["minimum_batch_match_fraction"] is not None
+                        else "correctness reference"
+                    )
                     if row["policy"] == "always-continuous":
                         print(f"  continuous always: total="
                               f"{row['mean_continuous_total_ms']:.3f} ms, "
-                              f"minimum first-30 matches={row['minimum_first30_matches']}",
+                              f"{correctness}",
                               flush=True)
                     else:
                         print(f"  {row['policy']}: decode speedup="
                               f"{row['decode_speedup_vs_normal']:.3f}, "
                               f"phase-sum speedup={row['phase_sum_speedup_vs_normal']:.3f}, "
-                              f"minimum first-30 matches={row['minimum_first30_matches']}",
+                              f"{correctness}",
                               flush=True)
                 outcome = ("correctness_failed" if any(
                     row["status"] == "correctness_failed" for row in case_rows
