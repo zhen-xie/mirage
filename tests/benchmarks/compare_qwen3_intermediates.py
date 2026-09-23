@@ -11,19 +11,33 @@ def tensor_metrics(reference, actual):
         raise ValueError(f"Tensor shapes differ: {reference.shape} vs {actual.shape}")
     reference = reference.float()
     actual = actual.float()
-    if not torch.isfinite(reference).all() or not torch.isfinite(actual).all():
-        raise ValueError("Non-finite values in intermediate tensors")
-    difference = (reference - actual).abs()
-    reference64 = reference.double().flatten()
-    actual64 = actual.double().flatten()
-    cosine = (torch.dot(reference64, actual64) /
-              (torch.linalg.vector_norm(reference64) *
-               torch.linalg.vector_norm(actual64))).item()
-    return {
-        "max_absolute_error": difference.max().item(),
-        "mean_absolute_error": difference.mean().item(),
-        "cosine_similarity": cosine,
+    reference_finite = torch.isfinite(reference)
+    actual_finite = torch.isfinite(actual)
+    comparable = reference_finite & actual_finite
+    metrics = {
+        "num_elements": reference.numel(),
+        "reference_nonfinite": int((~reference_finite).sum().item()),
+        "actual_nonfinite": int((~actual_finite).sum().item()),
+        "comparable_elements": int(comparable.sum().item()),
+        "max_absolute_error": None,
+        "mean_absolute_error": None,
+        "cosine_similarity": None,
     }
+    if comparable.any():
+        reference64 = reference[comparable].double()
+        actual64 = actual[comparable].double()
+        difference = (reference64 - actual64).abs()
+        denominator = (
+            torch.linalg.vector_norm(reference64)
+            * torch.linalg.vector_norm(actual64)
+        )
+        metrics["max_absolute_error"] = difference.max().item()
+        metrics["mean_absolute_error"] = difference.mean().item()
+        if denominator.item() != 0:
+            metrics["cosine_similarity"] = (
+                torch.dot(reference64, actual64) / denominator
+            ).item()
+    return metrics
 
 
 def main():
