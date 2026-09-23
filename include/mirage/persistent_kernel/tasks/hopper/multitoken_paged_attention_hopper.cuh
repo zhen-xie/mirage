@@ -721,8 +721,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         }
       }
     }
-    // wg_sync<THREADS_PER_WARPGROUP * CONSUMER_WARPGROUPS>(
-    //     CONSUMER_WARPGROUP_SYNC_BARRIER_ID);
+    // Every consumer thread writes a different fragment above.  The layout
+    // conversion below reads fragments produced by other threads, so the
+    // whole consumer warpgroup must finish publishing its fragments first.
+    wg_sync<THREADS_PER_WARPGROUP * CONSUMER_WARPGROUPS>(
+        CONSUMER_WARPGROUP_SYNC_BARRIER_ID);
 
     // get global m, d, and o
     // each thread handles an element in o in each iteration
