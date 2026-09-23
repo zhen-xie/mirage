@@ -82,8 +82,13 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
   constexpr int CP_CHUNK_SIZE = 16 / sizeof(T);
   constexpr int PRODUCER_WARPGROUP_SYNC_BARRIER_ID = 8;
   constexpr int CONSUMER_WARPGROUP_SYNC_BARRIER_ID = 9;
+  // The scheduler limits each request to 16 query tokens per prefill step.
+  // Keep MAX_TOKENS unchanged for the persistent task graph, while using a
+  // single 64-row WGMMA query tile inside this attention kernel.
+  constexpr int MAX_QUERY_TOKENS = MAX_TOKENS < 16 ? MAX_TOKENS : 16;
   // NOTE(Yu): we use m64n64k16 mma atom to compute matrix multiplication
-  constexpr int MMA_ITERS_M = (MAX_TOKENS * NUM_QO_PER_KV + 63) / 64;
+  constexpr int MMA_ITERS_M =
+      (MAX_QUERY_TOKENS * NUM_QO_PER_KV + 63) / 64;
 
   // the scale factor for normalization in softmax
   float const sm_scale = 1.0f / sqrtf(static_cast<float>(HEAD_DIM)) * log2e;
@@ -167,7 +172,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
   // since smem is 1024 bytes aligned, S_Q_OFFSET is set to zero
   constexpr size_t S_Q_OFFSET = 0;
-  constexpr size_t S_Q_SIZE = sizeof(T) * MAX_TOKENS * NUM_QO_PER_KV * HEAD_DIM;
+  constexpr size_t S_Q_SIZE =
+      sizeof(T) * MAX_QUERY_TOKENS * NUM_QO_PER_KV * HEAD_DIM;
 
   constexpr size_t S_K_OFFSET = (S_Q_OFFSET + S_Q_SIZE + 1023) / 1024 * 1024;
   constexpr size_t S_K_SIZE = sizeof(T) * KV_TILE_SIZE * HEAD_DIM;
@@ -250,7 +256,7 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
                           3,
                           3,
                           3,
-                          MAX_TOKENS * NUM_QO_PER_KV,
+                          MAX_QUERY_TOKENS * NUM_QO_PER_KV,
                           64,
                           (HEAD_DIM + 63) / 64>;
   using KVSmem = smem_tma<T, 3, 3, 3, KV_TILE_SIZE, 64, (HEAD_DIM + 63) / 64>;
@@ -292,8 +298,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     // load q
 #if USE_TMA_Q
     if (lane_idx == 0 && warp_idx % 4 == 0) {
-      set_barrier_transaction_bytes(
-          q_barrier[0], MAX_TOKENS * NUM_QO_PER_KV * HEAD_DIM * sizeof(T));
+      set_barrier_transaction_bytes(q_barrier[0],
+                                    MAX_QUERY_TOKENS * NUM_QO_PER_KV *
+                                        HEAD_DIM * sizeof(T));
       tma_q.tma_cp_async(q_barrier[0], q_smem(0, 0), {0, 0, 0});
     }
 #else

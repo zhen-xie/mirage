@@ -1352,10 +1352,7 @@ int TaskRegister::register_paged_attention_hopper_task(
   int kv_stride = head_dim * num_kv_heads;
   int max_seq_len = params[4];
   int page_size = params[5];
-  // The Hopper WGMMA attention path currently supports one 64-row query
-  // tile. Qwen3 has four Q heads per KV head, so cap each request chunk at
-  // 16 tokens. The runtime may still pack multiple requests up to MBT.
-  int max_tokens = std::min(input_ops[0]->dtensor.dim[0], 16);
+  int max_tokens = input_ops[0]->dtensor.dim[0];
 
   assert(input_ops[1]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[1]->output_tensors[0].dim[3]);
