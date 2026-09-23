@@ -42,14 +42,17 @@ def main():
         raise ValueError("Input or generated tokens before the probed step differ")
     if normal["decode_step_index"] != mpk["decode_step_index"]:
         raise ValueError("Probes target different decode steps")
+    alignment = {}
     for name, probe in (("normal", normal), (mpk["policy"], mpk)):
         predicted = probe["logits"].argmax(dim=-1)
         generated = probe["generated_token_ids"][..., -1]
-        if not torch.equal(predicted, generated):
-            raise ValueError(
-                f"{name} captured logits do not predict the saved generated "
-                "tokens; probe is not aligned"
-            )
+        alignment[name] = {
+            "all_match": torch.equal(predicted, generated),
+            "matching_requests": int((predicted == generated).sum().item()),
+            "total_requests": int(predicted.numel()),
+            "logits_argmax": predicted.tolist(),
+            "generated_tokens": generated.tolist(),
+        }
 
     def top_tokens(probe):
         values, indices = torch.topk(probe["logits"].float(), 5, dim=-1)
@@ -89,6 +92,7 @@ def main():
         "mpk_policy": mpk["policy"],
         "prompt_length": normal["prompt_length"],
         "decode_step_index": normal["decode_step_index"],
+        "probe_alignment": alignment,
         "probed_generated_token_matches": torch.equal(
             normal["generated_token_ids"][..., -1],
             mpk["generated_token_ids"][..., -1],
@@ -122,6 +126,12 @@ def main():
                 "mpk_generated_token": mpk[
                     "generated_token_ids"
                 ][request_id, -1].item(),
+                "normal_logits_argmax": normal[
+                    "logits"
+                ][request_id].argmax().item(),
+                "mpk_logits_argmax": mpk[
+                    "logits"
+                ][request_id].argmax().item(),
                 "logits": tensor_metrics(
                     normal["logits"][request_id],
                     mpk["logits"][request_id],

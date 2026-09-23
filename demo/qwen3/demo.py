@@ -1306,6 +1306,19 @@ if __name__ == "__main__":
         else:
             hidden_all = mpk_hidden
             output_logits_all = mpk_logits[:, :model.config.vocab_size]
+            if output_len == 1 and args.mpk_policy in ("always", "prefill-only"):
+                total_prompt_tokens = int(prompt_lengths.sum().item())
+                if total_prompt_tokens > args.max_num_batched_tokens:
+                    raise RuntimeError(
+                        "Batched prefill snapshots require all prompt tokens "
+                        "to fit in one internal MPK batch; reduce the number "
+                        "of requests or increase --max-num-batched-tokens"
+                    )
+                terminal_slots = torch.cumsum(prompt_lengths, dim=0) - 1
+                hidden_all = hidden_all.index_select(0, terminal_slots)
+                output_logits_all = output_logits_all.index_select(
+                    0, terminal_slots
+                )
         if total_num_requests == 1:
             hidden = hidden_all[0]
             output_logits = output_logits_all[0]
