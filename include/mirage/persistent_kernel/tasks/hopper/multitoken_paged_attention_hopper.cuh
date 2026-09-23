@@ -580,14 +580,27 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         }
       }
       for (int m = 0; m < MMA_ITERS_M; m++) {
-        Q_DESC q_desc(q_smem(m * 64, 0));
-        K_DESC k_desc(k_smem(0, 0));
+        // MAX_TOKENS is the capacity of the packed input tensor, while one
+        // request may contribute fewer runtime query tokens.  Do not issue a
+        // WGMMA for an inactive M tile: its Q rows were never initialized.
+        if (m * 64 < num_tokens * NUM_QO_PER_KV) {
+          Q_DESC q_desc(q_smem(m * 64, 0));
+          K_DESC k_desc(k_smem(0, 0));
 
-        wgmma::warpgroup_arrive();
-        wgmma::mma<T, 64, 64, 16, QOSmem, KVSmem, Q_DESC, K_DESC, false, false>(
-            x_frag_f[m], q_desc, k_desc);
-        wgmma::mma_commit_group();
-        wgmma::mma_async_wait();
+          wgmma::warpgroup_arrive();
+          wgmma::mma<T,
+                     64,
+                     64,
+                     16,
+                     QOSmem,
+                     KVSmem,
+                     Q_DESC,
+                     K_DESC,
+                     false,
+                     false>(x_frag_f[m], q_desc, k_desc);
+          wgmma::mma_commit_group();
+          wgmma::mma_async_wait();
+        }
       }
 
       // update m_local: get partial max
@@ -683,15 +696,17 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         convert_32_f32_to_16_bf16_uint32(x_frag_f[m], x_frag[m]);
 #pragma unroll
         for (int n = 0; n < HEAD_DIM / 64; n++) {
-          // Each M tile is a different group of query rows, but all of them
-          // multiply the same current KV tile.  Offsetting V by m * 64 reads
-          // beyond the 64-row KV shared-memory tile when MMA_ITERS_M > 1.
-          V_DESC v_desc(v_smem(0, n * 64));
-          wgmma::warpgroup_arrive();
-          wgmma::mma_rs<T, 64, 64, 16, KVSmem, V_DESC, true>(
-              o[m][n], x_frag[m], v_desc);
-          wgmma::mma_commit_group();
-          wgmma::mma_async_wait();
+          if (m * 64 < num_tokens * NUM_QO_PER_KV) {
+            // Each M tile is a different group of query rows, but all of them
+            // multiply the same current KV tile.  Offsetting V by m * 64 reads
+            // beyond the 64-row KV shared-memory tile when MMA_ITERS_M > 1.
+            V_DESC v_desc(v_smem(0, n * 64));
+            wgmma::warpgroup_arrive();
+            wgmma::mma_rs<T, 64, 64, 16, KVSmem, V_DESC, true>(
+                o[m][n], x_frag[m], v_desc);
+            wgmma::mma_commit_group();
+            wgmma::mma_async_wait();
+          }
         }
       }
 
