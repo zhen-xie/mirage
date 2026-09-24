@@ -98,9 +98,11 @@ __device__ __forceinline__ void
         // int o_offset = (kv_idx * (MAX_TOKENS * NUM_QO_HEADS_PER_KV) + tok) *
         // HEAD_DIM +  head_partition * VAL_PER_THREAD + i;
 
+        int const global_token_idx = first_token_pos + token_idx;
         int lse_offset =
             head_idx + kv_idx * NUM_QO_HEADS_PER_KV +
-            token_idx * NUM_QO_GROUPS * NUM_KV_CHUNKS * NUM_QO_HEADS_PER_KV;
+            global_token_idx * NUM_QO_GROUPS * NUM_KV_CHUNKS *
+                NUM_QO_HEADS_PER_KV;
         // int lse_offset = merge_task_offset * NUM_QO_HEADS_PER_KV + head_idx +
         // kv_idx * NUM_QO_HEADS_PER_KV + token_idx * NUM_QO_GROUPS *
         // NUM_KV_CHUNKS * NUM_QO_HEADS_PER_KV;
@@ -117,7 +119,8 @@ __device__ __forceinline__ void
         o_global = o_global * ptx_exp2(m_prev - m_global) +
                    other_o * ptx_exp2(other_m - m_global);
       }
-      output_ptr[token_idx * NUM_QO_GROUPS * NUM_QO_HEADS_PER_KV * HEAD_DIM +
+      output_ptr[(first_token_pos + token_idx) * NUM_QO_GROUPS *
+                         NUM_QO_HEADS_PER_KV * HEAD_DIM +
                  head_idx * HEAD_DIM + head_partition * VAL_PER_THREAD + i] =
           (T)__fdividef(o_global, d_global);
     }

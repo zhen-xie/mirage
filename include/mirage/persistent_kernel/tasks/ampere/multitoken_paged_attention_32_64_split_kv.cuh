@@ -148,8 +148,10 @@ __device__ __forceinline__ void
 #pragma unroll
   for (int i = threadIdx.x; i < num_pages * sizeof(int) / 16;
        i += NUM_THREADS) {
-    __uint128_t const *src_ptr =
-        reinterpret_cast<__uint128_t const *>(paged_kv_indices_buffer_ptr) + i;
+    __uint128_t const *src_ptr = reinterpret_cast<__uint128_t const *>(
+                                     paged_kv_indices_buffer_ptr +
+                                     first_page_pos) +
+                                 i;
     __uint128_t *dst_ptr = reinterpret_cast<__uint128_t *>(page_indices) + i;
     *dst_ptr = *src_ptr;
   }
