@@ -555,31 +555,36 @@ def main():
                    len(args.batch_sizes) * len(args.s_in_values) * len(args.s_out_values))
     progress = SweepProgress(total_cases, args.output_dir / "progress.json")
 
-    for context_length in args.s_in_values:
-        for s_out in args.s_out_values:
-            page_size = page_size_for(context_length, (s_out - 1), args.min_page_size)
-            feasible_batches = [
-                batch_size for batch_size in args.batch_sizes
-                if selected_cases is None or (batch_size, context_length, s_out) in selected_cases
-                if batch_size <= args.max_mpk_batch_size
-                if kv_bytes_for(model_config, batch_size, page_size) <= kv_budget_bytes
-            ]
-            prompts = []
-            prompt_error = None
-            if feasible_batches:
-                try:
-                    distinct_seeds = make_distinct_seeds(
-                        tokenizer, seeds, max(feasible_batches), context_length
-                    )
-                    prompts = [make_prompt(tokenizer, seed, context_length)
-                               for seed in distinct_seeds]
-                    if len(set(prompts)) != len(prompts):
-                        raise ValueError(f"Prompts are not distinct at S_IN={context_length}")
-                except ValueError as error:
-                    prompt_error = str(error)
-            for batch_size in args.batch_sizes:
-                if selected_cases is not None and (batch_size, context_length, s_out) not in selected_cases:
+    prompt_cache = {}
+    for batch_size in args.batch_sizes:
+        for context_length in args.s_in_values:
+            for s_out in args.s_out_values:
+                if (selected_cases is not None
+                    and (batch_size, context_length, s_out) not in selected_cases):
                     continue
+                page_size = page_size_for(
+                    context_length, (s_out - 1), args.min_page_size
+                )
+                prompt_cache_key = (batch_size, context_length)
+                if prompt_cache_key not in prompt_cache:
+                    prompts = []
+                    prompt_error = None
+                    try:
+                        distinct_seeds = make_distinct_seeds(
+                            tokenizer, seeds, batch_size, context_length
+                        )
+                        prompts = [
+                            make_prompt(tokenizer, seed, context_length)
+                            for seed in distinct_seeds
+                        ]
+                        if len(set(prompts)) != len(prompts):
+                            raise ValueError(
+                                f"Prompts are not distinct at S_IN={context_length}"
+                            )
+                    except ValueError as error:
+                        prompt_error = str(error)
+                    prompt_cache[prompt_cache_key] = (prompts, prompt_error)
+                prompts, prompt_error = prompt_cache[prompt_cache_key]
                 estimated_kv_gib = kv_bytes_for(model_config, batch_size, page_size) / 2**30
                 case_dir = args.output_dir / f"b{batch_size}_in{context_length}_out{s_out}"
                 case_label = f"B={batch_size} S_IN={context_length} S_OUT={s_out}"
@@ -594,7 +599,7 @@ def main():
                     write_csv(csv_path, rows)
                     progress.finish_case(case_label, "unsupported_kernel")
                     continue
-                if batch_size not in feasible_batches:
+                if kv_bytes_for(model_config, batch_size, page_size) > kv_budget_bytes:
                     reason = (f"Estimated KV cache {estimated_kv_gib:.2f} GiB exceeds "
                               f"the {max(0, kv_budget_bytes / 2**30):.2f} GiB budget "
                               f"after reserving {args.reserve_gib:.2f} GiB")
