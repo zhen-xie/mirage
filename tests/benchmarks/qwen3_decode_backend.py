@@ -100,12 +100,12 @@ def run_case(args, prompt, policy, index, warmup):
     data = json.loads(output.read_text())
     if data["prompt_length"] != args.context_length:
         raise ValueError(f"Unexpected prompt length in {output}")
-    if data["generate_length"] != args.decode_steps + 1:
-        raise ValueError(f"Unexpected generation length in {output}")
     if args.batch_size > 1:
         requests = data.get("token_ids_by_request")
         if data.get("batch_size") != args.batch_size or not isinstance(requests, list) or len(requests) != args.batch_size:
             raise ValueError(f"Missing per-request tokens in {output}")
+    elif data["generate_length"] != args.decode_steps + 1:
+        raise ValueError(f"Unexpected generation length in {output}")
     if policy == "always-continuous":
         if data["mode"] != "mpk" or data["latency_ms_per_token"] <= 0:
             raise ValueError(f"Missing continuous always timing in {output}")
