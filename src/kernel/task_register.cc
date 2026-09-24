@@ -4038,7 +4038,8 @@ int TaskRegister::register_paged_attention_split_kv_merge_sm100_task(
          head_dim,
          max_tokens,
          true,
-         (max_seq_len / SEQ_LEN_PER_BLOCK),
+         std::max(1, (max_seq_len + SEQ_LEN_PER_BLOCK - 1) /
+                         SEQ_LEN_PER_BLOCK),
          SEQ_LEN_PER_BLOCK,
          page_size);
   code.e("    task_desc->input_ptrs[0],");

@@ -590,7 +590,7 @@ if __name__ == "__main__":
         head_dim = model.config.head_dim
         fused_outdim_1 = (num_q_heads + 2 * num_kv_heads) * head_dim
         fused_outdim_2 = 2 * intermediate_size
-        num_kv_cache_chunks = max(1, args.max_seq_length // 256)
+        num_kv_cache_chunks = max(1, (args.max_seq_length + 255) // 256)
 
         if args.profiling:
             profiler_tensor = torch.zeros(
@@ -779,7 +779,7 @@ if __name__ == "__main__":
         )
         attn_out_tmp = mpk.new_tensor(
             dims=(args.max_num_batched_tokens, num_kv_cache_chunks * num_local_q_heads // num_local_kv_heads * head_dim, num_local_kv_heads),
-            strides=(num_kv_cache_chunks * num_local_q_heads, 1, num_kv_cache_chunks * num_local_q_heads // num_local_kv_heads * head_dim),
+            strides=(num_kv_cache_chunks * num_local_q_heads * head_dim, 1, num_kv_cache_chunks * num_local_q_heads // num_local_kv_heads * head_dim),
             dtype=mi.bfloat16,
             name="attn_out_tmp",
             io_category="cuda_tensor",
