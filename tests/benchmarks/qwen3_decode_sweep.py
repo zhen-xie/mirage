@@ -39,7 +39,7 @@ FIELDS = (
     "repeat_prefill_ms", "repeat_decode_ms", "repeat_continuous_total_ms",
     "minimum_first30_matches",
     "minimum_batch_match_fraction", "minimum_passing_request_fraction",
-    "invalid_token_count",
+    "invalid_token_count", "incomplete_request_count",
     "compared_token_positions", "required_token_matches", "correctness_gate_applicable",
     "first30_matches_by_request_per_repeat", "decode_speedup_vs_normal",
     "phase_sum_speedup_vs_normal", "continuous_total_speedup_vs_normal",
@@ -334,11 +334,17 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
                 "invalid_token_count_by_policy_per_repeat", {}
             ).get(policy, [])
         )
+        incomplete_request_count = sum(
+            summary.get(
+                "incomplete_request_count_by_policy_per_repeat", {}
+            ).get(policy, [])
+        )
         gate_passed = (
             minimum is None
             or (minimum_batch_match_fraction >= 2 / 3
                 and minimum_passing_request_fraction >= 2 / 3
-                and invalid_token_count == 0)
+                and invalid_token_count == 0
+                and incomplete_request_count == 0)
         )
         if policy == "normal":
             status = "completed"
@@ -352,7 +358,8 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
                 f"Batch match fraction: {minimum_batch_match_fraction:.3f}; "
                 "passing-request fraction: "
                 f"{minimum_passing_request_fraction:.3f}; both require 0.667; "
-                f"invalid token IDs: {invalid_token_count}"
+                f"invalid token IDs: {invalid_token_count}; "
+                f"incomplete requests: {incomplete_request_count}"
             )
         rows.append({
             **expected,
@@ -395,6 +402,7 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             "minimum_batch_match_fraction": minimum_batch_match_fraction,
             "minimum_passing_request_fraction": minimum_passing_request_fraction,
             "invalid_token_count": invalid_token_count,
+            "incomplete_request_count": incomplete_request_count,
             "compared_token_positions": compared_positions,
             "required_token_matches": required_matches,
             "correctness_gate_applicable": gate_applicable,
@@ -741,7 +749,8 @@ def main():
                         f"passing requests={row['minimum_passing_request_fraction']:.1%}, "
                         f"worst request={row['minimum_first30_matches']}/"
                         f"{row['compared_token_positions']}, "
-                        f"invalid tokens={row['invalid_token_count']}"
+                        f"invalid tokens={row['invalid_token_count']}, "
+                        f"incomplete requests={row['incomplete_request_count']}"
                         if row["minimum_batch_match_fraction"] is not None
                         else "correctness reference"
                     )

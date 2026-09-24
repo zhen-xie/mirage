@@ -212,6 +212,7 @@ def main():
 
     match_counts = {}
     invalid_token_counts = {}
+    incomplete_request_counts = {}
     compared_policies = [*args.policies]
     if args.include_continuous_always:
         compared_policies.append("always-continuous")
@@ -220,6 +221,7 @@ def main():
     for policy in compared_policies:
         token_match_counts = []
         policy_invalid_counts = []
+        policy_incomplete_counts = []
         for normal, mpk in zip(samples["normal"], samples[policy]):
             normal_requests = (normal["token_ids_by_request"] if args.batch_size > 1
                                else [normal["token_ids"]])
@@ -250,9 +252,18 @@ def main():
                     "invalid_token_ids_by_request", {}
                 ).values()
             )
+            generation_lengths = mpk.get(
+                "generate_lengths_by_request",
+                [mpk["generate_length"]] * len(repeat_counts),
+            )
+            incomplete_count = sum(
+                length != args.decode_steps + 1
+                for length in generation_lengths
+            )
             policy_invalid_counts.append(invalid_count)
+            policy_incomplete_counts.append(incomplete_count)
             if ((not aggregate_passed or not request_pass_rate_passed
-                 or invalid_count > 0)
+                 or invalid_count > 0 or incomplete_count > 0)
                 and not args.allow_correctness_failures):
                 raise ValueError(
                     f"{policy}: batch positional matches are "
@@ -260,10 +271,12 @@ def main():
                     f"{passing_requests}/{len(repeat_counts)} requests meet "
                     f"the per-request {required_matches}/{compared_tokens} "
                     "gate; both batch ratios must be at least two thirds; "
-                    f"invalid token IDs: {invalid_count}")
+                    f"invalid token IDs: {invalid_count}; "
+                    f"incomplete requests: {incomplete_count}")
             token_match_counts.append(repeat_counts)
         match_counts[policy] = token_match_counts
         invalid_token_counts[policy] = policy_invalid_counts
+        incomplete_request_counts[policy] = policy_incomplete_counts
 
     summary = {
         "batch_size": args.batch_size,
@@ -298,6 +311,9 @@ def main():
             for policy, repeats in match_counts.items()
         },
         "invalid_token_count_by_policy_per_repeat": invalid_token_counts,
+        "incomplete_request_count_by_policy_per_repeat": (
+            incomplete_request_counts
+        ),
         "first_30_gate_passed_by_policy": {
             policy: all(
                 sum(counts) * TOKEN_MATCH_DENOMINATOR
@@ -306,8 +322,11 @@ def main():
                     * TOKEN_MATCH_DENOMINATOR
                     >= len(counts) * TOKEN_MATCH_NUMERATOR
                 and invalid_count == 0
-                for counts, invalid_count in zip(
-                    repeats, invalid_token_counts[policy]
+                and incomplete_count == 0
+                for counts, invalid_count, incomplete_count in zip(
+                    repeats,
+                    invalid_token_counts[policy],
+                    incomplete_request_counts[policy],
                 )
             )
             for policy, repeats in match_counts.items()

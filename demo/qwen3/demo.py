@@ -1514,11 +1514,16 @@ if __name__ == "__main__":
 
         # -------- CI dumps outputs to json files ----------
         if save_path and rank == 0:
-            end_idx = step[0].item() + 1
             prompt_len = prompt_lengths[0].item()
-            tokens_generated = max(0, end_idx - prompt_len)
+            generation_lengths = torch.clamp(
+                step.to(torch.int64) + 1 - prompt_len, min=0
+            ).cpu().tolist()
+            tokens_generated = max(generation_lengths)
+            end_idx = step[0].item() + 1
             per_tok_ms = per_tok_ms
-            slice_end = min(end_idx, prompt_len + MAX_SAVE_TOKENS)
+            slice_end = min(
+                tokens.shape[1], prompt_len + min(tokens_generated, MAX_SAVE_TOKENS)
+            )
             token_ids = tokens[0, prompt_len:slice_end].tolist()
             response_text = decode_tokens_safely(
                 tokenizer, tokens[0, :end_idx], model.config.vocab_size
@@ -1533,9 +1538,9 @@ if __name__ == "__main__":
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
+                out["generate_lengths_by_request"] = generation_lengths
                 out["token_ids_by_request"] = [
-                    tokens[r, prompt_len:min(step[r].item() + 1,
-                                              prompt_len + MAX_SAVE_TOKENS)].tolist()
+                    tokens[r, prompt_len:slice_end].tolist()
                     for r in range(total_num_requests)
                 ]
             if invalid_token_ids_by_request:
