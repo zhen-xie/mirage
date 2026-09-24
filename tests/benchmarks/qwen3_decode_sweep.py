@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK = Path(__file__).with_name("qwen3_decode_backend.py")
 FIELDS = (
     "batch_size", "s_in", "s_out", "context_length", "decode_steps", "repeat", "warmup",
-    "page_size", "max_num_pages", "max_num_batched_tokens",
+    "page_size", "max_num_pages", "max_num_batched_tokens", "split_kv_cache",
     "estimated_kv_gib", "gpu_total_gib", "status", "status_reason",
     "model", "batch_prompt_mode", "prompt_sha256", "git_commit", "gpu_name", "driver_version",
     "torch_version", "torch_cuda_version", "transformers_version",
@@ -287,6 +287,10 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
         "page_size": page_size,
         "max_num_pages": batch_size,
         "max_num_batched_tokens": max(8, batch_size),
+        "split_kv_cache": (
+            args.split_kv_cache_min_batch_size > 0
+            and batch_size >= args.split_kv_cache_min_batch_size
+        ),
     }
     if any(summary.get(key) != value for key, value in expected.items()):
         raise ValueError(f"Existing summary has different parameters: {summary_path}")
@@ -438,6 +442,10 @@ def unavailable_rows(batch_size, context_length, s_out, args, environment, page_
             "page_size": page_size,
             "max_num_pages": batch_size,
             "max_num_batched_tokens": max(8, batch_size),
+            "split_kv_cache": (
+                args.split_kv_cache_min_batch_size > 0
+                and batch_size >= args.split_kv_cache_min_batch_size
+            ),
             "estimated_kv_gib": estimated_kv_gib,
             "gpu_total_gib": gpu_total_gib,
             "status": status,
@@ -486,6 +494,11 @@ def main():
                         help="Minimum KV page size; use 4096 to compare with established runs")
     parser.add_argument("--max-mpk-batch-size", type=int, default=128,
                         help="Largest batch enabled for MPK; Hopper uses the large-batch CUTLASS path above 16")
+    parser.add_argument(
+        "--split-kv-cache-min-batch-size", type=int, default=128,
+        help=("Use split-KV attention for MPK policies at this batch size and "
+              "above; use 0 to disable automatic split-KV attention"),
+    )
     parser.add_argument("--progress-interval-seconds", type=int, default=30,
                         help="Seconds between idle progress heartbeats; use 0 to disable them")
     parser.add_argument("--source-prompts-file", type=Path,
@@ -533,6 +546,8 @@ def main():
         parser.error("--min-page-size must be a power of two and at least 64")
     if args.max_mpk_batch_size < 1:
         parser.error("--max-mpk-batch-size must be positive")
+    if args.split_kv_cache_min_batch_size < 0:
+        parser.error("--split-kv-cache-min-batch-size must be nonnegative")
 
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -686,6 +701,10 @@ def main():
                     "min_page_size": args.min_page_size,
                     "max_num_pages": batch_size,
                     "max_num_batched_tokens": max(8, batch_size),
+                    "split_kv_cache": (
+                        args.split_kv_cache_min_batch_size > 0
+                        and batch_size >= args.split_kv_cache_min_batch_size
+                    ),
                     "reserve_gib": args.reserve_gib,
                     "model": args.model,
                     "prompt_sha256": prompt_sha256,
@@ -717,6 +736,8 @@ def main():
                         "--output-dir", str(case_dir),
                         *prompt_args,
                     ]
+                    if manifest["split_kv_cache"]:
+                        command.append("--split-kv-cache")
                     log_path = case_dir / "benchmark.log"
                     progress.show(f"{case_label}: starting")
                     case_started = time.monotonic()
