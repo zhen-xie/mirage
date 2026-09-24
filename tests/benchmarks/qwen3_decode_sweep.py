@@ -27,7 +27,7 @@ FIELDS = (
     "batch_size", "s_in", "s_out", "context_length", "decode_steps", "repeat", "warmup",
     "page_size", "max_num_pages", "max_num_batched_tokens",
     "estimated_kv_gib", "gpu_total_gib", "status", "status_reason",
-    "model", "prompt_sha256", "git_commit", "gpu_name", "driver_version",
+    "model", "batch_prompt_mode", "prompt_sha256", "git_commit", "gpu_name", "driver_version",
     "torch_version", "torch_cuda_version", "transformers_version",
     "flashinfer_version", "policy",
     "prefill_backend", "decode_backend", "timing_mode",
@@ -39,6 +39,7 @@ FIELDS = (
     "repeat_prefill_ms", "repeat_decode_ms", "repeat_continuous_total_ms",
     "minimum_first30_matches",
     "minimum_batch_match_fraction", "minimum_passing_request_fraction",
+    "invalid_token_count",
     "compared_token_positions", "required_token_matches", "correctness_gate_applicable",
     "first30_matches_by_request_per_repeat", "decode_speedup_vs_normal",
     "phase_sum_speedup_vs_normal", "continuous_total_speedup_vs_normal",
@@ -328,10 +329,16 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             min(passing_request_fractions)
             if passing_request_fractions else None
         )
+        invalid_token_count = sum(
+            summary.get(
+                "invalid_token_count_by_policy_per_repeat", {}
+            ).get(policy, [])
+        )
         gate_passed = (
             minimum is None
             or (minimum_batch_match_fraction >= 2 / 3
-                and minimum_passing_request_fraction >= 2 / 3)
+                and minimum_passing_request_fraction >= 2 / 3
+                and invalid_token_count == 0)
         )
         if policy == "normal":
             status = "completed"
@@ -344,13 +351,15 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             reason = (
                 f"Batch match fraction: {minimum_batch_match_fraction:.3f}; "
                 "passing-request fraction: "
-                f"{minimum_passing_request_fraction:.3f}; both require 0.667"
+                f"{minimum_passing_request_fraction:.3f}; both require 0.667; "
+                f"invalid token IDs: {invalid_token_count}"
             )
         rows.append({
             **expected,
             "s_in": context_length,
             "s_out": s_out,
             **environment,
+            "batch_prompt_mode": args.batch_prompt_mode,
             "prompt_sha256": prompt_sha256,
             "estimated_kv_gib": estimated_kv_gib,
             "gpu_total_gib": gpu_total_gib,
@@ -385,6 +394,7 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             "minimum_first30_matches": minimum,
             "minimum_batch_match_fraction": minimum_batch_match_fraction,
             "minimum_passing_request_fraction": minimum_passing_request_fraction,
+            "invalid_token_count": invalid_token_count,
             "compared_token_positions": compared_positions,
             "required_token_matches": required_matches,
             "correctness_gate_applicable": gate_applicable,
@@ -424,6 +434,7 @@ def unavailable_rows(batch_size, context_length, s_out, args, environment, page_
             "gpu_total_gib": gpu_total_gib,
             "status": status,
             "status_reason": reason,
+            "batch_prompt_mode": args.batch_prompt_mode,
             "policy": policy,
             "prefill_backend": prefill_backend,
             "decode_backend": decode_backend,
@@ -471,6 +482,12 @@ def main():
                         help="Seconds between idle progress heartbeats; use 0 to disable them")
     parser.add_argument("--source-prompts-file", type=Path,
                         default=ROOT / "tests/benchmarks/baselines/batch_b8_smoke/eight_prompts.json")
+    parser.add_argument(
+        "--batch-prompt-mode", choices=("identical", "distinct"),
+        default="identical",
+        help=("Use one repeated prompt per batch for performance sweeps, or "
+              "distinct prompts for diversity correctness tests"),
+    )
     parser.add_argument("--output-dir", type=Path,
                         default=ROOT / "results/qwen3_decode_sweep")
     args = parser.parse_args()
@@ -570,17 +587,24 @@ def main():
                     prompts = []
                     prompt_error = None
                     try:
-                        distinct_seeds = make_distinct_seeds(
-                            tokenizer, seeds, batch_size, context_length
-                        )
-                        prompts = [
-                            make_prompt(tokenizer, seed, context_length)
-                            for seed in distinct_seeds
-                        ]
-                        if len(set(prompts)) != len(prompts):
-                            raise ValueError(
-                                f"Prompts are not distinct at S_IN={context_length}"
+                        if args.batch_prompt_mode == "identical":
+                            prompt = make_prompt(
+                                tokenizer, seeds[0], context_length
                             )
+                            prompts = [prompt] * batch_size
+                        else:
+                            distinct_seeds = make_distinct_seeds(
+                                tokenizer, seeds, batch_size, context_length
+                            )
+                            prompts = [
+                                make_prompt(tokenizer, seed, context_length)
+                                for seed in distinct_seeds
+                            ]
+                            if len(set(prompts)) != len(prompts):
+                                raise ValueError(
+                                    "Prompts are not distinct at "
+                                    f"S_IN={context_length}"
+                                )
                     except ValueError as error:
                         prompt_error = str(error)
                     prompt_cache[prompt_cache_key] = (prompts, prompt_error)
@@ -647,6 +671,7 @@ def main():
                     "s_out": s_out,
                     "decode_steps": (s_out - 1),
                     "chat_template": "user_only",
+                    "batch_prompt_mode": args.batch_prompt_mode,
                     "repeat": args.repeat,
                     "warmup": args.warmup,
                     "page_size": page_size,
@@ -715,7 +740,8 @@ def main():
                         f"batch match={row['minimum_batch_match_fraction']:.1%}, "
                         f"passing requests={row['minimum_passing_request_fraction']:.1%}, "
                         f"worst request={row['minimum_first30_matches']}/"
-                        f"{row['compared_token_positions']}"
+                        f"{row['compared_token_positions']}, "
+                        f"invalid tokens={row['invalid_token_count']}"
                         if row["minimum_batch_match_fraction"] is not None
                         else "correctness reference"
                     )

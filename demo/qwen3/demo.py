@@ -147,6 +147,26 @@ def select_normal_token(logits, args, model, cur_pos):
         next_token = next_token.view(1, 1)
     return next_token[0, -1]
 
+
+def decode_tokens_safely(tokenizer, token_ids, vocab_size):
+    """Decode valid IDs and preserve invalid values for kernel diagnostics."""
+    ids = token_ids.detach().cpu().reshape(-1).tolist()
+    invalid = [
+        {"position": position, "token_id": token_id}
+        for position, token_id in enumerate(ids)
+        if token_id < 0 or token_id >= vocab_size
+    ]
+    if not invalid:
+        return tokenizer.decode(ids, skip_special_tokens=True), invalid
+    replacement = tokenizer.unk_token_id
+    if replacement is None or replacement < 0 or replacement >= vocab_size:
+        replacement = 0
+    sanitized = [
+        token_id if 0 <= token_id < vocab_size else replacement
+        for token_id in ids
+    ]
+    return tokenizer.decode(sanitized, skip_special_tokens=True), invalid
+
 if __name__ == "__main__":
     global print
     parser = argparse.ArgumentParser()
@@ -1381,11 +1401,18 @@ if __name__ == "__main__":
         tokens_generated = max(0, end_idx - prompt_len)
         per_tok_ms = run_time / max(prompt_len + tokens_generated, 1)
 
-        responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-        for request_id, response in enumerate(responses):
+        invalid_token_ids_by_request = {}
+        for request_id in range(total_num_requests):
+            response, invalid = decode_tokens_safely(
+                tokenizer, generated_ids[request_id], model.config.vocab_size
+            )
+            if invalid:
+                invalid_token_ids_by_request[str(request_id)] = invalid
             if total_num_requests > 1:
                 print(f"Request {request_id}:")
             print(response)
+            if invalid:
+                print(f"Invalid token IDs for request {request_id}: {invalid}")
         print(
             "Prompt length {}, generate length {}, per-token latency {:.3f} ms".format(
                 prompt_len, tokens_generated, per_tok_ms
@@ -1398,7 +1425,9 @@ if __name__ == "__main__":
             token_ids = tokens[0, prompt_len:slice_end].tolist()
             out = {
                 "token_ids": token_ids,
-                "text": tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True),
+                "text": decode_tokens_safely(
+                    tokenizer, tokens[0, :end_idx], model.config.vocab_size
+                )[0],
                 "latency_ms_per_token": per_tok_ms,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
@@ -1410,6 +1439,8 @@ if __name__ == "__main__":
                     tokens[r, prompt_len:slice_end].tolist()
                     for r in range(total_num_requests)
                 ]
+            if invalid_token_ids_by_request:
+                out["invalid_token_ids_by_request"] = invalid_token_ids_by_request
             if phase_timing_data is not None:
                 out["phase_timing"] = phase_timing_data
             with open(save_path, "w") as f:
@@ -1458,10 +1489,17 @@ if __name__ == "__main__":
                   f"decode={phase_timing_data['decode_ms']:.3f} ms")
 
         print("tokens.shape = ", tokens.shape)
+        invalid_token_ids_by_request = {}
         for r in range(total_num_requests):
             generated_ids = tokens[r, : step[r] + 1]
-            response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+            response, invalid = decode_tokens_safely(
+                tokenizer, generated_ids, model.config.vocab_size
+            )
+            if invalid:
+                invalid_token_ids_by_request[str(r)] = invalid
             print(response)
+            if invalid:
+                print(f"Invalid token IDs for request {r}: {invalid}")
         
         if total_num_requests > 1:
             print(f"Output length of each batch is same: {(step.max() == step.min()).item()}")
@@ -1482,7 +1520,9 @@ if __name__ == "__main__":
             per_tok_ms = per_tok_ms
             slice_end = min(end_idx, prompt_len + MAX_SAVE_TOKENS)
             token_ids = tokens[0, prompt_len:slice_end].tolist()
-            response_text = tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True)
+            response_text = decode_tokens_safely(
+                tokenizer, tokens[0, :end_idx], model.config.vocab_size
+            )[0]
             out = {
                 "token_ids": token_ids,
                 "text": response_text,
@@ -1498,6 +1538,8 @@ if __name__ == "__main__":
                                               prompt_len + MAX_SAVE_TOKENS)].tolist()
                     for r in range(total_num_requests)
                 ]
+            if invalid_token_ids_by_request:
+                out["invalid_token_ids_by_request"] = invalid_token_ids_by_request
             if phase_timing_data is not None:
                 out["phase_timing"] = phase_timing_data
             with open(save_path, "w") as f:
