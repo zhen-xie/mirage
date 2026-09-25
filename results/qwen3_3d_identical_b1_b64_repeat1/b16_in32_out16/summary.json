@@ -1,0 +1,248 @@
+{
+  "batch_size": 16,
+  "context_length": 32,
+  "page_size": 64,
+  "max_num_pages": 16,
+  "max_num_batched_tokens": 16,
+  "split_kv_cache": false,
+  "decode_steps": 15,
+  "warmup": 0,
+  "repeat": 1,
+  "timing_scope": "CUDA events around each phase; continuous always uses one full-kernel CUDA duration; separate cold demo process per sample",
+  "warmup_note": "Warmup runs are discarded processes; they do not warm subsequent processes",
+  "per_step_note": "MPK persistent kernel exposes only whole-decode timing; its per-step percentiles are null",
+  "always_timing_mode": "two MPK launches with a prefill boundary; continuous always may generate different tokens",
+  "continuous_always_note": "Continuous always has one kernel duration; prefill/decode timing is unavailable",
+  "first_30_token_matches_by_policy": {
+    "always": [
+      [
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16
+      ]
+    ],
+    "decode-only": [
+      [
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16
+      ]
+    ],
+    "prefill-only": [
+      [
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16
+      ]
+    ],
+    "always-continuous": [
+      [
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16
+      ]
+    ]
+  },
+  "compared_token_positions": 16,
+  "required_token_matches": 11,
+  "batch_match_fraction_by_policy_per_repeat": {
+    "always": [
+      1.0
+    ],
+    "decode-only": [
+      1.0
+    ],
+    "prefill-only": [
+      1.0
+    ],
+    "always-continuous": [
+      1.0
+    ]
+  },
+  "passing_request_fraction_by_policy_per_repeat": {
+    "always": [
+      1.0
+    ],
+    "decode-only": [
+      1.0
+    ],
+    "prefill-only": [
+      1.0
+    ],
+    "always-continuous": [
+      1.0
+    ]
+  },
+  "invalid_token_count_by_policy_per_repeat": {
+    "always": [
+      0
+    ],
+    "decode-only": [
+      0
+    ],
+    "prefill-only": [
+      0
+    ],
+    "always-continuous": [
+      0
+    ]
+  },
+  "incomplete_request_count_by_policy_per_repeat": {
+    "always": [
+      0
+    ],
+    "decode-only": [
+      0
+    ],
+    "prefill-only": [
+      0
+    ],
+    "always-continuous": [
+      0
+    ]
+  },
+  "first_30_gate_passed_by_policy": {
+    "always": true,
+    "decode-only": true,
+    "prefill-only": true,
+    "always-continuous": true
+  },
+  "token_match_gate": "For every repeat, at least two thirds of all compared token positions match and at least two thirds of requests meet the per-request two-thirds positional threshold",
+  "normal": {
+    "backend": "normal",
+    "repeat_prefill_ms": [
+      375.9825744628906
+    ],
+    "mean_prefill_ms": 375.9825744628906,
+    "repeat_total_decode_ms": [
+      256.27145767211914
+    ],
+    "mean_total_decode_ms": 256.27145767211914,
+    "mean_prefill_plus_decode_ms": 632.2540321350098,
+    "mean_step_latency_ms": 17.08476384480794,
+    "median_step_latency_ms": 16.02275276184082,
+    "p90_step_latency_ms": 16.261383056640625,
+    "p99_step_latency_ms": 29.71655025482177,
+    "tokens_per_second": 936.506945330848,
+    "generated_tokens_per_second_including_prefill": 404.90054153634003,
+    "relative_total_range": null
+  },
+  "mpk_always": {
+    "backend": "mpk",
+    "repeat_prefill_ms": [
+      276.47271728515625
+    ],
+    "mean_prefill_ms": 276.47271728515625,
+    "repeat_total_decode_ms": [
+      97.4323501586914
+    ],
+    "mean_total_decode_ms": 97.4323501586914,
+    "mean_prefill_plus_decode_ms": 373.90506744384766,
+    "mean_step_latency_ms": 6.495490010579427,
+    "median_step_latency_ms": null,
+    "p90_step_latency_ms": null,
+    "p99_step_latency_ms": null,
+    "tokens_per_second": 2463.2475723833386,
+    "generated_tokens_per_second_including_prefill": 684.6657675706564,
+    "relative_total_range": null
+  },
+  "mpk_decode_only": {
+    "backend": "mpk",
+    "repeat_prefill_ms": [
+      343.1526184082031
+    ],
+    "mean_prefill_ms": 343.1526184082031,
+    "repeat_total_decode_ms": [
+      98.67107391357422
+    ],
+    "mean_total_decode_ms": 98.67107391357422,
+    "mean_prefill_plus_decode_ms": 441.82369232177734,
+    "mean_step_latency_ms": 6.578071594238281,
+    "median_step_latency_ms": null,
+    "p90_step_latency_ms": null,
+    "p99_step_latency_ms": null,
+    "tokens_per_second": 2432.323785289045,
+    "generated_tokens_per_second_including_prefill": 579.4166416353174,
+    "relative_total_range": null
+  },
+  "mpk_prefill_only": {
+    "backend": "normal",
+    "repeat_prefill_ms": [
+      271.8502197265625
+    ],
+    "mean_prefill_ms": 271.8502197265625,
+    "repeat_total_decode_ms": [
+      586.0378141403198
+    ],
+    "mean_total_decode_ms": 586.0378141403198,
+    "mean_prefill_plus_decode_ms": 857.8880338668823,
+    "mean_step_latency_ms": 39.06918760935466,
+    "median_step_latency_ms": 16.13580894470215,
+    "p90_step_latency_ms": 16.740864181518553,
+    "p99_step_latency_ms": 311.6277876663206,
+    "tokens_per_second": 409.5298873368175,
+    "generated_tokens_per_second_including_prefill": 298.4072395159708,
+    "relative_total_range": null
+  },
+  "mpk_always_continuous": {
+    "backend": "mpk",
+    "repeat_total_ms": [
+      432.6625671386719
+    ],
+    "mean_total_ms": 432.6625671386719,
+    "generated_tokens_per_second": 591.685113165683,
+    "relative_total_range": null
+  }
+}

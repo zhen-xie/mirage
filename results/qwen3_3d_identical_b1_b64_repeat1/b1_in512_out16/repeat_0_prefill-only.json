@@ -1,0 +1,46 @@
+{
+  "token_ids": [
+    151667,
+    198,
+    32313,
+    11,
+    279,
+    1196,
+    3208,
+    264,
+    1943,
+    448,
+    264,
+    2696,
+    315,
+    11504,
+    330,
+    14990
+  ],
+  "text": "user\n hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello\n hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello\n hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello\n hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello\nassistant\n<think>\nOkay, the user sent a message with a lot of repeated \"hello",
+  "latency_ms_per_token": 2.2145394989938447,
+  "prompt_length": 512,
+  "generate_length": 16,
+  "mode": "mpk_prefill_normal_decode",
+  "phase_timing": {
+    "prefill_ms": 481.9629821777344,
+    "decode_ms": 682.7189693450928,
+    "decode_step_ms": [
+      397.3492431640625,
+      21.265119552612305,
+      20.42425537109375,
+      20.359167098999023,
+      20.32307243347168,
+      20.30950355529785,
+      20.410175323486328,
+      20.297504425048828,
+      20.250240325927734,
+      20.32534408569336,
+      20.388704299926758,
+      20.121440887451172,
+      20.387104034423828,
+      20.205951690673828,
+      20.302143096923828
+    ]
+  }
+}

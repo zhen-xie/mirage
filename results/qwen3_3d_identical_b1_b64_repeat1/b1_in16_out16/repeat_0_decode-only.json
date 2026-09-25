@@ -1,0 +1,31 @@
+{
+  "token_ids": [
+    151667,
+    198,
+    32313,
+    11,
+    279,
+    1196,
+    3208,
+    264,
+    1943,
+    448,
+    5248,
+    330,
+    14990,
+    1,
+    84966,
+    13
+  ],
+  "text": "user\n hello hello hello hello hello hello hello hello\nassistant\n<think>\nOkay, the user sent a message with multiple \"hello\" repetitions.",
+  "latency_ms_per_token": 14.938593864440918,
+  "prompt_length": 16,
+  "generate_length": 16,
+  "mode": "normal_prefill_mpk_decode",
+  "phase_timing": {
+    "prefill_ms": 385.28338623046875,
+    "decode_ms": 92.71024322509766,
+    "decode_steps": 15,
+    "decode_step_ms": null
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "token_ids": [
+    151667,
+    198,
+    32313,
+    11,
+    279,
+    1196,
+    3208,
+    264,
+    1943,
+    448,
+    264,
+    2696,
+    315,
+    11504,
+    330,
+    14990
+  ],
+  "text": "user\n hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello\n hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello\nassistant\n<think>\nOkay, the user sent a message with a lot of repeated \"hello",
+  "latency_ms_per_token": 3.355545492733226,
+  "prompt_length": 256,
+  "generate_length": 16,
+  "mode": "mpk_prefill_normal_decode",
+  "phase_timing": {
+    "prefill_ms": 237.25173950195312,
+    "decode_ms": 670.8544578552246,
+    "decode_step_ms": [
+      378.6754150390625,
+      21.790847778320312,
+      21.21072006225586,
+      20.93062400817871,
+      20.906784057617188,
+      20.632064819335938,
+      20.83683204650879,
+      20.731103897094727,
+      20.835168838500977,
+      20.696544647216797,
+      20.734111785888672,
+      20.710336685180664,
+      20.729856491088867,
+      20.705215454101562,
+      20.728832244873047
+    ]
+  }
+}
