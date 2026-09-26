@@ -319,8 +319,8 @@ if __name__ == "__main__":
     ):
         parser.error("--debug-split-mpk-prefill requires MPK always, greedy decoding, no speculative decoding, and no profiling")
     if args.mpk_policy in ("prefill-only", "decode-only"):
-        if args.spec_decode or args.do_sample or args.profiling:
-            parser.error("Mixed backend policies require greedy decoding, no speculative decoding, and no profiling")
+        if args.spec_decode or args.do_sample:
+            parser.error("Mixed backend policies require greedy decoding and no speculative decoding")
     if args.backend == "mpk" and args.max_num_batched_requests > 1:
         if (args.max_num_batched_requests > args.max_num_pages
             or args.max_num_batched_requests > args.max_num_batched_tokens

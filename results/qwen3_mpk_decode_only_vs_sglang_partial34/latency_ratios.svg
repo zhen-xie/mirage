@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900">
+<rect width="100%" height="100%" fill="white"/>
+<text x="750" y="34" text-anchor="middle" font-family="Arial" font-size="22" font-weight="bold">Qwen3-8B: MPK decode-only vs SGLang (34 matched cases)</text>
+<text x="750" y="58" text-anchor="middle" font-family="Arial" font-size="13">Ratio = SGLang latency / MPK latency; green means MPK is faster</text>
+<text x="75" y="73" font-family="Arial" font-size="17" font-weight="bold">Decode latency ratio</text>
+<line x1="75" y1="170.7" x2="1475" y2="170.7" stroke="#dddddd"/>
+<text x="67" y="174.7" text-anchor="end" font-family="Arial" font-size="11">0.8</text>
+<line x1="75" y1="143.9" x2="1475" y2="143.9" stroke="#dddddd"/>
+<text x="67" y="147.9" text-anchor="end" font-family="Arial" font-size="11">0.9</text>
+<line x1="75" y1="117.1" x2="1475" y2="117.1" stroke="#dddddd"/>
+<text x="67" y="121.1" text-anchor="end" font-family="Arial" font-size="11">1.0</text>
+<line x1="75" y1="90.4" x2="1475" y2="90.4" stroke="#dddddd"/>
+<text x="67" y="94.4" text-anchor="end" font-family="Arial" font-size="11">1.1</text>
+<line x1="75" y1="117.1" x2="1475" y2="117.1" stroke="#111111" stroke-width="1.5"/>
+<rect x="76.0" y="117.3" width="39.2" height="267.7" fill="#c2410c"><title>B1/I16/O16: 1.000</title></rect>
+<rect x="117.2" y="118.3" width="39.2" height="266.7" fill="#c2410c"><title>B1/I16/O128: 0.996</title></rect>
+<rect x="158.4" y="124.0" width="39.2" height="261.0" fill="#c2410c"><title>B1/I16/O512: 0.974</title></rect>
+<rect x="199.5" y="118.5" width="39.2" height="266.5" fill="#c2410c"><title>B1/I128/O16: 0.995</title></rect>
+<rect x="240.7" y="121.6" width="39.2" height="263.4" fill="#c2410c"><title>B1/I128/O128: 0.983</title></rect>
+<rect x="281.9" y="127.4" width="39.2" height="257.6" fill="#c2410c"><title>B1/I128/O512: 0.962</title></rect>
+<rect x="323.1" y="126.4" width="39.2" height="258.6" fill="#c2410c"><title>B1/I512/O16: 0.965</title></rect>
+<rect x="364.2" y="134.7" width="39.2" height="250.3" fill="#c2410c"><title>B1/I512/O128: 0.934</title></rect>
+<rect x="405.4" y="141.3" width="39.2" height="243.7" fill="#c2410c"><title>B1/I512/O512: 0.910</title></rect>
+<rect x="446.6" y="106.4" width="39.2" height="278.6" fill="#18794e"><title>B4/I16/O16: 1.040</title></rect>
+<rect x="487.8" y="111.1" width="39.2" height="273.9" fill="#18794e"><title>B4/I16/O128: 1.023</title></rect>
+<rect x="528.9" y="115.8" width="39.2" height="269.2" fill="#18794e"><title>B4/I16/O512: 1.005</title></rect>
+<rect x="570.1" y="110.3" width="39.2" height="274.7" fill="#18794e"><title>B4/I128/O16: 1.026</title></rect>
+<rect x="611.3" y="112.9" width="39.2" height="272.1" fill="#18794e"><title>B4/I128/O128: 1.016</title></rect>
+<rect x="652.5" y="118.9" width="39.2" height="266.1" fill="#c2410c"><title>B4/I128/O512: 0.993</title></rect>
+<rect x="693.6" y="124.5" width="39.2" height="260.5" fill="#c2410c"><title>B4/I512/O16: 0.973</title></rect>
+<rect x="734.8" y="125.1" width="39.2" height="259.9" fill="#c2410c"><title>B4/I512/O128: 0.970</title></rect>
+<rect x="776.0" y="131.7" width="39.2" height="253.3" fill="#c2410c"><title>B4/I512/O512: 0.946</title></rect>
+<rect x="817.2" y="104.3" width="39.2" height="280.7" fill="#18794e"><title>B8/I16/O16: 1.048</title></rect>
+<rect x="858.4" y="110.1" width="39.2" height="274.9" fill="#18794e"><title>B8/I16/O128: 1.026</title></rect>
+<rect x="899.5" y="113.6" width="39.2" height="271.4" fill="#18794e"><title>B8/I16/O512: 1.013</title></rect>
+<rect x="940.7" y="105.5" width="39.2" height="279.5" fill="#18794e"><title>B8/I128/O16: 1.043</title></rect>
+<rect x="981.9" y="112.0" width="39.2" height="273.0" fill="#18794e"><title>B8/I128/O128: 1.019</title></rect>
+<rect x="1023.1" y="117.1" width="39.2" height="267.9" fill="#18794e"><title>B8/I128/O512: 1.000</title></rect>
+<rect x="1064.2" y="115.5" width="39.2" height="269.5" fill="#18794e"><title>B8/I512/O16: 1.006</title></rect>
+<rect x="1105.4" y="121.5" width="39.2" height="263.5" fill="#c2410c"><title>B8/I512/O128: 0.984</title></rect>
+<rect x="1146.6" y="126.5" width="39.2" height="258.5" fill="#c2410c"><title>B8/I512/O512: 0.965</title></rect>
+<rect x="1187.8" y="112.0" width="39.2" height="273.0" fill="#18794e"><title>B16/I16/O16: 1.019</title></rect>
+<rect x="1228.9" y="118.8" width="39.2" height="266.2" fill="#c2410c"><title>B16/I16/O128: 0.994</title></rect>
+<rect x="1270.1" y="120.7" width="39.2" height="264.3" fill="#c2410c"><title>B16/I16/O512: 0.987</title></rect>
+<rect x="1311.3" y="112.6" width="39.2" height="272.4" fill="#18794e"><title>B16/I128/O16: 1.017</title></rect>
+<rect x="1352.5" y="119.7" width="39.2" height="265.3" fill="#c2410c"><title>B16/I128/O128: 0.990</title></rect>
+<rect x="1393.6" y="123.1" width="39.2" height="261.9" fill="#c2410c"><title>B16/I128/O512: 0.978</title></rect>
+<rect x="1434.8" y="127.4" width="39.2" height="257.6" fill="#c2410c"><title>B16/I512/O128: 0.962</title></rect>
+<text x="75" y="463" font-family="Arial" font-size="17" font-weight="bold">Prefill + decode latency ratio</text>
+<line x1="75" y1="560.7" x2="1475" y2="560.7" stroke="#dddddd"/>
+<text x="67" y="564.7" text-anchor="end" font-family="Arial" font-size="11">0.8</text>
+<line x1="75" y1="533.9" x2="1475" y2="533.9" stroke="#dddddd"/>
+<text x="67" y="537.9" text-anchor="end" font-family="Arial" font-size="11">0.9</text>
+<line x1="75" y1="507.1" x2="1475" y2="507.1" stroke="#dddddd"/>
+<text x="67" y="511.1" text-anchor="end" font-family="Arial" font-size="11">1.0</text>
+<line x1="75" y1="480.4" x2="1475" y2="480.4" stroke="#dddddd"/>
+<text x="67" y="484.4" text-anchor="end" font-family="Arial" font-size="11">1.1</text>
+<line x1="75" y1="507.1" x2="1475" y2="507.1" stroke="#111111" stroke-width="1.5"/>
+<rect x="76.0" y="543.6" width="39.2" height="231.4" fill="#c2410c"><title>B1/I16/O16: 0.864</title></rect>
+<text x="96.6" y="787" transform="rotate(65 96.6 787)" font-family="Arial" font-size="8">B1/I16/O16</text>
+<rect x="117.2" y="513.5" width="39.2" height="261.5" fill="#c2410c"><title>B1/I16/O128: 0.976</title></rect>
+<text x="137.8" y="787" transform="rotate(65 137.8 787)" font-family="Arial" font-size="8">B1/I16/O128</text>
+<rect x="158.4" y="515.3" width="39.2" height="259.7" fill="#c2410c"><title>B1/I16/O512: 0.969</title></rect>
+<text x="178.9" y="787" transform="rotate(65 178.9 787)" font-family="Arial" font-size="8">B1/I16/O512</text>
+<rect x="199.5" y="543.6" width="39.2" height="231.4" fill="#c2410c"><title>B1/I128/O16: 0.864</title></rect>
+<text x="220.1" y="787" transform="rotate(65 220.1 787)" font-family="Arial" font-size="8">B1/I128/O16</text>
+<rect x="240.7" y="516.7" width="39.2" height="258.3" fill="#c2410c"><title>B1/I128/O128: 0.964</title></rect>
+<text x="261.3" y="787" transform="rotate(65 261.3 787)" font-family="Arial" font-size="8">B1/I128/O128</text>
+<rect x="281.9" y="518.7" width="39.2" height="256.3" fill="#c2410c"><title>B1/I128/O512: 0.957</title></rect>
+<text x="302.5" y="787" transform="rotate(65 302.5 787)" font-family="Arial" font-size="8">B1/I128/O512</text>
+<rect x="323.1" y="547.4" width="39.2" height="227.6" fill="#c2410c"><title>B1/I512/O16: 0.850</title></rect>
+<text x="343.6" y="787" transform="rotate(65 343.6 787)" font-family="Arial" font-size="8">B1/I512/O16</text>
+<rect x="364.2" y="529.3" width="39.2" height="245.7" fill="#c2410c"><title>B1/I512/O128: 0.917</title></rect>
+<text x="384.8" y="787" transform="rotate(65 384.8 787)" font-family="Arial" font-size="8">B1/I512/O128</text>
+<rect x="405.4" y="532.4" width="39.2" height="242.6" fill="#c2410c"><title>B1/I512/O512: 0.906</title></rect>
+<text x="426.0" y="787" transform="rotate(65 426.0 787)" font-family="Arial" font-size="8">B1/I512/O512</text>
+<rect x="446.6" y="518.2" width="39.2" height="256.8" fill="#c2410c"><title>B4/I16/O16: 0.959</title></rect>
+<text x="467.2" y="787" transform="rotate(65 467.2 787)" font-family="Arial" font-size="8">B4/I16/O16</text>
+<rect x="487.8" y="503.9" width="39.2" height="271.1" fill="#18794e"><title>B4/I16/O128: 1.012</title></rect>
+<text x="508.4" y="787" transform="rotate(65 508.4 787)" font-family="Arial" font-size="8">B4/I16/O128</text>
+<rect x="528.9" y="506.5" width="39.2" height="268.5" fill="#18794e"><title>B4/I16/O512: 1.002</title></rect>
+<text x="549.5" y="787" transform="rotate(65 549.5 787)" font-family="Arial" font-size="8">B4/I16/O512</text>
+<rect x="570.1" y="515.7" width="39.2" height="259.3" fill="#c2410c"><title>B4/I128/O16: 0.968</title></rect>
+<text x="590.7" y="787" transform="rotate(65 590.7 787)" font-family="Arial" font-size="8">B4/I128/O16</text>
+<rect x="611.3" y="505.0" width="39.2" height="270.0" fill="#18794e"><title>B4/I128/O128: 1.008</title></rect>
+<text x="631.9" y="787" transform="rotate(65 631.9 787)" font-family="Arial" font-size="8">B4/I128/O128</text>
+<rect x="652.5" y="509.4" width="39.2" height="265.6" fill="#c2410c"><title>B4/I128/O512: 0.991</title></rect>
+<text x="673.1" y="787" transform="rotate(65 673.1 787)" font-family="Arial" font-size="8">B4/I128/O512</text>
+<rect x="693.6" y="536.0" width="39.2" height="239.0" fill="#c2410c"><title>B4/I512/O16: 0.892</title></rect>
+<text x="714.2" y="787" transform="rotate(65 714.2 787)" font-family="Arial" font-size="8">B4/I512/O16</text>
+<rect x="734.8" y="519.4" width="39.2" height="255.6" fill="#c2410c"><title>B4/I512/O128: 0.954</title></rect>
+<text x="755.4" y="787" transform="rotate(65 755.4 787)" font-family="Arial" font-size="8">B4/I512/O128</text>
+<rect x="776.0" y="522.7" width="39.2" height="252.3" fill="#c2410c"><title>B4/I512/O512: 0.942</title></rect>
+<text x="796.6" y="787" transform="rotate(65 796.6 787)" font-family="Arial" font-size="8">B4/I512/O512</text>
+<rect x="817.2" y="514.0" width="39.2" height="261.0" fill="#c2410c"><title>B8/I16/O16: 0.974</title></rect>
+<text x="837.8" y="787" transform="rotate(65 837.8 787)" font-family="Arial" font-size="8">B8/I16/O16</text>
+<rect x="858.4" y="502.8" width="39.2" height="272.2" fill="#18794e"><title>B8/I16/O128: 1.016</title></rect>
+<text x="878.9" y="787" transform="rotate(65 878.9 787)" font-family="Arial" font-size="8">B8/I16/O128</text>
+<rect x="899.5" y="504.3" width="39.2" height="270.7" fill="#18794e"><title>B8/I16/O512: 1.011</title></rect>
+<text x="920.1" y="787" transform="rotate(65 920.1 787)" font-family="Arial" font-size="8">B8/I16/O512</text>
+<rect x="940.7" y="514.6" width="39.2" height="260.4" fill="#c2410c"><title>B8/I128/O16: 0.972</title></rect>
+<text x="961.3" y="787" transform="rotate(65 961.3 787)" font-family="Arial" font-size="8">B8/I128/O16</text>
+<rect x="981.9" y="504.8" width="39.2" height="270.2" fill="#18794e"><title>B8/I128/O128: 1.009</title></rect>
+<text x="1002.5" y="787" transform="rotate(65 1002.5 787)" font-family="Arial" font-size="8">B8/I128/O128</text>
+<rect x="1023.1" y="507.8" width="39.2" height="267.2" fill="#c2410c"><title>B8/I128/O512: 0.997</title></rect>
+<text x="1043.6" y="787" transform="rotate(65 1043.6 787)" font-family="Arial" font-size="8">B8/I128/O512</text>
+<rect x="1064.2" y="533.8" width="39.2" height="241.2" fill="#c2410c"><title>B8/I512/O16: 0.901</title></rect>
+<text x="1084.8" y="787" transform="rotate(65 1084.8 787)" font-family="Arial" font-size="8">B8/I512/O16</text>
+<rect x="1105.4" y="519.2" width="39.2" height="255.8" fill="#c2410c"><title>B8/I512/O128: 0.955</title></rect>
+<text x="1126.0" y="787" transform="rotate(65 1126.0 787)" font-family="Arial" font-size="8">B8/I512/O128</text>
+<rect x="1146.6" y="518.0" width="39.2" height="257.0" fill="#c2410c"><title>B8/I512/O512: 0.959</title></rect>
+<text x="1167.2" y="787" transform="rotate(65 1167.2 787)" font-family="Arial" font-size="8">B8/I512/O512</text>
+<rect x="1187.8" y="513.7" width="39.2" height="261.3" fill="#c2410c"><title>B16/I16/O16: 0.975</title></rect>
+<text x="1208.4" y="787" transform="rotate(65 1208.4 787)" font-family="Arial" font-size="8">B16/I16/O16</text>
+<rect x="1228.9" y="510.4" width="39.2" height="264.6" fill="#c2410c"><title>B16/I16/O128: 0.988</title></rect>
+<text x="1249.5" y="787" transform="rotate(65 1249.5 787)" font-family="Arial" font-size="8">B16/I16/O128</text>
+<rect x="1270.1" y="511.1" width="39.2" height="263.9" fill="#c2410c"><title>B16/I16/O512: 0.985</title></rect>
+<text x="1290.7" y="787" transform="rotate(65 1290.7 787)" font-family="Arial" font-size="8">B16/I16/O512</text>
+<rect x="1311.3" y="526.5" width="39.2" height="248.5" fill="#c2410c"><title>B16/I128/O16: 0.928</title></rect>
+<text x="1331.9" y="787" transform="rotate(65 1331.9 787)" font-family="Arial" font-size="8">B16/I128/O16</text>
+<rect x="1352.5" y="513.4" width="39.2" height="261.6" fill="#c2410c"><title>B16/I128/O128: 0.977</title></rect>
+<text x="1373.1" y="787" transform="rotate(65 1373.1 787)" font-family="Arial" font-size="8">B16/I128/O128</text>
+<rect x="1393.6" y="513.9" width="39.2" height="261.1" fill="#c2410c"><title>B16/I128/O512: 0.975</title></rect>
+<text x="1414.2" y="787" transform="rotate(65 1414.2 787)" font-family="Arial" font-size="8">B16/I128/O512</text>
+<rect x="1434.8" y="521.3" width="39.2" height="253.7" fill="#c2410c"><title>B16/I512/O128: 0.947</title></rect>
+<text x="1455.4" y="787" transform="rotate(65 1455.4 787)" font-family="Arial" font-size="8">B16/I512/O128</text>
+</svg>

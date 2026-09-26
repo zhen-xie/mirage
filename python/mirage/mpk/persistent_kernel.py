@@ -3364,8 +3364,6 @@ class PersistentKernel:
             raise ValueError("Cannot stop and resume after prefill in one launch")
         if (stop_after_prefill or resume_after_prefill) and self.mode != "offline":
             raise ValueError("Prefill boundary controls require offline mode")
-        if (stop_after_prefill or resume_after_prefill) and self.profiler_tensor is not None:
-            raise ValueError("Prefill boundary controls do not support profiling")
         stream = kwargs.get("default_stream", None)
         if stream is None:
            stream = torch.cuda.current_stream()
@@ -3383,6 +3381,11 @@ class PersistentKernel:
             stream_ptr = stream
         else:
             raise ValueError("Invalid stream object")
+        # Each boundary-controlled launch represents a distinct phase.  Start
+        # its profile at offset zero so a resumed decode contains no stale
+        # prefill events from an earlier launch or warmup.
+        if self.profiler_tensor is not None:
+            self.profiler_tensor.zero_()
         self.launch_func(stream_ptr, int(stop_after_prefill),
                          int(resume_after_prefill))
         if self.profiler_tensor is not None:
