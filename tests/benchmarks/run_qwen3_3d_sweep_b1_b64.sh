@@ -50,6 +50,7 @@ python tests/benchmarks/qwen3_decode_sweep.py \
     --split-kv-cache-min-batch-size 0 \
     --warmup 0 \
     --repeat "$REPEAT" \
+    --include-continuous-always \
     --timeout 3600 \
     --progress-interval-seconds 300 \
     --fail-on-failed-cases \

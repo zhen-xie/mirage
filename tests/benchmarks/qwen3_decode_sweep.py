@@ -53,6 +53,13 @@ BACKENDS = {
     "decode-only": ("NORMAL", "MPK"),
     "prefill-only": ("MPK", "NORMAL"),
 }
+
+
+def selected_policies(args):
+    policies = ["normal", *args.policies]
+    if args.include_continuous_always:
+        policies.insert(policies.index("always") + 1, "always-continuous")
+    return tuple(policies)
 DEFAULT_SEEDS = (
     "Explain a number theory example.",
     "Review an asynchronous Python service.",
@@ -294,17 +301,20 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
     }
     if any(summary.get(key) != value for key, value in expected.items()):
         raise ValueError(f"Existing summary has different parameters: {summary_path}")
-    keys = {"normal", "mpk_always", "mpk_always_continuous", "mpk_decode_only",
-            "mpk_prefill_only"}
+    policies = selected_policies(args)
+    keys = {
+        "normal",
+        *(f"mpk_{policy.replace('-', '_')}" for policy in policies[1:]),
+    }
     if not keys.issubset(summary):
         raise ValueError(f"Existing summary is missing one or more policies: {summary_path}")
     match_counts = summary["first_30_token_matches_by_policy"]
-    if any(policy not in match_counts for policy in POLICIES[1:]):
+    if any(policy not in match_counts for policy in policies[1:]):
         raise ValueError(f"Existing summary is missing correctness counts: {summary_path}")
 
     normal = summary["normal"]
     rows = []
-    for policy in POLICIES:
+    for policy in policies:
         item = normal if policy == "normal" else summary[f"mpk_{policy.replace('-', '_')}"]
         continuous = policy == "always-continuous"
         counts = None if policy == "normal" else match_counts[policy]
@@ -428,7 +438,7 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
 def unavailable_rows(batch_size, context_length, s_out, args, environment, page_size,
                      estimated_kv_gib, gpu_total_gib, status, reason):
     rows = []
-    for policy in POLICIES:
+    for policy in selected_policies(args):
         prefill_backend, decode_backend = BACKENDS[policy]
         row = {field: None for field in FIELDS}
         row.update({
@@ -481,6 +491,18 @@ def main():
                         help="Run selected triples instead of the Cartesian grid")
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--repeat", type=int, default=3)
+    parser.add_argument(
+        "--policies",
+        nargs="+",
+        choices=("always", "decode-only", "prefill-only"),
+        default=["always", "decode-only", "prefill-only"],
+        help="MPK policies to benchmark in addition to the normal reference",
+    )
+    parser.add_argument(
+        "--include-continuous-always",
+        action="store_true",
+        help="Also benchmark the continuous always policy; requires always",
+    )
     parser.add_argument("--timeout", type=int, default=900,
                         help="Timeout in seconds for each demo process")
     parser.add_argument("--fail-on-failed-cases", action="store_true",
@@ -512,6 +534,10 @@ def main():
     parser.add_argument("--output-dir", type=Path,
                         default=ROOT / "results/qwen3_decode_sweep")
     args = parser.parse_args()
+    if len(set(args.policies)) != len(args.policies):
+        parser.error("--policies must not contain duplicates")
+    if args.include_continuous_always and "always" not in args.policies:
+        parser.error("--include-continuous-always requires --policies always")
 
     selected_cases = None
     if args.cases:
@@ -708,7 +734,7 @@ def main():
                     "reserve_gib": args.reserve_gib,
                     "model": args.model,
                     "prompt_sha256": prompt_sha256,
-                    "policies": list(POLICIES),
+                    "policies": list(selected_policies(args)),
                 }
                 if summary_path.is_file():
                     if (not manifest_path.is_file()
@@ -728,14 +754,15 @@ def main():
                         "--page-size", str(page_size),
                         "--max-num-pages", str(batch_size),
                         "--max-num-batched-tokens", str(max(8, batch_size)),
-                        "--policies", "always", "decode-only", "prefill-only",
-                        "--include-continuous-always",
+                        "--policies", *args.policies,
                         "--allow-correctness-failures",
                         "--no-system-message",
                         "--model", args.model,
                         "--output-dir", str(case_dir),
                         *prompt_args,
                     ]
+                    if args.include_continuous_always:
+                        command.append("--include-continuous-always")
                     if manifest["split_kv_cache"]:
                         command.append("--split-kv-cache")
                     log_path = case_dir / "benchmark.log"
