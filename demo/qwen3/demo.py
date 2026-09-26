@@ -610,13 +610,6 @@ if __name__ == "__main__":
         fused_outdim_2 = 2 * intermediate_size
         num_kv_cache_chunks = max(1, (args.max_seq_length + 255) // 256)
 
-        if args.profiling:
-            profiler_tensor = torch.zeros(
-                1 + 3000 * 128, dtype=torch.uint64, device="cuda"
-            ).contiguous()
-        else:
-            profiler_tensor = None
-            
         spec_decode_config = mi.mpk.spec_decode_class(
             args.spec_decode,
             ngram_size=args.ngram_size,
@@ -624,6 +617,22 @@ if __name__ == "__main__":
         )
             
         num_workers, num_schedulers = mi.get_configurations_from_gpu(rank)
+        if args.profiling:
+            # The persistent profiler writes two entries (BEGIN/END) for each
+            # task executed by each worker over the entire launch.  A Qwen3
+            # decode launch can execute far more than the old 3000 entries per
+            # worker; overflowing that buffer corrupts adjacent CUDA memory and
+            # can turn generated token IDs into -1.  Keep a generous per-worker
+            # capacity for diagnostic runs.  Scheduler profiling is disabled,
+            # so only worker blocks need storage here.
+            profiler_entries_per_worker = 65536
+            profiler_tensor = torch.zeros(
+                1 + profiler_entries_per_worker * num_workers,
+                dtype=torch.uint64,
+                device="cuda",
+            ).contiguous()
+        else:
+            profiler_tensor = None
         qo_indptr_buffer = torch.empty(
             args.max_num_batched_requests + 1, dtype=torch.int32, device="cuda")
         paged_kv_indptr_buffer = torch.empty(
