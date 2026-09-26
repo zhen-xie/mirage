@@ -1,8 +1,7 @@
 """Exploratory Qwen3 decode timing across normal and MPK policies.
 
-Each sample starts a fresh demo process. CUDA event timing excludes model load,
-prefill, and MPK compilation, but each process still has cold runtime state.
-This is not yet the steady-state multi-request sweep from Steps 8-9.
+Each recorded sample starts a fresh demo process. The demo performs configured
+warmups after model and MPK setup in that same process, then records one sample.
 """
 
 import argparse
@@ -72,6 +71,7 @@ def run_case(args, prompt, policy, index, warmup):
         "--max-new-tokens", str(args.decode_steps + 1),
         "--ignore-eos", "--save-tokens", str(output),
         "--model", args.model,
+        "--in-process-warmup", str(args.warmup),
     ]
     if policy != "always-continuous":
         command.append("--phase-timing")
@@ -205,14 +205,12 @@ def main():
             parser.error("--include-continuous-always requires --policies always")
         policies.append("always-continuous")
     samples = {policy: [] for policy in policies}
-    for index in range(args.warmup + args.repeat):
-        warmup = index < args.warmup
+    for index in range(args.repeat):
         for policy in (policies if index % 2 == 0 else list(reversed(policies))):
-            print(f"{policy} {'warmup' if warmup else 'repeat'} {index + 1}/{args.warmup + args.repeat}",
+            print(f"{policy} repeat {index + 1}/{args.repeat}",
                   flush=True)
-            data = run_case(args, prompt, policy, index, warmup)
-            if not warmup:
-                samples[policy].append(data)
+            data = run_case(args, prompt, policy, index, False)
+            samples[policy].append(data)
 
     match_counts = {}
     invalid_token_counts = {}
@@ -292,8 +290,8 @@ def main():
         "decode_steps": args.decode_steps,
         "warmup": args.warmup,
         "repeat": args.repeat,
-        "timing_scope": "CUDA events around each phase; continuous always uses one full-kernel CUDA duration; separate cold demo process per sample",
-        "warmup_note": "Warmup runs are discarded processes; they do not warm subsequent processes",
+        "timing_scope": "CUDA events around each phase; continuous always uses one full-kernel CUDA duration; separate demo process per recorded sample",
+        "warmup_note": "Complete warmup generations run after model and MPK setup in the same process and are discarded before the recorded generation",
         "per_step_note": "MPK persistent kernel exposes only whole-decode timing; its per-step percentiles are null",
         "always_timing_mode": "two MPK launches with a prefill boundary; continuous always may generate different tokens",
         "continuous_always_note": "Continuous always has one kernel duration; prefill/decode timing is unavailable",

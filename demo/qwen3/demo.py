@@ -184,6 +184,13 @@ if __name__ == "__main__":
     parser.add_argument("--trace-name", default="", help="Perfetto trace output name")
     parser.add_argument("--phase-timing", action="store_true",
                         help="Record normal prefill and per-step decode CUDA timings")
+    parser.add_argument(
+        "--in-process-warmup",
+        type=int,
+        default=0,
+        help=("Run and discard this many complete generations after model and "
+              "MPK setup, in the same process, before recording phase timing"),
+    )
     parser.add_argument("--debug-split-mpk-prefill", action="store_true",
                         help="Diagnostic: stop MPK after prefill and resume MPK decode")
     parser.add_argument(
@@ -340,6 +347,17 @@ if __name__ == "__main__":
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
+    if args.in_process_warmup < 0:
+        parser.error("--in-process-warmup must be nonnegative")
+    if args.in_process_warmup and (
+        not args.ignore_eos or args.do_sample or args.spec_decode
+        or args.profiling or args.save_intermediates
+        or args.save_prefill_kv or args.debug_load_prefill_kv
+    ):
+        parser.error(
+            "--in-process-warmup requires --ignore-eos, greedy decoding, and "
+            "no profiling, speculative decoding, or diagnostic snapshots"
+        )
     try:
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
@@ -1302,6 +1320,86 @@ if __name__ == "__main__":
         or args.max_seq_length != prompt_lengths[0].item() + output_len
     ):
         parser.error("Split MPK prefill requires prompt shorter than one KV page and max-seq-length = prompt length + at least two output tokens")
+
+    prompt_len = prompt_lengths[0].item()
+    prompt_token_ids = tokens[:, :prompt_len].clone()
+
+    def reset_generation_state():
+        tokens.zero_()
+        tokens[:, :prompt_len].copy_(prompt_token_ids)
+        step.zero_()
+        input_tokens.zero_()
+        output_tokens.zero_()
+        num_new_tokens.fill_(1)
+        if args.use_mirage:
+            mpk.init_request_func()
+        torch.cuda.synchronize()
+
+    def run_generation_warmup():
+        decode_limit = prompt_len + output_len
+        if prefill_use_mpk and not decode_use_mpk:
+            mpk(stop_after_prefill=True)
+            torch.cuda.synchronize()
+            for cur_pos in range(prompt_len + 1, decode_limit):
+                logits = execute_decode_step(
+                    model, tokens, cur_pos, position_embeddings, step, stream
+                )
+                if total_num_requests == 1:
+                    tokens[0, cur_pos] = select_normal_token(
+                        logits, args, model, cur_pos
+                    )
+                else:
+                    tokens[:, cur_pos] = logits[
+                        :, -1, :model.config.vocab_size
+                    ].argmax(dim=-1)
+        elif decode_use_mpk and not prefill_use_mpk:
+            logits = execute_prefill(
+                model, tokens, prompt_len, position_embeddings, step, stream
+            )
+            if total_num_requests == 1:
+                tokens[0, prompt_len] = select_normal_token(
+                    logits, args, model, prompt_len
+                )
+            else:
+                tokens[:, prompt_len] = logits[
+                    :, -1, :model.config.vocab_size
+                ].argmax(dim=-1)
+            mpk(resume_after_prefill=True)
+        elif decode_use_mpk:
+            if split_mpk_prefill:
+                mpk(stop_after_prefill=True)
+                torch.cuda.synchronize()
+                mpk(resume_after_prefill=True)
+            else:
+                mpk()
+        else:
+            for cur_pos in range(prompt_len, decode_limit):
+                if cur_pos == prompt_len:
+                    logits = execute_prefill(
+                        model, tokens, prompt_len, position_embeddings, step, stream
+                    )
+                else:
+                    logits = execute_decode_step(
+                        model, tokens, cur_pos, position_embeddings, step, stream
+                    )
+                if total_num_requests == 1:
+                    tokens[0, cur_pos] = select_normal_token(
+                        logits, args, model, cur_pos
+                    )
+                else:
+                    tokens[:, cur_pos] = logits[
+                        :, -1, :model.config.vocab_size
+                    ].argmax(dim=-1)
+        torch.cuda.synchronize()
+
+    for warmup_index in range(args.in_process_warmup):
+        print(
+            f"In-process warmup {warmup_index + 1}/{args.in_process_warmup}",
+            flush=True,
+        )
+        run_generation_warmup()
+        reset_generation_state()
+
     if prefill_use_mpk and not decode_use_mpk:
         if output_len == 0:
             parser.error("prefill-only requires at least one output token")
