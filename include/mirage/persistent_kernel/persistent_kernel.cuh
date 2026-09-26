@@ -302,7 +302,7 @@ __device__ __forceinline__ bool
       config.step[request_id] = step + num_tokens;
       int step_advance = num_tokens;
 #endif
-#if defined(MPK_ENABLE_PROFILING) || defined(MPK_TEST_MODE)
+#if defined(MPK_TEST_MODE)
       if (true)
 #else
       if ((config.stop_after_prefill &&
@@ -474,16 +474,12 @@ __device__ __forceinline__ bool
 #endif
   config.step[0] = step + config.new_token_nums[0];
 
-#ifdef MPK_ENABLE_PROFILING
-  return false;
-#else
   if ((step + 2 >= config.max_seq_length) ||
       (config.tokens[step + 1] == config.eos_token_id)) {
     return false;
   } else {
     return true;
   }
-#endif
 }
 #endif
 
@@ -550,14 +546,10 @@ __device__ __forceinline__ bool
     // when it observes the updated step.
     st_release_sys_i32(&config.pinned_step[row], (int32_t)(step + num_tokens));
 
-#ifdef MPK_ENABLE_PROFILING
-    bool done = true;
-#else
     bool done = (step + num_tokens + 1 >= config.max_seq_length) ||
                 ((config.tokens[row * MPK_MAX_SEQ_LENGTH + step + num_tokens] ==
                   config.eos_token_id) &&
                  (step + num_tokens >= prompt_len));
-#endif
 
     if (done) {
       int rid = config.request_rids[i];
