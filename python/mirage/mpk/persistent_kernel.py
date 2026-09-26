@@ -3168,6 +3168,7 @@ class PersistentKernel:
         spec.loader.exec_module(mod)
         self.init_func = getattr(mod, "init_func")
         self.launch_func = getattr(mod, "launch_func")
+        self.init_request_func = getattr(mod, "init_request_func")
         self.wait_func = getattr(mod, "wait_func")
         self.finalize_func = getattr(mod, "finalize_func")
         self.load_i32_acquire = getattr(mod, "load_i32_acquire")
