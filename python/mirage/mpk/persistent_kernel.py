@@ -3394,6 +3394,14 @@ class PersistentKernel:
         if self.profiler_tensor is not None:
             from .profiler_persistent import export_to_csv, export_to_perfetto_trace
 
+            # launch_func is asynchronous and the worker/scheduler kernels run
+            # on internal non-blocking streams.  Copying profiler_tensor before
+            # those streams finish races the device writers: the exported
+            # trace can be empty and the large D2H copy can severely delay or
+            # disrupt generation.  Profiling is diagnostic, so make profiled
+            # launches synchronous before reading their output.
+            self.wait_func()
+
             if self.trace_name:
                 stem = self.trace_name
             else:
