@@ -1,0 +1,25 @@
+Start time: 2026-09-26T06:38:40+00:00
+Host: ghpc010
+Working directory: /data/home/hliu148
+Python: Python 3.10.21
+CC: x86_64-conda-linux-gnu-gcc (conda-forge gcc 13.4.0-7) 13.4.0
+CXX: x86_64-conda-linux-gnu-g++ (conda-forge gcc 13.4.0-7) 13.4.0
+CUDA:
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2026 NVIDIA Corporation
+Built on Fri_Apr_24_07:22:02_PM_PDT_2026
+Cuda compilation tools, release 13.3, V13.3.33
+Build cuda_13.3.r13.3/compiler.37862127_0
+
+GPU:
+NVIDIA H100 NVL, 95830 MiB, 590.48.01, 400.00 W
+
+Packages:
+sglang: 0.5.18
+sgl-kernel: not installed
+torch: 2.13.0
+flashinfer-python: 0.6.17
+transformers: 5.12.1
+triton: 3.7.1
+Exit code: 0
+End time: 2026-09-26T06:44:29+00:00
