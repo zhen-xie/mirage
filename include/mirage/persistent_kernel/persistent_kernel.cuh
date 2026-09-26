@@ -1173,7 +1173,7 @@ __device__ __forceinline__ void execute_scheduler(RuntimeConfig config,
   int const warp_id = threadIdx.x / 32;
   // CANNOT use syncthreads below
 
-#ifdef MPK_ENABLE_PROFILING
+#if defined(MPK_ENABLE_PROFILING) && defined(MPK_ENABLE_SCHEDULER_PROFILING)
   PROFILER_CLOSURE_PARAMS_DECL;
 #endif
 
@@ -1189,7 +1189,7 @@ __device__ __forceinline__ void execute_scheduler(RuntimeConfig config,
     sched_queue_ids[0] = sched_id;
     unsigned long long int my_first_worker, my_last_worker;
 
-#ifdef MPK_ENABLE_PROFILING
+#if defined(MPK_ENABLE_PROFILING) && defined(MPK_ENABLE_SCHEDULER_PROFILING)
     // Up to 4 scheduler warps share one block but the profiler has one
     // slot per block (num_groups=1).  Only warp 0 writes so events from
     // different warps don't interleave.
@@ -1292,7 +1292,7 @@ __device__ __forceinline__ void execute_scheduler(RuntimeConfig config,
 #ifdef MPK_ENABLE_VERBOSE
         printf("[SCHD] END_OF_TASK_GRAPH\n");
 #endif
-#ifdef MPK_ENABLE_PROFILING
+#if defined(MPK_ENABLE_PROFILING) && defined(MPK_ENABLE_SCHEDULER_PROFILING)
         PROFILER_EVENT_START(TASK_SCHD_PREPARE_BATCH, sched_profiling_cnt);
 #endif
 #ifdef MODE_ONLINE_NOTOKEN
@@ -1301,12 +1301,12 @@ __device__ __forceinline__ void execute_scheduler(RuntimeConfig config,
         if (!prepare_next_batch(config))
 #endif
         {
-#ifdef MPK_ENABLE_PROFILING
+#if defined(MPK_ENABLE_PROFILING) && defined(MPK_ENABLE_SCHEDULER_PROFILING)
           PROFILER_EVENT_END(TASK_SCHD_PREPARE_BATCH, sched_profiling_cnt++);
 #endif
           terminate_schedulers(config);
         } else {
-#ifdef MPK_ENABLE_PROFILING
+#if defined(MPK_ENABLE_PROFILING) && defined(MPK_ENABLE_SCHEDULER_PROFILING)
           PROFILER_EVENT_END(TASK_SCHD_PREPARE_BATCH, sched_profiling_cnt++);
 #endif
           // Launch task 1 (begin_task_graph) for the next iteration

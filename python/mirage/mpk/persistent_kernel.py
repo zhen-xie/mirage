@@ -3386,6 +3386,9 @@ class PersistentKernel:
         # prefill events from an earlier launch or warmup.
         if self.profiler_tensor is not None:
             self.profiler_tensor.zero_()
+            # The persistent launcher owns internal CUDA streams.  Complete
+            # the reset before those streams can begin writing profiler data.
+            torch.cuda.synchronize()
         self.launch_func(stream_ptr, int(stop_after_prefill),
                          int(resume_after_prefill))
         if self.profiler_tensor is not None:
