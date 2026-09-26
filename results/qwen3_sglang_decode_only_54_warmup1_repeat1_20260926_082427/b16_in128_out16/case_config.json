@@ -1,0 +1,23 @@
+{
+  "batch_size": 16,
+  "context_length": 128,
+  "s_in": 128,
+  "s_out": 16,
+  "decode_steps": 15,
+  "chat_template": "user_only",
+  "batch_prompt_mode": "identical",
+  "repeat": 1,
+  "warmup": 1,
+  "page_size": 256,
+  "min_page_size": 64,
+  "max_num_pages": 16,
+  "max_num_batched_tokens": 16,
+  "split_kv_cache": false,
+  "reserve_gib": 32.0,
+  "model": "Qwen/Qwen3-8B",
+  "prompt_sha256": "a7533ebd818aa93987ba244c092b976a5cd2528099815e0ffe81f42dfd65aee9",
+  "policies": [
+    "normal",
+    "decode-only"
+  ]
+}

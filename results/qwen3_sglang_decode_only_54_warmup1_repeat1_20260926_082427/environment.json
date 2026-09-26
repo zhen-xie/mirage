@@ -1,0 +1,10 @@
+{
+  "model": "Qwen/Qwen3-8B",
+  "git_commit": "416d459b6eb5f0558f5dc038bd4602d367adec52",
+  "gpu_name": "NVIDIA H100 NVL",
+  "driver_version": "590.48.01",
+  "torch_version": "2.6.0+cu124",
+  "torch_cuda_version": "12.4",
+  "transformers_version": "4.57.1",
+  "flashinfer_version": "0.7.0"
+}

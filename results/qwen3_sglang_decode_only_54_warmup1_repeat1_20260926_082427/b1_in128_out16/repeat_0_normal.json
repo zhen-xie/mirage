@@ -1,0 +1,46 @@
+{
+  "token_ids": [
+    151667,
+    198,
+    32313,
+    11,
+    279,
+    1196,
+    3208,
+    264,
+    1943,
+    448,
+    264,
+    2696,
+    315,
+    11504,
+    330,
+    14990
+  ],
+  "text": "user\n hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello\n hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello hello\nassistant\n<think>\nOkay, the user sent a message with a lot of repeated \"hello",
+  "latency_ms_per_token": 2.1553147633870444,
+  "prompt_length": 128,
+  "generate_length": 16,
+  "mode": "torch",
+  "phase_timing": {
+    "prefill_ms": 23.227231979370117,
+    "decode_ms": 310.31737518310547,
+    "decode_step_ms": [
+      20.995935440063477,
+      20.819232940673828,
+      20.687328338623047,
+      20.75539207458496,
+      20.5548152923584,
+      20.73868751525879,
+      20.64396858215332,
+      20.745824813842773,
+      20.546144485473633,
+      20.713760375976562,
+      20.601503372192383,
+      20.794591903686523,
+      20.57721519470215,
+      20.640127182006836,
+      20.50284767150879
+    ]
+  }
+}

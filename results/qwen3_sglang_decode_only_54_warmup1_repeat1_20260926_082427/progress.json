@@ -1,0 +1,7 @@
+{
+  "completed_cases": 35,
+  "total_cases": 54,
+  "elapsed_seconds": 4500.2,
+  "estimated_remaining_seconds": 2265.8,
+  "status": "B=16 S_IN=512 S_OUT=512: decode-only repeat 1/1 (5m00s)"
+}
