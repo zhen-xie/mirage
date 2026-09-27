@@ -37,6 +37,23 @@ import mirage as mi
 from .rope import apply_rotary_pos_emb_triton
 
 
+_flashinfer = None
+
+
+def get_flashinfer():
+    """Import FlashInfer only when the selected attention backend needs it."""
+    global _flashinfer
+    if _flashinfer is None:
+        try:
+            import flashinfer
+        except ImportError as exc:
+            raise RuntimeError(
+                "FlashInfer attention requires the flashinfer-python package"
+            ) from exc
+        _flashinfer = flashinfer
+    return _flashinfer
+
+
 # Copied from transformers.models.llama.modeling_llama.LlamaRMSNorm with Llama->Qwen2
 class Qwen3RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -195,9 +212,11 @@ class Qwen3Attention(nn.Module):
         kv_cache: Tuple[torch.Tensor, torch.Tensor],
         layer_idx: int,
         world_size: int,
+        attention_backend: str = "sdpa",
     ):
         super().__init__()
         self.world_size = world_size
+        self.attention_backend = attention_backend
         self.config = config
         self.layer_idx = layer_idx
         assert self.layer_idx is not None
@@ -300,10 +319,25 @@ class Qwen3Attention(nn.Module):
 
             q = query_states[0]
             kv_seq_len = q_len if q_len > 1 else step.item() + 1
-            attn_output = naive_attention(
-                q, self.key_cache, self.value_cache, kv_seq_len,
-                self.layer_idx, q_len > 1, True,
-            )
+            if self.attention_backend == "flashinfer":
+                flashinfer = get_flashinfer()
+                k = self.key_cache[self.layer_idx, 0, :kv_seq_len]
+                v = self.value_cache[self.layer_idx, 0, :kv_seq_len]
+                if q_len > 1:
+                    attn_output = flashinfer.single_prefill_with_kv_cache(
+                        q, k, v, causal=True, kv_layout="NHD",
+                        pos_encoding_mode="NONE",
+                    )
+                else:
+                    attn_output = flashinfer.single_decode_with_kv_cache(
+                        q[0], k, v, kv_layout="NHD",
+                        pos_encoding_mode="NONE", use_tensor_cores=True,
+                    ).unsqueeze(0)
+            else:
+                attn_output = naive_attention(
+                    q, self.key_cache, self.value_cache, kv_seq_len,
+                    self.layer_idx, q_len > 1, True,
+                )
         else:
             # One KV page per request. The demo advances these requests in
             # lockstep, so they share the same context length.
@@ -342,11 +376,14 @@ class Qwen3DecoderLayer(nn.Module):
         kv_cache: Tuple[torch.Tensor, torch.Tensor],
         layer_idx: int,
         world_size: int,
+        attention_backend: str = "sdpa",
     ):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.self_attn = Qwen3Attention(config, kv_cache, layer_idx, world_size)
+        self.self_attn = Qwen3Attention(
+            config, kv_cache, layer_idx, world_size, attention_backend
+        )
 
         self.mlp = Qwen3MLP(config, world_size)
         self.input_layernorm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -412,7 +449,8 @@ class Qwen3PreTrainedModel(PreTrainedModel):
 
 
 class Qwen3Model(Qwen3PreTrainedModel):
-    def __init__(self, config: Qwen3Config, world_size: int, max_num_pages: int, page_size: int):
+    def __init__(self, config: Qwen3Config, world_size: int, max_num_pages: int,
+                 page_size: int, attention_backend: str = "sdpa"):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -449,7 +487,10 @@ class Qwen3Model(Qwen3PreTrainedModel):
         )
         self.layers = nn.ModuleList(
             [
-                Qwen3DecoderLayer(config, self.kv_cache, layer_idx, world_size)
+                Qwen3DecoderLayer(
+                    config, self.kv_cache, layer_idx, world_size,
+                    attention_backend,
+                )
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )
@@ -505,9 +546,12 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
 class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
-    def __init__(self, config, world_size, max_num_pages, page_size):
+    def __init__(self, config, world_size, max_num_pages, page_size,
+                 attention_backend="sdpa"):
         super().__init__(config)
-        self.model = Qwen3Model(config, world_size, max_num_pages, page_size)
+        self.model = Qwen3Model(
+            config, world_size, max_num_pages, page_size, attention_backend
+        )
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         # Initialize weights and apply final processing

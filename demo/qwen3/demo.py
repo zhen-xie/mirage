@@ -172,6 +172,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("normal", "mpk"), default=None,
                         help="Execution backend (default: normal)")
+    parser.add_argument(
+        "--normal-attention",
+        choices=("sdpa", "flashinfer"),
+        default="sdpa",
+        help="Attention implementation used by normal prefill/decode phases",
+    )
     parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only", "workload-aware"), default=None,
                         help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
@@ -389,11 +395,17 @@ if __name__ == "__main__":
     print("Input arguments:", args)
     print(f"Execution backend: {args.backend.upper()}"
           + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
+    print(f"Normal attention backend: {args.normal_attention.upper()}")
     print(f"world_size({world_size}) rank({rank})")
     if args.mpk_policy in ("prefill-only", "decode-only") and world_size != 1:
         parser.error("Mixed backend policies currently require a single GPU")
     if args.backend == "normal" and args.max_num_batched_requests > 1 and world_size != 1:
         parser.error("Batched normal currently requires a single GPU")
+    if args.normal_attention == "flashinfer" and args.max_num_batched_requests > 1:
+        parser.error(
+            "FlashInfer normal attention currently supports one request; "
+            "batched support requires the paged batch wrappers"
+        )
     if args.save_intermediates and world_size != 1:
         parser.error("--save-intermediates currently requires a single GPU")
     if args.save_prefill_kv and world_size != 1:
@@ -412,20 +424,32 @@ if __name__ == "__main__":
               # load model locally (necessary for multi-GPU case)
               print(f"Load model from model path: {args.model_path}")
               config = AutoConfig.from_pretrained(args.model_path)
-              model = Qwen3ForCausalLM(config, world_size, args.max_num_pages, args.page_size)
+              model = Qwen3ForCausalLM(
+                  config, world_size, args.max_num_pages, args.page_size,
+                  args.normal_attention,
+              )
               load_model(
                   model, f"{args.model_path}/model{rank}-mp{world_size}.safetensors"
               )
               # model = Qwen3ForCausalLM.from_pretrained(args.model_path, world_size, max_num_pages=args.max_num_pages, page_size=args.page_size).to("cuda")
               tokenizer = AutoTokenizer.from_pretrained(args.model_path)
           else:
-              model = Qwen3ForCausalLM.from_pretrained(model_name, world_size, max_num_pages=args.max_num_pages, page_size=args.page_size).to("cuda")
+              model = Qwen3ForCausalLM.from_pretrained(
+                  model_name,
+                  world_size,
+                  max_num_pages=args.max_num_pages,
+                  page_size=args.page_size,
+                  attention_backend=args.normal_attention,
+              ).to("cuda")
               tokenizer = AutoTokenizer.from_pretrained(model_name)
     else: # Use dynamic shard loader to load directly from HF and shard.
         print("Detected multi-GPU run without a local path specified. Will use the DynamicShardLoader class.")
         with torch.device("meta"):
             config = AutoConfig.from_pretrained(model_name)
-            model = Qwen3ForCausalLM(config, world_size, args.max_num_pages, args.page_size)
+            model = Qwen3ForCausalLM(
+                config, world_size, args.max_num_pages, args.page_size,
+                args.normal_attention,
+            )
 
         device = torch.device(f"cuda:{rank}")
         loader = Qwen3ShardLoader(model, model_name, mapping, rank, world_size, device)
@@ -1539,6 +1563,7 @@ if __name__ == "__main__":
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
                 "mode": "mpk_prefill_normal_decode" if args.mpk_policy == "prefill-only" else "torch",
+                "normal_attention": args.normal_attention,
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
@@ -1642,6 +1667,7 @@ if __name__ == "__main__":
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
                 "mode": "normal_prefill_mpk_decode" if args.mpk_policy == "decode-only" else "mpk",
+                "normal_attention": args.normal_attention,
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
