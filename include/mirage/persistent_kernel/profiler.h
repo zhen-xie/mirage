@@ -134,11 +134,9 @@ struct ProfilerEntry {
     entry.delta_time = tb::get_timestamp();                                    \
     *profiler_write_ptr = entry.raw;                                           \
     profiler_write_ptr += profiler_write_stride;                               \
-  }                                                                            \
-  __threadfence_block();
+  }
 
 #define PROFILER_EVENT_END(event, event_no)                                    \
-  __threadfence_block();                                                       \
   if (profiler_write_thread_predicate) {                                       \
     entry.tag =                                                                \
         tb::make_event_tag_end(profiler_entry_tag_base, event, event_no);      \
@@ -148,13 +146,11 @@ struct ProfilerEntry {
   }
 
 #define PROFILER_EVENT_INSTANT(event, event_no)                                \
-  __threadfence_block();                                                       \
   if (profiler_write_thread_predicate) {                                       \
     entry.tag =                                                                \
         tb::make_event_tag_instant(profiler_entry_tag_base, event, event_no);  \
     entry.delta_time = tb::get_timestamp();                                    \
     *profiler_write_ptr = entry.raw;                                           \
-  }                                                                            \
-  __threadfence_block();
+  }
 
 } // namespace tb
