@@ -640,6 +640,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                  flashinfer_use_tensor_cores: bool = True,
                  flashinfer_kv_page_size: int = None):
         super().__init__(config)
+        self.world_size = world_size
         cache_capacity = max_num_pages * page_size
         if attention_backend == "flashinfer" and flashinfer_kv_page_size:
             page_size = flashinfer_kv_page_size
