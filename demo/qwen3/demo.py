@@ -1582,18 +1582,6 @@ if __name__ == "__main__":
             :, capture_pos - 1:capture_pos
         ].clone()
         graph_step = step.clone()
-        # The fused decode RoPE/KV append kernel is not exercised by prefill,
-        # so materialize that shape-specialized Triton kernel before capture.
-        # Keep the established capture lifecycle for the other backends.
-        if args.normal_fused_decode_rope_kv_cache:
-            with torch.cuda.stream(stream):
-                _ = model.forward(
-                    input_ids=graph_input_ids,
-                    position_embeddings=(graph_cos, graph_sin),
-                    step=graph_step,
-                    stream=stream,
-                )
-            torch.cuda.synchronize()
         normal_decode_graph = torch.cuda.CUDAGraph()
         torch.cuda.synchronize()
         with torch.cuda.graph(normal_decode_graph, stream=stream):
