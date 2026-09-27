@@ -198,6 +198,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Fuse residual addition with post-attention FlashInfer RMSNorm",
     )
+    parser.add_argument(
+        "--normal-flashinfer-silu-and-mul",
+        action="store_true",
+        help="Use FlashInfer fused SiLU and multiply in the normal MLP",
+    )
     parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only", "workload-aware"), default=None,
                         help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
@@ -309,6 +314,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.normal_flashinfer_fused_add_rmsnorm:
         args.normal_flashinfer_rmsnorm = True
+    if (
+        args.normal_flashinfer_silu_and_mul
+        and not args.normal_fused_projections
+    ):
+        parser.error(
+            "--normal-flashinfer-silu-and-mul requires "
+            "--normal-fused-projections"
+        )
     if args.use_mirage:
         if args.backend not in (None, "mpk") or args.mpk_policy not in (None, "always"):
             parser.error("--use-mirage conflicts with the selected backend or MPK policy")
@@ -431,6 +444,10 @@ if __name__ == "__main__":
         "Normal FlashInfer fused add RMSNorm: "
         f"{'ENABLED' if args.normal_flashinfer_fused_add_rmsnorm else 'DISABLED'}"
     )
+    print(
+        "Normal FlashInfer SiLU and mul: "
+        f"{'ENABLED' if args.normal_flashinfer_silu_and_mul else 'DISABLED'}"
+    )
     if (
         args.normal_flashinfer_rmsnorm
         or args.normal_flashinfer_fused_add_rmsnorm
@@ -525,6 +542,8 @@ if __name__ == "__main__":
         model.enable_flashinfer_rmsnorm()
     if args.normal_flashinfer_fused_add_rmsnorm:
         model.enable_flashinfer_fused_add_rmsnorm()
+    if args.normal_flashinfer_silu_and_mul:
+        model.enable_flashinfer_silu_and_mul()
 
     total_num_requests = args.max_num_batched_requests
     normal_hidden = {}
@@ -1704,6 +1723,9 @@ if __name__ == "__main__":
                 "normal_flashinfer_fused_add_rmsnorm": (
                     args.normal_flashinfer_fused_add_rmsnorm
                 ),
+                "normal_flashinfer_silu_and_mul": (
+                    args.normal_flashinfer_silu_and_mul
+                ),
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
@@ -1813,6 +1835,9 @@ if __name__ == "__main__":
                 "normal_flashinfer_rmsnorm": args.normal_flashinfer_rmsnorm,
                 "normal_flashinfer_fused_add_rmsnorm": (
                     args.normal_flashinfer_fused_add_rmsnorm
+                ),
+                "normal_flashinfer_silu_and_mul": (
+                    args.normal_flashinfer_silu_and_mul
                 ),
             }
             if total_num_requests > 1:

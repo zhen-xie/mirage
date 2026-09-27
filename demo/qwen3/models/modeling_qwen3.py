@@ -219,11 +219,25 @@ class Qwen3MLP(nn.Module):
         self.up_proj = nn.Linear(self.hidden_size, self.part_inter_size, bias=False)
         self.down_proj = nn.Linear(self.part_inter_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
+        self.use_flashinfer_silu_and_mul = False
 
     def fuse_weights(self):
         self.fused_weight = torch.transpose(
             torch.cat((self.gate_proj.weight, self.up_proj.weight), 0), 0, 1
         ).contiguous()
+
+    def enable_flashinfer_silu_and_mul(self):
+        flashinfer = get_flashinfer()
+        activation_module = getattr(flashinfer, "activation", None)
+        silu_and_mul = getattr(activation_module, "silu_and_mul", None)
+        if silu_and_mul is None:
+            silu_and_mul = getattr(flashinfer, "silu_and_mul", None)
+        if silu_and_mul is None:
+            raise RuntimeError(
+                "The installed FlashInfer package does not expose silu_and_mul"
+            )
+        self._flashinfer_silu_and_mul = silu_and_mul
+        self.use_flashinfer_silu_and_mul = True
 
     def forward(
         self,
@@ -236,8 +250,14 @@ class Qwen3MLP(nn.Module):
             hidden_state = input_layernorm(hidden_state)
         if hasattr(self, "fused_weight"):
             gate_up = torch.matmul(hidden_state, self.fused_weight)
-            gate_output, up_output = torch.chunk(gate_up, 2, dim=-1)
-            output = self.down_proj(self.act_fn(gate_output) * up_output)
+            if self.use_flashinfer_silu_and_mul:
+                activated = self._flashinfer_silu_and_mul(
+                    gate_up, enable_pdl=False
+                )
+            else:
+                gate_output, up_output = torch.chunk(gate_up, 2, dim=-1)
+                activated = self.act_fn(gate_output) * up_output
+            output = self.down_proj(activated)
         else:
             output = self.down_proj(
                 self.act_fn(self.gate_proj(hidden_state))
@@ -678,6 +698,10 @@ class Qwen3Model(Qwen3PreTrainedModel):
         for layer in self.layers:
             layer.enable_flashinfer_fused_add_rmsnorm()
 
+    def enable_flashinfer_silu_and_mul(self):
+        for layer in self.layers:
+            layer.mlp.enable_flashinfer_silu_and_mul()
+
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
@@ -755,6 +779,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def enable_flashinfer_fused_add_rmsnorm(self):
         self.model.enable_flashinfer_fused_add_rmsnorm()
+
+    def enable_flashinfer_silu_and_mul(self):
+        self.model.enable_flashinfer_silu_and_mul()
 
     def superoptimize_kernels(self):
         self.model.superoptimize_kernels()
