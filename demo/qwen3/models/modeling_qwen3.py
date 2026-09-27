@@ -330,6 +330,7 @@ class Qwen3Attention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.decode_wrapper = None
+        self.flashinfer_prefill_backend = "auto"
         self.key_cache, self.value_cache = kv_cache
         assert kv_cache[0].ndim == 5
         assert kv_cache[0].shape == kv_cache[1].shape
@@ -385,6 +386,9 @@ class Qwen3Attention(nn.Module):
 
     def enable_fused_decode_rope_kv_cache(self):
         self.use_fused_decode_rope_kv_cache = True
+
+    def set_flashinfer_prefill_backend(self, backend):
+        self.flashinfer_prefill_backend = backend
 
     def forward(
         self,
@@ -484,6 +488,7 @@ class Qwen3Attention(nn.Module):
                     attn_output = flashinfer.single_prefill_with_kv_cache(
                         q, k, v, causal=True, kv_layout="NHD",
                         pos_encoding_mode="NONE",
+                        backend=self.flashinfer_prefill_backend,
                     )
                 else:
                     if self.decode_wrapper is None:
@@ -759,6 +764,10 @@ class Qwen3Model(Qwen3PreTrainedModel):
         for layer in self.layers:
             layer.self_attn.enable_fused_decode_rope_kv_cache()
 
+    def set_flashinfer_prefill_backend(self, backend):
+        for layer in self.layers:
+            layer.self_attn.set_flashinfer_prefill_backend(backend)
+
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
@@ -851,6 +860,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def enable_fused_decode_rope_kv_cache(self):
         self.model.enable_fused_decode_rope_kv_cache()
+
+    def set_flashinfer_prefill_backend(self, backend):
+        self.model.set_flashinfer_prefill_backend(backend)
 
     def superoptimize_kernels(self):
         self.model.superoptimize_kernels()

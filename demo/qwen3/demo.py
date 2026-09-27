@@ -205,6 +205,12 @@ if __name__ == "__main__":
         help="Use a separate physical FlashInfer KV page size for B=1 normal",
     )
     parser.add_argument(
+        "--normal-flashinfer-prefill-backend",
+        choices=("auto", "fa2", "fa3"),
+        default="auto",
+        help="FlashInfer single-request prefill attention kernel",
+    )
+    parser.add_argument(
         "--normal-fused-projections",
         action="store_true",
         help="Fuse Q/K/V and gate/up projections in the normal backend",
@@ -483,6 +489,10 @@ if __name__ == "__main__":
             "Normal FlashInfer KV page size: "
             f"{args.normal_flashinfer_kv_page_size}"
         )
+    print(
+        "Normal FlashInfer prefill backend: "
+        f"{args.normal_flashinfer_prefill_backend.upper()}"
+    )
     print(f"Normal CUDA graph: {'ENABLED' if args.normal_cuda_graph else 'DISABLED'}")
     print(
         "Normal CUDA graph argmax: "
@@ -581,6 +591,13 @@ if __name__ == "__main__":
             )
         if args.normal_flashinfer_kv_page_size <= 0:
             parser.error("--normal-flashinfer-kv-page-size must be positive")
+    if (
+        args.normal_flashinfer_prefill_backend != "auto"
+        and (args.backend != "normal" or args.normal_attention != "flashinfer")
+    ):
+        parser.error(
+            "--normal-flashinfer-prefill-backend requires normal FlashInfer"
+        )
     if args.normal_fused_decode_rope_kv_cache:
         if args.normal_attention != "flashinfer":
             parser.error(
@@ -661,6 +678,10 @@ if __name__ == "__main__":
         model.enable_flashinfer_silu_and_mul()
     if args.normal_fused_decode_rope_kv_cache:
         model.enable_fused_decode_rope_kv_cache()
+    if args.normal_attention == "flashinfer":
+        model.set_flashinfer_prefill_backend(
+            args.normal_flashinfer_prefill_backend
+        )
 
     total_num_requests = args.max_num_batched_requests
     normal_hidden = {}
