@@ -193,6 +193,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Use FlashInfer RMSNorm kernels in the normal backend",
     )
+    parser.add_argument(
+        "--normal-flashinfer-fused-add-rmsnorm",
+        action="store_true",
+        help="Fuse residual addition with post-attention FlashInfer RMSNorm",
+    )
     parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only", "workload-aware"), default=None,
                         help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
@@ -302,6 +307,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
+    if args.normal_flashinfer_fused_add_rmsnorm:
+        args.normal_flashinfer_rmsnorm = True
     if args.use_mirage:
         if args.backend not in (None, "mpk") or args.mpk_policy not in (None, "always"):
             parser.error("--use-mirage conflicts with the selected backend or MPK policy")
@@ -420,7 +427,14 @@ if __name__ == "__main__":
         "Normal FlashInfer RMSNorm: "
         f"{'ENABLED' if args.normal_flashinfer_rmsnorm else 'DISABLED'}"
     )
-    if args.normal_flashinfer_rmsnorm:
+    print(
+        "Normal FlashInfer fused add RMSNorm: "
+        f"{'ENABLED' if args.normal_flashinfer_fused_add_rmsnorm else 'DISABLED'}"
+    )
+    if (
+        args.normal_flashinfer_rmsnorm
+        or args.normal_flashinfer_fused_add_rmsnorm
+    ):
         # FlashInfer 0.7's CuTe RMSNorm reads a CUDA device property that is
         # unavailable in the Torch 2.6 environment used by Mirage.  Select its
         # functionally equivalent CUDA JIT implementation before FlashInfer is
@@ -509,6 +523,8 @@ if __name__ == "__main__":
         model.fuse_weights()
     if args.normal_flashinfer_rmsnorm:
         model.enable_flashinfer_rmsnorm()
+    if args.normal_flashinfer_fused_add_rmsnorm:
+        model.enable_flashinfer_fused_add_rmsnorm()
 
     total_num_requests = args.max_num_batched_requests
     normal_hidden = {}
@@ -1685,6 +1701,9 @@ if __name__ == "__main__":
                 "normal_cuda_graph": args.normal_cuda_graph,
                 "normal_fused_projections": args.normal_fused_projections,
                 "normal_flashinfer_rmsnorm": args.normal_flashinfer_rmsnorm,
+                "normal_flashinfer_fused_add_rmsnorm": (
+                    args.normal_flashinfer_fused_add_rmsnorm
+                ),
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
@@ -1792,6 +1811,9 @@ if __name__ == "__main__":
                 "normal_cuda_graph": args.normal_cuda_graph,
                 "normal_fused_projections": args.normal_fused_projections,
                 "normal_flashinfer_rmsnorm": args.normal_flashinfer_rmsnorm,
+                "normal_flashinfer_fused_add_rmsnorm": (
+                    args.normal_flashinfer_fused_add_rmsnorm
+                ),
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests

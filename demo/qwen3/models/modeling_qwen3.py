@@ -78,6 +78,40 @@ class Qwen3RMSNorm(nn.Module):
         self._flashinfer_rmsnorm = rmsnorm
         self.use_flashinfer = True
 
+    def enable_flashinfer_fused_add(self):
+        self.enable_flashinfer()
+        flashinfer = get_flashinfer()
+        norm_module = getattr(flashinfer, "norm", None)
+        fused_add_rmsnorm = getattr(norm_module, "fused_add_rmsnorm", None)
+        if fused_add_rmsnorm is None:
+            fused_add_rmsnorm = getattr(
+                flashinfer, "fused_add_rmsnorm", None
+            )
+        if fused_add_rmsnorm is None:
+            raise RuntimeError(
+                "The installed FlashInfer package does not expose "
+                "fused_add_rmsnorm"
+            )
+        self._flashinfer_fused_add_rmsnorm = fused_add_rmsnorm
+
+    def fused_add(self, hidden_states, residual):
+        original_shape = hidden_states.shape
+        flattened = hidden_states.reshape(-1, original_shape[-1]).contiguous()
+        flattened_residual = residual.reshape(
+            -1, original_shape[-1]
+        ).contiguous()
+        self._flashinfer_fused_add_rmsnorm(
+            flattened,
+            flattened_residual,
+            self.weight,
+            self.variance_epsilon,
+            False,
+        )
+        return (
+            flattened.reshape(original_shape),
+            flattened_residual.reshape(original_shape),
+        )
+
     def forward(self, hidden_states):
         if self.use_flashinfer:
             original_shape = hidden_states.shape
@@ -191,8 +225,15 @@ class Qwen3MLP(nn.Module):
             torch.cat((self.gate_proj.weight, self.up_proj.weight), 0), 0, 1
         ).contiguous()
 
-    def forward(self, input_layernorm, hidden_state, stream: torch.cuda.Stream = None):
-        hidden_state = input_layernorm(hidden_state)
+    def forward(
+        self,
+        input_layernorm,
+        hidden_state,
+        stream: torch.cuda.Stream = None,
+        already_normalized: bool = False,
+    ):
+        if not already_normalized:
+            hidden_state = input_layernorm(hidden_state)
         if hasattr(self, "fused_weight"):
             gate_up = torch.matmul(hidden_state, self.fused_weight)
             gate_output, up_output = torch.chunk(gate_up, 2, dim=-1)
@@ -452,6 +493,11 @@ class Qwen3DecoderLayer(nn.Module):
         self.post_attention_layernorm = Qwen3RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
+        self.use_flashinfer_fused_add_rmsnorm = False
+
+    def enable_flashinfer_fused_add_rmsnorm(self):
+        self.post_attention_layernorm.enable_flashinfer_fused_add()
+        self.use_flashinfer_fused_add_rmsnorm = True
 
     def forward(
         self,
@@ -480,14 +526,26 @@ class Qwen3DecoderLayer(nn.Module):
             step=step,
             stream=stream,
         )
-        hidden_states = residual + hidden_states
+        if self.use_flashinfer_fused_add_rmsnorm:
+            hidden_states, residual = self.post_attention_layernorm.fused_add(
+                hidden_states, residual
+            )
+        else:
+            hidden_states = residual + hidden_states
 
         # Fully Connected
-        residual = hidden_states
-        # hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(
-            self.post_attention_layernorm, hidden_states, stream=stream
-        )
+        if self.use_flashinfer_fused_add_rmsnorm:
+            hidden_states = self.mlp(
+                self.post_attention_layernorm,
+                hidden_states,
+                stream=stream,
+                already_normalized=True,
+            )
+        else:
+            residual = hidden_states
+            hidden_states = self.mlp(
+                self.post_attention_layernorm, hidden_states, stream=stream
+            )
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -615,6 +673,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
             if isinstance(module, Qwen3RMSNorm):
                 module.enable_flashinfer()
 
+    def enable_flashinfer_fused_add_rmsnorm(self):
+        self.enable_flashinfer_rmsnorm()
+        for layer in self.layers:
+            layer.enable_flashinfer_fused_add_rmsnorm()
+
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
@@ -689,6 +752,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def enable_flashinfer_rmsnorm(self):
         self.model.enable_flashinfer_rmsnorm()
+
+    def enable_flashinfer_fused_add_rmsnorm(self):
+        self.model.enable_flashinfer_fused_add_rmsnorm()
 
     def superoptimize_kernels(self):
         self.model.superoptimize_kernels()
