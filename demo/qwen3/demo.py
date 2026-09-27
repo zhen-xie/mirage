@@ -188,6 +188,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Fuse Q/K/V and gate/up projections in the normal backend",
     )
+    parser.add_argument(
+        "--normal-flashinfer-rmsnorm",
+        action="store_true",
+        help="Use FlashInfer RMSNorm kernels in the normal backend",
+    )
     parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only", "workload-aware"), default=None,
                         help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
@@ -411,6 +416,10 @@ if __name__ == "__main__":
         "Normal fused projections: "
         f"{'ENABLED' if args.normal_fused_projections else 'DISABLED'}"
     )
+    print(
+        "Normal FlashInfer RMSNorm: "
+        f"{'ENABLED' if args.normal_flashinfer_rmsnorm else 'DISABLED'}"
+    )
     print(f"world_size({world_size}) rank({rank})")
     if args.mpk_policy in ("prefill-only", "decode-only") and world_size != 1:
         parser.error("Mixed backend policies currently require a single GPU")
@@ -491,6 +500,8 @@ if __name__ == "__main__":
 
     if args.normal_fused_projections:
         model.fuse_weights()
+    if args.normal_flashinfer_rmsnorm:
+        model.enable_flashinfer_rmsnorm()
 
     total_num_requests = args.max_num_batched_requests
     normal_hidden = {}
@@ -1666,6 +1677,7 @@ if __name__ == "__main__":
                 "normal_attention": args.normal_attention,
                 "normal_cuda_graph": args.normal_cuda_graph,
                 "normal_fused_projections": args.normal_fused_projections,
+                "normal_flashinfer_rmsnorm": args.normal_flashinfer_rmsnorm,
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
@@ -1772,6 +1784,7 @@ if __name__ == "__main__":
                 "normal_attention": args.normal_attention,
                 "normal_cuda_graph": args.normal_cuda_graph,
                 "normal_fused_projections": args.normal_fused_projections,
+                "normal_flashinfer_rmsnorm": args.normal_flashinfer_rmsnorm,
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests

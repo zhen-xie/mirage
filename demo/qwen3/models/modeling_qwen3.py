@@ -62,8 +62,30 @@ class Qwen3RMSNorm(nn.Module):
         """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+        self.use_flashinfer = False
+
+    def enable_flashinfer(self):
+        flashinfer = get_flashinfer()
+        norm_module = getattr(flashinfer, "norm", None)
+        rmsnorm = getattr(norm_module, "rmsnorm", None)
+        if rmsnorm is None:
+            rmsnorm = getattr(flashinfer, "rmsnorm", None)
+        if rmsnorm is None:
+            raise RuntimeError(
+                "The installed FlashInfer package does not expose rmsnorm"
+            )
+        self._flashinfer_rmsnorm = rmsnorm
+        self.use_flashinfer = True
 
     def forward(self, hidden_states):
+        if self.use_flashinfer:
+            original_shape = hidden_states.shape
+            flattened = hidden_states.reshape(-1, original_shape[-1]).contiguous()
+            normalized = self._flashinfer_rmsnorm(
+                flattened, self.weight, self.variance_epsilon
+            )
+            return normalized.reshape(original_shape)
         input_dtype = hidden_states.dtype
         # hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
@@ -588,6 +610,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
             layer.self_attn.fuse_weights()
             layer.mlp.fuse_weights()
 
+    def enable_flashinfer_rmsnorm(self):
+        for module in self.modules():
+            if isinstance(module, Qwen3RMSNorm):
+                module.enable_flashinfer()
+
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
@@ -659,6 +686,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def fuse_weights(self):
         self.model.fuse_weights()
+
+    def enable_flashinfer_rmsnorm(self):
+        self.model.enable_flashinfer_rmsnorm()
 
     def superoptimize_kernels(self):
         self.model.superoptimize_kernels()
