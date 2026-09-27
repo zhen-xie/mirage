@@ -19,6 +19,7 @@ BACKENDS = (
     "normal_sdpa",
     "normal_flashinfer",
     "normal_flashinfer_cuda_graph",
+    "normal_flashinfer_cuda_graph_fused",
     "mpk_decode_only",
     "mpk_decode_only_split_kv",
 )
@@ -62,6 +63,15 @@ def command_for(args, prompt, backend, output):
             "--normal-attention",
             "flashinfer",
             "--normal-cuda-graph",
+        ]
+    elif backend == "normal_flashinfer_cuda_graph_fused":
+        command += [
+            "--backend",
+            "normal",
+            "--normal-attention",
+            "flashinfer",
+            "--normal-cuda-graph",
+            "--normal-fused-projections",
         ]
     elif backend == "mpk_decode_only":
         command += ["--backend", "mpk", "--mpk-policy", "decode-only"]

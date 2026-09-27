@@ -183,6 +183,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Capture and replay the B=1 normal FlashInfer decode step",
     )
+    parser.add_argument(
+        "--normal-fused-projections",
+        action="store_true",
+        help="Fuse Q/K/V and gate/up projections in the normal backend",
+    )
     parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only", "workload-aware"), default=None,
                         help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
@@ -402,6 +407,10 @@ if __name__ == "__main__":
           + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
     print(f"Normal attention backend: {args.normal_attention.upper()}")
     print(f"Normal CUDA graph: {'ENABLED' if args.normal_cuda_graph else 'DISABLED'}")
+    print(
+        "Normal fused projections: "
+        f"{'ENABLED' if args.normal_fused_projections else 'DISABLED'}"
+    )
     print(f"world_size({world_size}) rank({rank})")
     if args.mpk_policy in ("prefill-only", "decode-only") and world_size != 1:
         parser.error("Mixed backend policies currently require a single GPU")
@@ -479,6 +488,9 @@ if __name__ == "__main__":
 
         with torch.device("cuda"):
             tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    if args.normal_fused_projections:
+        model.fuse_weights()
 
     total_num_requests = args.max_num_batched_requests
     normal_hidden = {}
@@ -1653,6 +1665,7 @@ if __name__ == "__main__":
                 "mode": "mpk_prefill_normal_decode" if args.mpk_policy == "prefill-only" else "torch",
                 "normal_attention": args.normal_attention,
                 "normal_cuda_graph": args.normal_cuda_graph,
+                "normal_fused_projections": args.normal_fused_projections,
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
@@ -1758,6 +1771,7 @@ if __name__ == "__main__":
                 "mode": "normal_prefill_mpk_decode" if args.mpk_policy == "decode-only" else "mpk",
                 "normal_attention": args.normal_attention,
                 "normal_cuda_graph": args.normal_cuda_graph,
+                "normal_fused_projections": args.normal_fused_projections,
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests

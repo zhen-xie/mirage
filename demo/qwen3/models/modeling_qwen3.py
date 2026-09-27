@@ -167,16 +167,19 @@ class Qwen3MLP(nn.Module):
     def fuse_weights(self):
         self.fused_weight = torch.transpose(
             torch.cat((self.gate_proj.weight, self.up_proj.weight), 0), 0, 1
-        )
+        ).contiguous()
 
     def forward(self, input_layernorm, hidden_state, stream: torch.cuda.Stream = None):
         hidden_state = input_layernorm(hidden_state)
-        # output = torch.matmul(hidden_state, self.fused_weight)
-        # gate_output, up_output = torch.chunk(output, 2, -1)
-        # output = self.down_proj(self.act_fn(gate_output) * up_output)
-        output = self.down_proj(
-            self.act_fn(self.gate_proj(hidden_state)) * self.up_proj(hidden_state)
-        )
+        if hasattr(self, "fused_weight"):
+            gate_up = torch.matmul(hidden_state, self.fused_weight)
+            gate_output, up_output = torch.chunk(gate_up, 2, dim=-1)
+            output = self.down_proj(self.act_fn(gate_output) * up_output)
+        else:
+            output = self.down_proj(
+                self.act_fn(self.gate_proj(hidden_state))
+                * self.up_proj(hidden_state)
+            )
         if self.world_size > 1:
             dist.all_reduce(output)
 
@@ -272,6 +275,16 @@ class Qwen3Attention(nn.Module):
 
         self.rotary_emb = Qwen3RotaryEmbedding(config=self.config)
 
+    def fuse_weights(self):
+        self.fused_qkv_weight = torch.transpose(
+            torch.cat(
+                (self.q_proj.weight, self.k_proj.weight, self.v_proj.weight),
+                dim=0,
+            ),
+            0,
+            1,
+        ).contiguous()
+
     def forward(
         self,
         input_layernorm,
@@ -284,9 +297,21 @@ class Qwen3Attention(nn.Module):
         bsz, q_len, _ = hidden_states.size()
 
         hidden_states = input_layernorm(hidden_states)
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        if hasattr(self, "fused_qkv_weight"):
+            qkv = torch.matmul(hidden_states, self.fused_qkv_weight)
+            query_states, key_states, value_states = torch.split(
+                qkv,
+                (
+                    (self.num_heads // self.world_size) * self.head_dim,
+                    (self.num_key_value_heads // self.world_size) * self.head_dim,
+                    (self.num_key_value_heads // self.world_size) * self.head_dim,
+                ),
+                dim=-1,
+            )
+        else:
+            query_states = self.q_proj(hidden_states)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
 
         query_states = self.q_norm(
             query_states.view(
@@ -557,6 +582,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
     def get_input_embeddings(self):
         return self.embed_tokens
+
+    def fuse_weights(self):
+        for layer in self.layers:
+            layer.self_attn.fuse_weights()
+            layer.mlp.fuse_weights()
 
     def set_input_embeddings(self, value):
         self.embed_tokens = value
