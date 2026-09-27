@@ -242,6 +242,9 @@ class Qwen3MLP(nn.Module):
         self._flashinfer_silu_and_mul = silu_and_mul
         self.use_flashinfer_silu_and_mul = True
 
+    def disable_flashinfer_silu_and_mul(self):
+        self.use_flashinfer_silu_and_mul = False
+
     def forward(
         self,
         input_layernorm,
@@ -748,6 +751,10 @@ class Qwen3Model(Qwen3PreTrainedModel):
         for layer in self.layers:
             layer.mlp.enable_flashinfer_silu_and_mul()
 
+    def disable_flashinfer_silu_and_mul(self):
+        for layer in self.layers:
+            layer.mlp.disable_flashinfer_silu_and_mul()
+
     def enable_fused_decode_rope_kv_cache(self):
         for layer in self.layers:
             layer.self_attn.enable_fused_decode_rope_kv_cache()
@@ -838,6 +845,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def enable_flashinfer_silu_and_mul(self):
         self.model.enable_flashinfer_silu_and_mul()
+
+    def disable_flashinfer_silu_and_mul(self):
+        self.model.disable_flashinfer_silu_and_mul()
 
     def enable_fused_decode_rope_kv_cache(self):
         self.model.enable_fused_decode_rope_kv_cache()

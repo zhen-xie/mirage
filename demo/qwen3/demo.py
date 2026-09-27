@@ -225,6 +225,11 @@ if __name__ == "__main__":
         help="Use FlashInfer fused SiLU and multiply in the normal MLP",
     )
     parser.add_argument(
+        "--normal-flashinfer-silu-prefill-only",
+        action="store_true",
+        help="Use FlashInfer fused SiLU/mul only in the prefill CUDA Graph",
+    )
+    parser.add_argument(
         "--normal-fused-decode-rope-kv-cache",
         action="store_true",
         help="Fuse decode Q/K RoPE with K/V cache writes in the normal backend",
@@ -348,6 +353,22 @@ if __name__ == "__main__":
             "--normal-flashinfer-silu-and-mul requires "
             "--normal-fused-projections"
         )
+    if args.normal_flashinfer_silu_prefill_only:
+        if not args.normal_cuda_graph_prefill:
+            parser.error(
+                "--normal-flashinfer-silu-prefill-only requires "
+                "--normal-cuda-graph-prefill"
+            )
+        if not args.normal_fused_projections:
+            parser.error(
+                "--normal-flashinfer-silu-prefill-only requires "
+                "--normal-fused-projections"
+            )
+        if args.normal_flashinfer_silu_and_mul:
+            parser.error(
+                "Prefill-only and global FlashInfer SiLU modes are mutually "
+                "exclusive"
+            )
     if args.use_mirage:
         if args.backend not in (None, "mpk") or args.mpk_policy not in (None, "always"):
             parser.error("--use-mirage conflicts with the selected backend or MPK policy")
@@ -490,6 +511,10 @@ if __name__ == "__main__":
     print(
         "Normal FlashInfer SiLU and mul: "
         f"{'ENABLED' if args.normal_flashinfer_silu_and_mul else 'DISABLED'}"
+    )
+    print(
+        "Normal FlashInfer SiLU prefill only: "
+        f"{'ENABLED' if args.normal_flashinfer_silu_prefill_only else 'DISABLED'}"
     )
     print(
         "Normal fused decode RoPE and KV cache: "
@@ -1638,6 +1663,16 @@ if __name__ == "__main__":
         reset_generation_state()
 
     if args.normal_cuda_graph_prefill:
+        if args.normal_flashinfer_silu_prefill_only:
+            # Compile and warm the fused activation before CUDA Graph capture.
+            # The captured graph retains this kernel after the Python module
+            # flags are restored for the decode graph.
+            model.enable_flashinfer_silu_and_mul()
+            execute_prefill(
+                model, tokens, prompt_len, position_embeddings, step, stream
+            )
+            torch.cuda.synchronize()
+            reset_generation_state()
         prefill_graph_input_ids = tokens[:, :prompt_len].clone()
         prefill_graph_cos = position_embeddings[0][:, :prompt_len].clone()
         prefill_graph_sin = position_embeddings[1][:, :prompt_len].clone()
@@ -1656,6 +1691,8 @@ if __name__ == "__main__":
             normal_prefill_graph.replay()
         torch.cuda.synchronize()
         print("Normal prefill CUDA graph captured before measured generation")
+        if args.normal_flashinfer_silu_prefill_only:
+            model.disable_flashinfer_silu_and_mul()
         reset_generation_state()
 
     if args.normal_cuda_graph:

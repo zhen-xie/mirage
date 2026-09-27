@@ -68,6 +68,11 @@ def command_for(args, prompt, backend, output):
         ]
     if backend.startswith("normal_flashinfer") and args.cuda_graph_prefill:
         command.append("--normal-cuda-graph-prefill")
+    if (
+        backend.startswith("normal_flashinfer")
+        and args.flashinfer_silu_prefill_only
+    ):
+        command.append("--normal-flashinfer-silu-prefill-only")
     if backend == "normal_sdpa":
         command += ["--backend", "normal", "--normal-attention", "sdpa"]
     elif backend == "normal_flashinfer":
@@ -251,6 +256,7 @@ def main():
     parser.add_argument("--page-size", type=int, default=4096)
     parser.add_argument("--flashinfer-kv-page-size", type=int, default=None)
     parser.add_argument("--cuda-graph-prefill", action="store_true")
+    parser.add_argument("--flashinfer-silu-prefill-only", action="store_true")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=1800)
