@@ -569,9 +569,13 @@ if __name__ == "__main__":
     if args.normal_cuda_graph_argmax and not args.normal_cuda_graph:
         parser.error("--normal-cuda-graph-argmax requires --normal-cuda-graph")
     if args.normal_cuda_graph_prefill:
-        if args.backend != "normal" or args.normal_attention != "flashinfer":
+        supports_normal_prefill = args.backend == "normal" or (
+            args.backend == "mpk" and args.mpk_policy == "decode-only"
+        )
+        if not supports_normal_prefill or args.normal_attention != "flashinfer":
             parser.error(
-                "--normal-cuda-graph-prefill requires normal FlashInfer"
+                "--normal-cuda-graph-prefill requires a normal FlashInfer "
+                "prefill phase"
             )
         if args.max_num_batched_requests != 1:
             parser.error("--normal-cuda-graph-prefill currently requires B=1")
@@ -593,7 +597,13 @@ if __name__ == "__main__":
             parser.error("--normal-flashinfer-kv-page-size must be positive")
     if (
         args.normal_flashinfer_prefill_backend != "auto"
-        and (args.backend != "normal" or args.normal_attention != "flashinfer")
+        and (
+            args.normal_attention != "flashinfer"
+            or not (
+                args.backend == "normal"
+                or (args.backend == "mpk" and args.mpk_policy == "decode-only")
+            )
+        )
     ):
         parser.error(
             "--normal-flashinfer-prefill-backend requires normal FlashInfer"
@@ -1792,7 +1802,17 @@ if __name__ == "__main__":
             normal_prefill_start = torch.cuda.Event(enable_timing=True)
             normal_prefill_end = torch.cuda.Event(enable_timing=True)
             normal_prefill_start.record()
-        logits = execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream)
+        if normal_prefill_graph is not None:
+            default_stream = torch.cuda.current_stream()
+            stream.wait_stream(default_stream)
+            with torch.cuda.stream(stream):
+                normal_prefill_graph.replay()
+            default_stream.wait_stream(stream)
+            logits = prefill_graph_logits
+        else:
+            logits = execute_prefill(
+                model, tokens, prompt_len, position_embeddings, step, stream
+            )
         if total_num_requests == 1:
             tokens[0, prompt_len] = select_normal_token(logits, args, model, prompt_len)
         else:

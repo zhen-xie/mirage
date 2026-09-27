@@ -27,6 +27,7 @@ BACKENDS = (
     "normal_flashinfer_cuda_graph_fused_rope_kv",
     "normal_flashinfer_cuda_graph_fused_rope_kv_argmax",
     "mpk_decode_only",
+    "mpk_decode_only_optimized_prefill",
     "mpk_decode_only_split_kv",
 )
 
@@ -171,6 +172,22 @@ def command_for(args, prompt, backend, output):
         ]
     elif backend == "mpk_decode_only":
         command += ["--backend", "mpk", "--mpk-policy", "decode-only"]
+    elif backend == "mpk_decode_only_optimized_prefill":
+        command += [
+            "--backend",
+            "mpk",
+            "--mpk-policy",
+            "decode-only",
+            "--normal-attention",
+            "flashinfer",
+            "--normal-cuda-graph-prefill",
+            "--normal-fused-projections",
+            "--normal-flashinfer-rmsnorm",
+            "--normal-flashinfer-fused-add-rmsnorm",
+            "--normal-flashinfer-silu-prefill-only",
+            "--normal-flashinfer-prefill-backend",
+            "auto",
+        ]
     elif backend == "mpk_decode_only_split_kv":
         command += [
             "--backend",
