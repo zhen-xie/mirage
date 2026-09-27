@@ -420,6 +420,13 @@ if __name__ == "__main__":
         "Normal FlashInfer RMSNorm: "
         f"{'ENABLED' if args.normal_flashinfer_rmsnorm else 'DISABLED'}"
     )
+    if args.normal_flashinfer_rmsnorm:
+        # FlashInfer 0.7's CuTe RMSNorm reads a CUDA device property that is
+        # unavailable in the Torch 2.6 environment used by Mirage.  Select its
+        # functionally equivalent CUDA JIT implementation before FlashInfer is
+        # imported while constructing the model.
+        os.environ.setdefault("FLASHINFER_USE_CUDA_NORM", "1")
+        print("Normal FlashInfer RMSNorm implementation: CUDA JIT")
     print(f"world_size({world_size}) rank({rank})")
     if args.mpk_policy in ("prefill-only", "decode-only") and world_size != 1:
         parser.error("Mixed backend policies currently require a single GPU")
