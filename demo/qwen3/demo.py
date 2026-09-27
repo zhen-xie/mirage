@@ -1378,6 +1378,12 @@ if __name__ == "__main__":
 
     prompt_len = prompt_lengths[0].item()
     prompt_token_ids = tokens[:, :prompt_len].clone()
+    normal_decode_graph = None
+    graph_input_ids = None
+    graph_cos = None
+    graph_sin = None
+    graph_step = None
+    graph_logits = None
 
     def reset_generation_state():
         tokens.zero_()
@@ -1455,6 +1461,44 @@ if __name__ == "__main__":
         run_generation_warmup()
         reset_generation_state()
 
+    if args.normal_cuda_graph:
+        # Build the reusable decode graph before the measured generation.  A
+        # sacrificial prefill establishes the same KV-cache state as the first
+        # real decode step; reset_generation_state() then restores the request
+        # state while keeping the captured graph and its fixed tensor pointers.
+        logits = execute_prefill(
+            model, tokens, prompt_len, position_embeddings, step, stream
+        )
+        tokens[0, prompt_len] = select_normal_token(
+            logits, args, model, prompt_len
+        )
+        capture_pos = prompt_len + 1
+        step.fill_(capture_pos - 1)
+        graph_input_ids = tokens[:, capture_pos - 1:capture_pos].clone()
+        graph_cos = position_embeddings[0][
+            :, capture_pos - 1:capture_pos
+        ].clone()
+        graph_sin = position_embeddings[1][
+            :, capture_pos - 1:capture_pos
+        ].clone()
+        graph_step = step.clone()
+        normal_decode_graph = torch.cuda.CUDAGraph()
+        torch.cuda.synchronize()
+        with torch.cuda.graph(normal_decode_graph, stream=stream):
+            graph_logits = model.forward(
+                input_ids=graph_input_ids,
+                position_embeddings=(graph_cos, graph_sin),
+                step=graph_step,
+                stream=stream,
+            )
+        # Materialize one replay outside the timed region.  This also catches
+        # graph construction failures before the recorded generation starts.
+        with torch.cuda.stream(stream):
+            normal_decode_graph.replay()
+        torch.cuda.synchronize()
+        print("Normal CUDA graph captured before measured generation")
+        reset_generation_state()
+
     if prefill_use_mpk and not decode_use_mpk:
         if output_len == 0:
             parser.error("prefill-only requires at least one output token")
@@ -1500,12 +1544,6 @@ if __name__ == "__main__":
         decode_limit = prompt_len + output_len
         start_pos = prompt_len + (args.mpk_policy == "prefill-only")
         phase_events = []
-        normal_decode_graph = None
-        graph_input_ids = None
-        graph_cos = None
-        graph_sin = None
-        graph_step = None
-        graph_logits = None
         for cur_pos in range(start_pos, decode_limit):
             phase = "prefill" if cur_pos == prompt_len else "decode"
             if args.phase_timing:
@@ -1526,31 +1564,15 @@ if __name__ == "__main__":
                     default_stream = torch.cuda.current_stream()
                     stream.wait_stream(default_stream)
                     if normal_decode_graph is None:
-                        graph_input_ids = current_input.clone()
-                        graph_cos = current_cos.clone()
-                        graph_sin = current_sin.clone()
-                        graph_step = step.clone()
-                        normal_decode_graph = torch.cuda.CUDAGraph()
-                        torch.cuda.synchronize()
-                        with torch.cuda.graph(normal_decode_graph, stream=stream):
-                            graph_logits = model.forward(
-                                input_ids=graph_input_ids,
-                                position_embeddings=(graph_cos, graph_sin),
-                                step=graph_step,
-                                stream=stream,
-                            )
-                        # Capture records the decode work but does not produce
-                        # the current step's output.  Replay once immediately
-                        # so graph_logits contains the first decoded token.
-                        with torch.cuda.stream(stream):
-                            normal_decode_graph.replay()
-                    else:
-                        with torch.cuda.stream(stream):
-                            graph_input_ids.copy_(current_input)
-                            graph_cos.copy_(current_cos)
-                            graph_sin.copy_(current_sin)
-                            graph_step.copy_(step)
-                            normal_decode_graph.replay()
+                        raise RuntimeError(
+                            "Normal CUDA graph was not captured before timing"
+                        )
+                    with torch.cuda.stream(stream):
+                        graph_input_ids.copy_(current_input)
+                        graph_cos.copy_(current_cos)
+                        graph_sin.copy_(current_sin)
+                        graph_step.copy_(step)
+                        normal_decode_graph.replay()
                     default_stream.wait_stream(stream)
                     logits = graph_logits
                 else:
