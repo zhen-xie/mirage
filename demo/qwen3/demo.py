@@ -1876,8 +1876,6 @@ if __name__ == "__main__":
         prompt_len = prompt_lengths[0].item()
         if output_len < 2 or args.max_seq_length != prompt_len + output_len:
             parser.error("decode-only requires at least two output tokens and max-seq-length = prompt length + output length")
-        if prompt_len >= args.page_size:
-            parser.error("decode-only currently requires the prompt to fit in one KV page")
         starter.record()
         if args.phase_timing:
             normal_prefill_start = torch.cuda.Event(enable_timing=True)

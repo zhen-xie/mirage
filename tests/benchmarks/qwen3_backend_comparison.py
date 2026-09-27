@@ -28,6 +28,7 @@ BACKENDS = (
     "normal_flashinfer_cuda_graph_fused_rope_kv_argmax",
     "mpk_decode_only",
     "mpk_decode_only_optimized_prefill",
+    "mpk_decode_only_aligned_attention",
     "mpk_decode_only_split_kv",
 )
 
@@ -38,6 +39,9 @@ def command_for(args, prompt, backend, output):
         if backend.startswith("mpk_") and args.mpk_page_size is not None
         else args.page_size
     )
+    max_num_pages = (
+        args.context_length + args.decode_steps + page_size
+    ) // page_size
     command = [
         sys.executable,
         str(DEMO),
@@ -54,7 +58,7 @@ def command_for(args, prompt, backend, output):
         "--page-size",
         str(page_size),
         "--max-num-pages",
-        "1",
+        str(max_num_pages),
         "--max-num-batched-tokens",
         "8",
         "--model",
@@ -200,6 +204,23 @@ def command_for(args, prompt, backend, output):
             "--normal-flashinfer-prefill-backend",
             "auto",
         ]
+    elif backend == "mpk_decode_only_aligned_attention":
+        command += [
+            "--backend",
+            "mpk",
+            "--mpk-policy",
+            "decode-only",
+            "--split-kv-cache",
+            "--normal-attention",
+            "flashinfer",
+            "--normal-cuda-graph-prefill",
+            "--normal-fused-projections",
+            "--normal-flashinfer-rmsnorm",
+            "--normal-flashinfer-fused-add-rmsnorm",
+            "--normal-flashinfer-silu-prefill-only",
+            "--normal-flashinfer-prefill-backend",
+            "auto",
+        ]
     elif backend == "mpk_decode_only_split_kv":
         command += [
             "--backend",
@@ -328,11 +349,6 @@ def main():
         parser.error("repeat must be positive")
     if args.context_length + args.decode_steps + 1 > args.page_size:
         parser.error("context and generated tokens must fit in one KV page")
-    if (
-        args.mpk_page_size is not None
-        and args.context_length + args.decode_steps + 1 > args.mpk_page_size
-    ):
-        parser.error("context and generated tokens must fit in one MPK page")
     if not 0 <= args.minimum_token_match_fraction <= 1:
         parser.error("minimum-token-match-fraction must be in [0, 1]")
 

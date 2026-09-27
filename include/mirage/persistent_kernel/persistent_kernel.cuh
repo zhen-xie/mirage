@@ -187,22 +187,28 @@ __global__ void init_kernel(RuntimeConfig config) {
 }
 
 #ifdef MODE_OFFLINE
-// Seed lockstep requests after normal prefill. The normal Qwen3 path writes
-// each request's KV cache into the page with the same request index.
+// Seed lockstep requests after normal prefill. Pages for each request occupy a
+// contiguous range in the same order used by the normal Qwen3 prefill path.
 __global__ void resume_after_prefill_kernel(RuntimeConfig config) {
   if (blockIdx.x == 0 && threadIdx.x == 0) {
     int num_requests = config.total_num_requests;
     assert(num_requests > 0 && num_requests <= MPK_MAX_NUM_BATCHED_REQUESTS);
     assert(num_requests <= MPK_MAX_NUM_BATCHED_TOKENS);
-    assert(num_requests <= MPK_MAX_NUM_PAGES);
+    int page_cursor = 0;
     for (int request_id = 0; request_id < num_requests; request_id++) {
       int prompt_len = config.prompt_length[request_id];
-      assert(prompt_len > 0 && prompt_len < MPK_PAGE_SIZE);
+      assert(prompt_len > 0);
+      int prompt_pages =
+          (prompt_len + MPK_PAGE_SIZE - 1) / MPK_PAGE_SIZE;
+      assert(page_cursor + prompt_pages <= MPK_MAX_NUM_PAGES);
       config.step[request_id] = prompt_len;
       config.request_ids[request_id] = request_id;
       config.qo_indptr_buffer[request_id] = 0;
-      config.paged_kv_indptr_buffer[request_id] = request_id;
-      config.paged_kv_indices_buffer[request_id] = request_id;
+      config.paged_kv_indptr_buffer[request_id] = page_cursor;
+      for (int page = 0; page < prompt_pages; page++) {
+        config.paged_kv_indices_buffer[page_cursor] = page_cursor;
+        page_cursor++;
+      }
       int last_page_len = prompt_len % MPK_PAGE_SIZE;
       config.paged_kv_last_page_len_buffer[request_id] =
           (last_page_len == 0) ? MPK_PAGE_SIZE : last_page_len;
@@ -212,10 +218,10 @@ __global__ void resume_after_prefill_kernel(RuntimeConfig config) {
     }
     for (int slot = num_requests; slot <= MPK_MAX_NUM_BATCHED_REQUESTS; slot++) {
       config.qo_indptr_buffer[slot] = 0;
-      config.paged_kv_indptr_buffer[slot] = num_requests;
+      config.paged_kv_indptr_buffer[slot] = page_cursor;
     }
     *config.next_request_id = num_requests;
-    *config.page_queue_head = num_requests;
+    *config.page_queue_head = page_cursor;
   }
 }
 #endif
