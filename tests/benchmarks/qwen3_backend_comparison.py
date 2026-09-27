@@ -180,6 +180,13 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--prompt-file", type=Path, required=True)
     parser.add_argument("--no-system-message", action="store_true")
+    parser.add_argument(
+        "--backends",
+        nargs="+",
+        choices=BACKENDS,
+        default=None,
+        help="Run only these backends; normal_sdpa is added as the reference",
+    )
     parser.add_argument("--minimum-token-match-fraction", type=float, default=2 / 3)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -195,14 +202,23 @@ def main():
     if not 0 <= args.minimum_token_match_fraction <= 1:
         parser.error("minimum-token-match-fraction must be in [0, 1]")
 
+    selected_backends = list(args.backends or BACKENDS)
+    if "normal_sdpa" not in selected_backends:
+        selected_backends.insert(0, "normal_sdpa")
+    selected_backends = tuple(dict.fromkeys(selected_backends))
+
     args.prompt_file = args.prompt_file.resolve()
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     prompt = args.prompt_file.read_text()
 
-    samples = {backend: [] for backend in BACKENDS}
+    samples = {backend: [] for backend in selected_backends}
     for repeat_index in range(args.repeat):
-        order = BACKENDS if repeat_index % 2 == 0 else tuple(reversed(BACKENDS))
+        order = (
+            selected_backends
+            if repeat_index % 2 == 0
+            else tuple(reversed(selected_backends))
+        )
         for backend in order:
             print(f"{backend} repeat {repeat_index + 1}/{args.repeat}", flush=True)
             sample = run_sample(args, prompt, backend, repeat_index)
@@ -214,10 +230,13 @@ def main():
     required_matches = int(
         compared_tokens * args.minimum_token_match_fraction + 0.999999
     )
-    match_counts = {backend: [] for backend in BACKENDS[1:]}
+    compared_backends = tuple(
+        backend for backend in selected_backends if backend != "normal_sdpa"
+    )
+    match_counts = {backend: [] for backend in compared_backends}
     for repeat_index in range(args.repeat):
         reference = samples["normal_sdpa"][repeat_index]["token_ids"]
-        for backend in BACKENDS[1:]:
+        for backend in compared_backends:
             actual = samples[backend][repeat_index]["token_ids"]
             if min(len(reference), len(actual)) < compared_tokens:
                 raise ValueError(f"Insufficient saved tokens for {backend}")
@@ -241,7 +260,7 @@ def main():
         "positional_matches_vs_sdpa": match_counts,
         "backends": {
             backend: summarize(samples[backend], args.decode_steps)
-            for backend in BACKENDS
+            for backend in selected_backends
         },
     }
     reference_decode = summary["backends"]["normal_sdpa"]["mean_decode_ms"]
@@ -273,7 +292,7 @@ def main():
     with csv_path.open("w", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
-        for backend in BACKENDS:
+        for backend in selected_backends:
             result = summary["backends"][backend]
             row = {name: result.get(name) for name in fieldnames}
             row["backend"] = backend
