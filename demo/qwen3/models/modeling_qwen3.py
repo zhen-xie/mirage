@@ -280,8 +280,16 @@ def naive_attention(
     is_causal=True, 
     enable_gqa=True):
             
-    k = key_cache[layer_idx, 0, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
-    v = value_cache[layer_idx, 0, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
+    if key_cache.ndim == 5:
+        k = key_cache[layer_idx, 0, :kv_len]
+        v = value_cache[layer_idx, 0, :kv_len]
+    elif key_cache.ndim == 4:
+        k = key_cache[layer_idx, :kv_len]
+        v = value_cache[layer_idx, :kv_len]
+    else:
+        raise ValueError(
+            f"Expected a 4D or 5D KV cache, got {key_cache.ndim}D"
+        )
 
     q_for_sdpa = q.permute(1, 0, 2)    # [num_q_heads, 1, head_dim]
     k_for_sdpa = k.permute(1, 0, 2)    # [num_q_heads, kv_seq_len, head_dim]
