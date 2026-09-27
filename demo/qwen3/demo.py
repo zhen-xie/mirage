@@ -184,6 +184,11 @@ if __name__ == "__main__":
         help="Capture and replay the B=1 normal FlashInfer decode step",
     )
     parser.add_argument(
+        "--normal-cuda-graph-argmax",
+        action="store_true",
+        help="Include greedy argmax in the normal CUDA Graph",
+    )
+    parser.add_argument(
         "--normal-flashinfer-no-tensor-cores",
         action="store_true",
         help="Use the FlashInfer CUDA Core decode kernel instead of Tensor Core",
@@ -443,6 +448,10 @@ if __name__ == "__main__":
     print(f"Normal attention backend: {args.normal_attention.upper()}")
     print(f"Normal CUDA graph: {'ENABLED' if args.normal_cuda_graph else 'DISABLED'}")
     print(
+        "Normal CUDA graph argmax: "
+        f"{'ENABLED' if args.normal_cuda_graph_argmax else 'DISABLED'}"
+    )
+    print(
         "Normal FlashInfer decode cores: "
         f"{'CUDA' if args.normal_flashinfer_no_tensor_cores else 'TENSOR'}"
     )
@@ -502,6 +511,8 @@ if __name__ == "__main__":
             parser.error(
                 "--normal-cuda-graph requires --in-process-warmup 1 or greater"
             )
+    if args.normal_cuda_graph_argmax and not args.normal_cuda_graph:
+        parser.error("--normal-cuda-graph-argmax requires --normal-cuda-graph")
     if args.normal_fused_decode_rope_kv_cache:
         if args.normal_attention != "flashinfer":
             parser.error(
@@ -1484,6 +1495,7 @@ if __name__ == "__main__":
     graph_sin = None
     graph_step = None
     graph_logits = None
+    graph_next_token = None
 
     def reset_generation_state():
         tokens.zero_()
@@ -1591,6 +1603,8 @@ if __name__ == "__main__":
                 step=graph_step,
                 stream=stream,
             )
+            if args.normal_cuda_graph_argmax:
+                graph_next_token = graph_logits.argmax(dim=-1)
         # Materialize one replay outside the timed region.  This also catches
         # graph construction failures before the recorded generation starts.
         with torch.cuda.stream(stream):
@@ -1680,7 +1694,14 @@ if __name__ == "__main__":
                         model, tokens, cur_pos, position_embeddings, step, stream
                     )
             if total_num_requests == 1:
-                next_token = select_normal_token(logits, args, model, cur_pos)
+                if (
+                    phase == "decode"
+                    and args.normal_cuda_graph
+                    and args.normal_cuda_graph_argmax
+                ):
+                    next_token = graph_next_token[0, -1]
+                else:
+                    next_token = select_normal_token(logits, args, model, cur_pos)
                 tokens[0, cur_pos] = next_token
             else:
                 next_token = logits[:, -1, :model.config.vocab_size].argmax(dim=-1)
@@ -1753,6 +1774,7 @@ if __name__ == "__main__":
                 "mode": "mpk_prefill_normal_decode" if args.mpk_policy == "prefill-only" else "torch",
                 "normal_attention": args.normal_attention,
                 "normal_cuda_graph": args.normal_cuda_graph,
+                "normal_cuda_graph_argmax": args.normal_cuda_graph_argmax,
                 "normal_flashinfer_use_tensor_cores": (
                     not args.normal_flashinfer_no_tensor_cores
                 ),
@@ -1872,6 +1894,7 @@ if __name__ == "__main__":
                 "mode": "normal_prefill_mpk_decode" if args.mpk_policy == "decode-only" else "mpk",
                 "normal_attention": args.normal_attention,
                 "normal_cuda_graph": args.normal_cuda_graph,
+                "normal_cuda_graph_argmax": args.normal_cuda_graph_argmax,
                 "normal_flashinfer_use_tensor_cores": (
                     not args.normal_flashinfer_no_tensor_cores
                 ),

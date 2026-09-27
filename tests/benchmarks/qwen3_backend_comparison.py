@@ -25,6 +25,7 @@ BACKENDS = (
     "normal_flashinfer_cuda_graph_fused_norm_silu",
     "normal_flashinfer_cuda_graph_fused_norm_cuda_cores",
     "normal_flashinfer_cuda_graph_fused_rope_kv",
+    "normal_flashinfer_cuda_graph_fused_rope_kv_argmax",
     "mpk_decode_only",
     "mpk_decode_only_split_kv",
 )
@@ -130,6 +131,19 @@ def command_for(args, prompt, backend, output):
             "--normal-attention",
             "flashinfer",
             "--normal-cuda-graph",
+            "--normal-fused-projections",
+            "--normal-flashinfer-rmsnorm",
+            "--normal-flashinfer-fused-add-rmsnorm",
+            "--normal-fused-decode-rope-kv-cache",
+        ]
+    elif backend == "normal_flashinfer_cuda_graph_fused_rope_kv_argmax":
+        command += [
+            "--backend",
+            "normal",
+            "--normal-attention",
+            "flashinfer",
+            "--normal-cuda-graph",
+            "--normal-cuda-graph-argmax",
             "--normal-fused-projections",
             "--normal-flashinfer-rmsnorm",
             "--normal-flashinfer-fused-add-rmsnorm",
