@@ -443,19 +443,21 @@ class Qwen3Attention(nn.Module):
             )
 
         if bsz == 1:
+            flat_key_cache = self.key_cache[self.layer_idx].flatten(0, 1)
+            flat_value_cache = self.value_cache[self.layer_idx].flatten(0, 1)
             # Preserve the established single-request attention path.
             if q_len > 1:
-                self.key_cache[self.layer_idx, 0, :q_len] = key_states[0]
-                self.value_cache[self.layer_idx, 0, :q_len] = value_states[0]
+                flat_key_cache[:q_len] = key_states[0]
+                flat_value_cache[:q_len] = value_states[0]
             else:
                 if fused_decode_cache:
                     pass
                 elif self.attention_backend == "flashinfer":
                     cache_positions = step.to(dtype=torch.long)
-                    self.key_cache[self.layer_idx, 0].index_copy_(
+                    flat_key_cache.index_copy_(
                         0, cache_positions, key_states[0]
                     )
-                    self.value_cache[self.layer_idx, 0].index_copy_(
+                    flat_value_cache.index_copy_(
                         0, cache_positions, value_states[0]
                     )
                 else:
@@ -466,8 +468,8 @@ class Qwen3Attention(nn.Module):
             if self.attention_backend == "flashinfer":
                 flashinfer = get_flashinfer()
                 if q_len > 1:
-                    k = self.key_cache[self.layer_idx, 0, :q_len]
-                    v = self.value_cache[self.layer_idx, 0, :q_len]
+                    k = flat_key_cache[:q_len]
+                    v = flat_value_cache[:q_len]
                     attn_output = flashinfer.single_prefill_with_kv_cache(
                         q, k, v, causal=True, kv_layout="NHD",
                         pos_encoding_mode="NONE",
@@ -485,7 +487,8 @@ class Qwen3Attention(nn.Module):
             else:
                 kv_seq_len = q_len if q_len > 1 else step.item() + 1
                 attn_output = naive_attention(
-                    q, self.key_cache, self.value_cache, kv_seq_len,
+                    q, self.key_cache.flatten(1, 2),
+                    self.value_cache.flatten(1, 2), kv_seq_len,
                     self.layer_idx, q_len > 1, True,
                 )
         else:
@@ -618,8 +621,15 @@ class Qwen3PreTrainedModel(PreTrainedModel):
 class Qwen3Model(Qwen3PreTrainedModel):
     def __init__(self, config: Qwen3Config, world_size: int, max_num_pages: int,
                  page_size: int, attention_backend: str = "sdpa",
-                 flashinfer_use_tensor_cores: bool = True):
+                 flashinfer_use_tensor_cores: bool = True,
+                 flashinfer_kv_page_size: int = None):
         super().__init__(config)
+        cache_capacity = max_num_pages * page_size
+        if attention_backend == "flashinfer" and flashinfer_kv_page_size:
+            page_size = flashinfer_kv_page_size
+            max_num_pages = (cache_capacity + page_size - 1) // page_size
+        self.cache_page_size = page_size
+        self.cache_num_pages = max_num_pages
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         # KV cache layout is (L, N, P, H, D) where L is the number of layers, 
@@ -679,10 +689,10 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 128 * 1024 * 1024, dtype=torch.uint8, device="cuda"
             )
             self.flashinfer_kv_indptr = torch.tensor(
-                [0, 1], dtype=torch.int32, device="cuda"
+                [0, max_num_pages], dtype=torch.int32, device="cuda"
             )
-            self.flashinfer_kv_indices = torch.tensor(
-                [0], dtype=torch.int32, device="cuda"
+            self.flashinfer_kv_indices = torch.arange(
+                max_num_pages, dtype=torch.int32, device="cuda"
             )
             self.decode_wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
                 self.flashinfer_workspace,
@@ -754,7 +764,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         # decoder layers
         next_decoder_cache = None
-        self.kv_last_page_len.copy_(step[:1] + 1)
+        self.kv_last_page_len.copy_(
+            step[:1].remainder(self.cache_page_size) + 1
+        )
 
         for decoder_layer in self.layers:
             layer_outputs = decoder_layer(
@@ -776,11 +788,13 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def __init__(self, config, world_size, max_num_pages, page_size,
                  attention_backend="sdpa",
-                 flashinfer_use_tensor_cores=True):
+                 flashinfer_use_tensor_cores=True,
+                 flashinfer_kv_page_size=None):
         super().__init__(config)
         self.model = Qwen3Model(
             config, world_size, max_num_pages, page_size, attention_backend,
             flashinfer_use_tensor_cores,
+            flashinfer_kv_page_size,
         )
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)

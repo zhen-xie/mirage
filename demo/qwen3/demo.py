@@ -194,6 +194,12 @@ if __name__ == "__main__":
         help="Use the FlashInfer CUDA Core decode kernel instead of Tensor Core",
     )
     parser.add_argument(
+        "--normal-flashinfer-kv-page-size",
+        type=int,
+        default=None,
+        help="Use a separate physical FlashInfer KV page size for B=1 normal",
+    )
+    parser.add_argument(
         "--normal-fused-projections",
         action="store_true",
         help="Fuse Q/K/V and gate/up projections in the normal backend",
@@ -446,6 +452,11 @@ if __name__ == "__main__":
     print(f"Execution backend: {args.backend.upper()}"
           + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
     print(f"Normal attention backend: {args.normal_attention.upper()}")
+    if args.normal_flashinfer_kv_page_size is not None:
+        print(
+            "Normal FlashInfer KV page size: "
+            f"{args.normal_flashinfer_kv_page_size}"
+        )
     print(f"Normal CUDA graph: {'ENABLED' if args.normal_cuda_graph else 'DISABLED'}")
     print(
         "Normal CUDA graph argmax: "
@@ -513,6 +524,17 @@ if __name__ == "__main__":
             )
     if args.normal_cuda_graph_argmax and not args.normal_cuda_graph:
         parser.error("--normal-cuda-graph-argmax requires --normal-cuda-graph")
+    if args.normal_flashinfer_kv_page_size is not None:
+        if args.backend != "normal" or args.normal_attention != "flashinfer":
+            parser.error(
+                "--normal-flashinfer-kv-page-size requires normal FlashInfer"
+            )
+        if args.max_num_batched_requests != 1:
+            parser.error(
+                "--normal-flashinfer-kv-page-size currently requires B=1"
+            )
+        if args.normal_flashinfer_kv_page_size <= 0:
+            parser.error("--normal-flashinfer-kv-page-size must be positive")
     if args.normal_fused_decode_rope_kv_cache:
         if args.normal_attention != "flashinfer":
             parser.error(
@@ -545,6 +567,7 @@ if __name__ == "__main__":
                   config, world_size, args.max_num_pages, args.page_size,
                   args.normal_attention,
                   not args.normal_flashinfer_no_tensor_cores,
+                  args.normal_flashinfer_kv_page_size,
               )
               load_model(
                   model, f"{args.model_path}/model{rank}-mp{world_size}.safetensors"
@@ -561,6 +584,7 @@ if __name__ == "__main__":
                   flashinfer_use_tensor_cores=(
                       not args.normal_flashinfer_no_tensor_cores
                   ),
+                  flashinfer_kv_page_size=args.normal_flashinfer_kv_page_size,
               ).to("cuda")
               tokenizer = AutoTokenizer.from_pretrained(model_name)
     else: # Use dynamic shard loader to load directly from HF and shard.
@@ -571,6 +595,7 @@ if __name__ == "__main__":
                 config, world_size, args.max_num_pages, args.page_size,
                 args.normal_attention,
                 not args.normal_flashinfer_no_tensor_cores,
+                args.normal_flashinfer_kv_page_size,
             )
 
         device = torch.device(f"cuda:{rank}")
@@ -1488,6 +1513,18 @@ if __name__ == "__main__":
         parser.error("Split MPK prefill requires prompt shorter than one KV page and max-seq-length = prompt length + at least two output tokens")
 
     prompt_len = prompt_lengths[0].item()
+    if args.normal_flashinfer_kv_page_size is not None:
+        flashinfer_page_size = args.normal_flashinfer_kv_page_size
+        if prompt_len % flashinfer_page_size != 0:
+            parser.error(
+                "Multi-page FlashInfer currently requires prompt length to be "
+                "a multiple of its KV page size"
+            )
+        if output_len > flashinfer_page_size:
+            parser.error(
+                "Multi-page FlashInfer currently requires max-new-tokens to "
+                "be no greater than its KV page size"
+            )
     prompt_token_ids = tokens[:, :prompt_len].clone()
     normal_decode_graph = None
     graph_input_ids = None

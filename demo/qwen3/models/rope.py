@@ -234,6 +234,7 @@ def decode_rotary_kv_cache_kernel(
     vc_stride_s,
     vc_stride_h,
     vc_stride_d,
+    PAGE_SIZE: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
     pid_b = tl.program_id(0)
@@ -280,9 +281,11 @@ def decode_rotary_kv_cache_kernel(
             mask=mask,
             other=0.0,
         )
+        page = position // PAGE_SIZE
+        offset_in_page = position % PAGE_SIZE
         kc_offset = (
-            pid_b * kc_stride_b
-            + position * kc_stride_s
+            page * kc_stride_b
+            + offset_in_page * kc_stride_s
             + pid_h * kc_stride_h
             + rk * kc_stride_d
         )
@@ -301,8 +304,8 @@ def decode_rotary_kv_cache_kernel(
             pid_b * v_stride_b + pid_h * v_stride_h + rk * v_stride_d
         )
         vc_offset = (
-            pid_b * vc_stride_b
-            + position * vc_stride_s
+            page * vc_stride_b
+            + offset_in_page * vc_stride_s
             + pid_h * vc_stride_h
             + rk * vc_stride_d
         )
@@ -373,6 +376,7 @@ def apply_rotary_pos_emb_triton_decode_cache(
             value_cache.stride(1),
             value_cache.stride(2),
             value_cache.stride(3),
+            PAGE_SIZE=key_cache.shape[1],
             BLOCK_K=block_k,
         )
     return q_out

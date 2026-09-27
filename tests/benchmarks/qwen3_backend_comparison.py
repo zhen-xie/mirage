@@ -58,6 +58,14 @@ def command_for(args, prompt, backend, output):
     ]
     if args.no_system_message:
         command.append("--no-system-message")
+    if (
+        backend.startswith("normal_flashinfer")
+        and args.flashinfer_kv_page_size is not None
+    ):
+        command += [
+            "--normal-flashinfer-kv-page-size",
+            str(args.flashinfer_kv_page_size),
+        ]
     if backend == "normal_sdpa":
         command += ["--backend", "normal", "--normal-attention", "sdpa"]
     elif backend == "normal_flashinfer":
@@ -239,6 +247,7 @@ def main():
     parser.add_argument("--context-length", type=int, required=True)
     parser.add_argument("--decode-steps", type=int, required=True)
     parser.add_argument("--page-size", type=int, default=4096)
+    parser.add_argument("--flashinfer-kv-page-size", type=int, default=None)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=1800)
