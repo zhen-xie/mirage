@@ -699,40 +699,55 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # updates this fixed-address buffer to the current sequence length.
         self.kv_last_page_len = torch.ones(1, dtype=torch.int32, device="cuda")
         self.decode_wrapper = None
+        self._decode_wrappers_by_page_count = {}
         if attention_backend == "flashinfer":
+            self.flashinfer_use_tensor_cores = flashinfer_use_tensor_cores
+            self.set_flashinfer_decode_page_count(max_num_pages)
+
+    def set_flashinfer_decode_page_count(self, page_count):
+        if not 1 <= page_count <= self.cache_num_pages:
+            raise ValueError(
+                f"FlashInfer page count {page_count} is outside "
+                f"[1, {self.cache_num_pages}]"
+            )
+        resources = self._decode_wrappers_by_page_count.get(page_count)
+        if resources is None:
             flashinfer = get_flashinfer()
-            self.flashinfer_workspace = torch.empty(
+            workspace = torch.empty(
                 128 * 1024 * 1024, dtype=torch.uint8, device="cuda"
             )
-            self.flashinfer_kv_indptr = torch.tensor(
-                [0, max_num_pages], dtype=torch.int32, device="cuda"
+            kv_indptr = torch.tensor(
+                [0, page_count], dtype=torch.int32, device="cuda"
             )
-            self.flashinfer_kv_indices = torch.arange(
-                max_num_pages, dtype=torch.int32, device="cuda"
+            kv_indices = torch.arange(
+                page_count, dtype=torch.int32, device="cuda"
             )
-            self.decode_wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
-                self.flashinfer_workspace,
+            wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+                workspace,
                 kv_layout="NHD",
                 use_cuda_graph=True,
-                paged_kv_indptr_buffer=self.flashinfer_kv_indptr,
-                paged_kv_indices_buffer=self.flashinfer_kv_indices,
+                paged_kv_indptr_buffer=kv_indptr,
+                paged_kv_indices_buffer=kv_indices,
                 paged_kv_last_page_len_buffer=self.kv_last_page_len,
-                use_tensor_cores=flashinfer_use_tensor_cores,
+                use_tensor_cores=self.flashinfer_use_tensor_cores,
             )
-            self.decode_wrapper.plan(
-                self.flashinfer_kv_indptr,
-                self.flashinfer_kv_indices,
+            wrapper.plan(
+                kv_indptr,
+                kv_indices,
                 self.kv_last_page_len,
-                config.num_attention_heads // world_size,
-                config.num_key_value_heads // world_size,
-                config.head_dim,
-                page_size,
+                self.config.num_attention_heads // self.world_size,
+                self.config.num_key_value_heads // self.world_size,
+                self.config.head_dim,
+                self.cache_page_size,
                 pos_encoding_mode="NONE",
                 q_data_type=torch.bfloat16,
                 kv_data_type=torch.bfloat16,
             )
-            for layer in self.layers:
-                layer.self_attn.decode_wrapper = self.decode_wrapper
+            resources = (wrapper, workspace, kv_indptr, kv_indices)
+            self._decode_wrappers_by_page_count[page_count] = resources
+        self.decode_wrapper = resources[0]
+        for layer in self.layers:
+            layer.self_attn.decode_wrapper = self.decode_wrapper
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -863,6 +878,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def set_flashinfer_prefill_backend(self, backend):
         self.model.set_flashinfer_prefill_backend(backend)
+
+    def set_flashinfer_decode_page_count(self, page_count):
+        self.model.set_flashinfer_decode_page_count(page_count)
 
     def superoptimize_kernels(self):
         self.model.superoptimize_kernels()

@@ -336,6 +336,12 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--save-token-limit",
+        type=int,
+        default=MAX_SAVE_TOKENS,
+        help="Maximum number of generated token IDs stored by --save-tokens",
+    )
+    parser.add_argument(
         "--save-intermediates", type=str, default=None,
         help="Save final decode logits and normalized hidden state for a correctness probe",
     )
@@ -355,6 +361,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
+    if args.save_token_limit < 1:
+        parser.error("--save-token-limit must be positive")
     if args.normal_flashinfer_fused_add_rmsnorm:
         args.normal_flashinfer_rmsnorm = True
     if (
@@ -1622,10 +1630,10 @@ if __name__ == "__main__":
                 "Multi-page FlashInfer currently requires prompt length to be "
                 "a multiple of its KV page size"
             )
-        if output_len > flashinfer_page_size:
+        if output_len > flashinfer_page_size and not args.normal_cuda_graph:
             parser.error(
-                "Multi-page FlashInfer currently requires max-new-tokens to "
-                "be no greater than its KV page size"
+                "Multi-page FlashInfer generation longer than one KV page "
+                "requires --normal-cuda-graph"
             )
     prompt_token_ids = tokens[:, :prompt_len].clone()
     normal_decode_graph = None
@@ -1635,6 +1643,7 @@ if __name__ == "__main__":
     graph_step = None
     graph_logits = None
     graph_next_token = None
+    normal_decode_graphs = {}
     normal_prefill_graph = None
     prefill_graph_input_ids = None
     prefill_graph_cos = None
@@ -1652,6 +1661,15 @@ if __name__ == "__main__":
         if args.use_mirage:
             mpk.init_request_func()
         torch.cuda.synchronize()
+
+    def set_normal_decode_page_count(cur_pos):
+        if args.normal_flashinfer_kv_page_size is None:
+            return
+        page_size = args.normal_flashinfer_kv_page_size
+        # The decode call at cur_pos consumes the token at cur_pos - 1, so its
+        # KV length is cur_pos after that token is written to the cache.
+        page_count = (cur_pos + page_size - 1) // page_size
+        model.set_flashinfer_decode_page_count(page_count)
 
     def run_generation_warmup():
         decode_limit = prompt_len + output_len
@@ -1697,6 +1715,7 @@ if __name__ == "__main__":
                         model, tokens, prompt_len, position_embeddings, step, stream
                     )
                 else:
+                    set_normal_decode_page_count(cur_pos)
                     logits = execute_decode_step(
                         model, tokens, cur_pos, position_embeddings, step, stream
                     )
@@ -1768,33 +1787,70 @@ if __name__ == "__main__":
         tokens[0, prompt_len] = select_normal_token(
             logits, args, model, prompt_len
         )
-        capture_pos = prompt_len + 1
-        step.fill_(capture_pos - 1)
-        graph_input_ids = tokens[:, capture_pos - 1:capture_pos].clone()
-        graph_cos = position_embeddings[0][
-            :, capture_pos - 1:capture_pos
-        ].clone()
-        graph_sin = position_embeddings[1][
-            :, capture_pos - 1:capture_pos
-        ].clone()
-        graph_step = step.clone()
-        normal_decode_graph = torch.cuda.CUDAGraph()
-        torch.cuda.synchronize()
-        with torch.cuda.graph(normal_decode_graph, stream=stream):
-            graph_logits = model.forward(
-                input_ids=graph_input_ids,
-                position_embeddings=(graph_cos, graph_sin),
-                step=graph_step,
-                stream=stream,
+        first_decode_pos = prompt_len + 1
+        last_decode_pos = prompt_len + output_len - 1
+        if args.normal_flashinfer_kv_page_size is None:
+            decode_page_counts = [None]
+        else:
+            page_size = args.normal_flashinfer_kv_page_size
+            first_page_count = (
+                first_decode_pos + page_size - 1
+            ) // page_size
+            last_page_count = (
+                last_decode_pos + page_size - 1
+            ) // page_size
+            decode_page_counts = range(first_page_count, last_page_count + 1)
+
+        for page_count in decode_page_counts:
+            if page_count is None:
+                capture_pos = first_decode_pos
+            else:
+                model.set_flashinfer_decode_page_count(page_count)
+                page_size = args.normal_flashinfer_kv_page_size
+                capture_pos = max(
+                    first_decode_pos, (page_count - 1) * page_size + 1
+                )
+                capture_pos = min(capture_pos, last_decode_pos)
+            step.fill_(capture_pos - 1)
+            bucket_input_ids = tokens[
+                :, capture_pos - 1:capture_pos
+            ].clone()
+            bucket_cos = position_embeddings[0][
+                :, capture_pos - 1:capture_pos
+            ].clone()
+            bucket_sin = position_embeddings[1][
+                :, capture_pos - 1:capture_pos
+            ].clone()
+            bucket_step = step.clone()
+            bucket_graph = torch.cuda.CUDAGraph()
+            torch.cuda.synchronize()
+            with torch.cuda.graph(bucket_graph, stream=stream):
+                bucket_logits = model.forward(
+                    input_ids=bucket_input_ids,
+                    position_embeddings=(bucket_cos, bucket_sin),
+                    step=bucket_step,
+                    stream=stream,
+                )
+                bucket_next_token = (
+                    bucket_logits.argmax(dim=-1)
+                    if args.normal_cuda_graph_argmax else None
+                )
+            with torch.cuda.stream(stream):
+                bucket_graph.replay()
+            torch.cuda.synchronize()
+            normal_decode_graphs[page_count] = (
+                bucket_graph,
+                bucket_input_ids,
+                bucket_cos,
+                bucket_sin,
+                bucket_step,
+                bucket_logits,
+                bucket_next_token,
             )
-            if args.normal_cuda_graph_argmax:
-                graph_next_token = graph_logits.argmax(dim=-1)
-        # Materialize one replay outside the timed region.  This also catches
-        # graph construction failures before the recorded generation starts.
-        with torch.cuda.stream(stream):
-            normal_decode_graph.replay()
-        torch.cuda.synchronize()
-        print("Normal CUDA graph captured before measured generation")
+        print(
+            "Normal CUDA graph captured before measured generation "
+            f"({len(normal_decode_graphs)} decode page bucket(s))"
+        )
         reset_generation_state()
 
     if prefill_use_mpk and not decode_use_mpk:
@@ -1881,10 +1937,26 @@ if __name__ == "__main__":
                     current_sin = position_embeddings[1][:, cur_pos - 1:cur_pos]
                     default_stream = torch.cuda.current_stream()
                     stream.wait_stream(default_stream)
-                    if normal_decode_graph is None:
+                    if args.normal_flashinfer_kv_page_size is None:
+                        graph_key = None
+                    else:
+                        page_size = args.normal_flashinfer_kv_page_size
+                        graph_key = (cur_pos + page_size - 1) // page_size
+                    graph_state = normal_decode_graphs.get(graph_key)
+                    if graph_state is None:
                         raise RuntimeError(
-                            "Normal CUDA graph was not captured before timing"
+                            "Normal CUDA graph page bucket was not captured "
+                            f"for key {graph_key}"
                         )
+                    (
+                        normal_decode_graph,
+                        graph_input_ids,
+                        graph_cos,
+                        graph_sin,
+                        graph_step,
+                        graph_logits,
+                        graph_next_token,
+                    ) = graph_state
                     with torch.cuda.stream(stream):
                         graph_input_ids.copy_(current_input)
                         graph_cos.copy_(current_cos)
@@ -1894,6 +1966,7 @@ if __name__ == "__main__":
                     default_stream.wait_stream(stream)
                     logits = graph_logits
                 else:
+                    set_normal_decode_page_count(cur_pos)
                     logits = execute_decode_step(
                         model, tokens, cur_pos, position_embeddings, step, stream
                     )
@@ -1965,7 +2038,7 @@ if __name__ == "__main__":
 
         # -------- CI dumps outputs to json files ----------
         if save_path and rank == 0:
-            slice_end = min(end_idx, prompt_len + MAX_SAVE_TOKENS)
+            slice_end = min(end_idx, prompt_len + args.save_token_limit)
             token_ids = tokens[0, prompt_len:slice_end].tolist()
             out = {
                 "token_ids": token_ids,
@@ -1977,6 +2050,9 @@ if __name__ == "__main__":
                 "generate_length": tokens_generated,
                 "mode": "mpk_prefill_normal_decode" if args.mpk_policy == "prefill-only" else "torch",
                 "normal_attention": args.normal_attention,
+                "normal_flashinfer_kv_page_size": (
+                    args.normal_flashinfer_kv_page_size
+                ),
                 "normal_cuda_graph": args.normal_cuda_graph,
                 "normal_cuda_graph_argmax": args.normal_cuda_graph_argmax,
                 "normal_flashinfer_use_tensor_cores": (
@@ -2083,7 +2159,8 @@ if __name__ == "__main__":
             end_idx = step[0].item() + 1
             per_tok_ms = per_tok_ms
             slice_end = min(
-                tokens.shape[1], prompt_len + min(tokens_generated, MAX_SAVE_TOKENS)
+                tokens.shape[1],
+                prompt_len + min(tokens_generated, args.save_token_limit),
             )
             token_ids = tokens[0, prompt_len:slice_end].tolist()
             response_text = decode_tokens_safely(
@@ -2097,6 +2174,9 @@ if __name__ == "__main__":
                 "generate_length": tokens_generated,
                 "mode": "normal_prefill_mpk_decode" if args.mpk_policy == "decode-only" else "mpk",
                 "normal_attention": args.normal_attention,
+                "normal_flashinfer_kv_page_size": (
+                    args.normal_flashinfer_kv_page_size
+                ),
                 "normal_cuda_graph": args.normal_cuda_graph,
                 "normal_cuda_graph_argmax": args.normal_cuda_graph_argmax,
                 "normal_flashinfer_use_tensor_cores": (

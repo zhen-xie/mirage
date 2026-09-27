@@ -61,6 +61,8 @@ def command_for(args, prompt, backend, output):
         args.model,
         "--save-tokens",
         str(output),
+        "--save-token-limit",
+        str(args.decode_steps + 1),
     ]
     if args.no_system_message:
         command.append("--no-system-message")
@@ -366,6 +368,12 @@ def main():
         backend for backend in selected_backends if backend != "normal_sdpa"
     )
     match_counts = {backend: [] for backend in compared_backends}
+    full_match_counts = {backend: [] for backend in compared_backends}
+    full_match_fractions = {backend: [] for backend in compared_backends}
+    first_mismatches = {backend: [] for backend in compared_backends}
+    match_counts_by_128_token_window = {
+        backend: [] for backend in compared_backends
+    }
     for repeat_index in range(args.repeat):
         reference = samples["normal_sdpa"][repeat_index]["token_ids"]
         for backend in compared_backends:
@@ -374,6 +382,30 @@ def main():
                 raise ValueError(f"Insufficient saved tokens for {backend}")
             matches = positional_matches(reference, actual, compared_tokens)
             match_counts[backend].append(matches)
+            full_compared = min(len(reference), len(actual))
+            full_matches = positional_matches(reference, actual, full_compared)
+            full_match_counts[backend].append(full_matches)
+            full_match_fractions[backend].append(
+                full_matches / full_compared if full_compared else 0.0
+            )
+            first_mismatches[backend].append(next(
+                (
+                    index
+                    for index, (expected, observed) in enumerate(
+                        zip(reference, actual)
+                    )
+                    if expected != observed
+                ),
+                None,
+            ))
+            match_counts_by_128_token_window[backend].append([
+                positional_matches(
+                    reference[start:start + 128],
+                    actual[start:start + 128],
+                    min(128, full_compared - start),
+                )
+                for start in range(0, full_compared, 128)
+            ])
             if matches < required_matches:
                 raise ValueError(
                     f"{backend} matched {matches}/{compared_tokens}; "
@@ -390,6 +422,12 @@ def main():
         "compared_token_positions": compared_tokens,
         "required_token_matches": required_matches,
         "positional_matches_vs_sdpa": match_counts,
+        "full_positional_matches_vs_sdpa": full_match_counts,
+        "full_positional_match_fractions_vs_sdpa": full_match_fractions,
+        "first_mismatch_positions_vs_sdpa": first_mismatches,
+        "positional_matches_by_128_token_window_vs_sdpa": (
+            match_counts_by_128_token_window
+        ),
         "backends": {
             backend: summarize(samples[backend], args.decode_steps)
             for backend in selected_backends
@@ -420,6 +458,7 @@ def main():
         "decode_speedup_vs_sdpa",
         "phase_sum_speedup_vs_sdpa",
         "minimum_first30_matches_vs_sdpa",
+        "minimum_full_match_fraction_vs_sdpa",
     ]
     with csv_path.open("w", newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
@@ -430,6 +469,10 @@ def main():
             row["backend"] = backend
             row["minimum_first30_matches_vs_sdpa"] = (
                 min(match_counts[backend]) if backend in match_counts else compared_tokens
+            )
+            row["minimum_full_match_fraction_vs_sdpa"] = (
+                min(full_match_fractions[backend])
+                if backend in full_match_fractions else 1.0
             )
             writer.writerow(row)
 
