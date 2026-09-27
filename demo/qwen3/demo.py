@@ -184,6 +184,11 @@ if __name__ == "__main__":
         help="Capture and replay the B=1 normal FlashInfer decode step",
     )
     parser.add_argument(
+        "--normal-flashinfer-no-tensor-cores",
+        action="store_true",
+        help="Use the FlashInfer CUDA Core decode kernel instead of Tensor Core",
+    )
+    parser.add_argument(
         "--normal-fused-projections",
         action="store_true",
         help="Fuse Q/K/V and gate/up projections in the normal backend",
@@ -433,6 +438,10 @@ if __name__ == "__main__":
     print(f"Normal attention backend: {args.normal_attention.upper()}")
     print(f"Normal CUDA graph: {'ENABLED' if args.normal_cuda_graph else 'DISABLED'}")
     print(
+        "Normal FlashInfer decode cores: "
+        f"{'CUDA' if args.normal_flashinfer_no_tensor_cores else 'TENSOR'}"
+    )
+    print(
         "Normal fused projections: "
         f"{'ENABLED' if args.normal_fused_projections else 'DISABLED'}"
     )
@@ -505,6 +514,7 @@ if __name__ == "__main__":
               model = Qwen3ForCausalLM(
                   config, world_size, args.max_num_pages, args.page_size,
                   args.normal_attention,
+                  not args.normal_flashinfer_no_tensor_cores,
               )
               load_model(
                   model, f"{args.model_path}/model{rank}-mp{world_size}.safetensors"
@@ -518,6 +528,9 @@ if __name__ == "__main__":
                   max_num_pages=args.max_num_pages,
                   page_size=args.page_size,
                   attention_backend=args.normal_attention,
+                  flashinfer_use_tensor_cores=(
+                      not args.normal_flashinfer_no_tensor_cores
+                  ),
               ).to("cuda")
               tokenizer = AutoTokenizer.from_pretrained(model_name)
     else: # Use dynamic shard loader to load directly from HF and shard.
@@ -527,6 +540,7 @@ if __name__ == "__main__":
             model = Qwen3ForCausalLM(
                 config, world_size, args.max_num_pages, args.page_size,
                 args.normal_attention,
+                not args.normal_flashinfer_no_tensor_cores,
             )
 
         device = torch.device(f"cuda:{rank}")
@@ -1718,6 +1732,9 @@ if __name__ == "__main__":
                 "mode": "mpk_prefill_normal_decode" if args.mpk_policy == "prefill-only" else "torch",
                 "normal_attention": args.normal_attention,
                 "normal_cuda_graph": args.normal_cuda_graph,
+                "normal_flashinfer_use_tensor_cores": (
+                    not args.normal_flashinfer_no_tensor_cores
+                ),
                 "normal_fused_projections": args.normal_fused_projections,
                 "normal_flashinfer_rmsnorm": args.normal_flashinfer_rmsnorm,
                 "normal_flashinfer_fused_add_rmsnorm": (
@@ -1831,6 +1848,9 @@ if __name__ == "__main__":
                 "mode": "normal_prefill_mpk_decode" if args.mpk_policy == "decode-only" else "mpk",
                 "normal_attention": args.normal_attention,
                 "normal_cuda_graph": args.normal_cuda_graph,
+                "normal_flashinfer_use_tensor_cores": (
+                    not args.normal_flashinfer_no_tensor_cores
+                ),
                 "normal_fused_projections": args.normal_fused_projections,
                 "normal_flashinfer_rmsnorm": args.normal_flashinfer_rmsnorm,
                 "normal_flashinfer_fused_add_rmsnorm": (

@@ -590,7 +590,8 @@ class Qwen3PreTrainedModel(PreTrainedModel):
 
 class Qwen3Model(Qwen3PreTrainedModel):
     def __init__(self, config: Qwen3Config, world_size: int, max_num_pages: int,
-                 page_size: int, attention_backend: str = "sdpa"):
+                 page_size: int, attention_backend: str = "sdpa",
+                 flashinfer_use_tensor_cores: bool = True):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -663,7 +664,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 paged_kv_indptr_buffer=self.flashinfer_kv_indptr,
                 paged_kv_indices_buffer=self.flashinfer_kv_indices,
                 paged_kv_last_page_len_buffer=self.kv_last_page_len,
-                use_tensor_cores=True,
+                use_tensor_cores=flashinfer_use_tensor_cores,
             )
             self.decode_wrapper.plan(
                 self.flashinfer_kv_indptr,
@@ -743,10 +744,12 @@ class Qwen3Model(Qwen3PreTrainedModel):
 class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def __init__(self, config, world_size, max_num_pages, page_size,
-                 attention_backend="sdpa"):
+                 attention_backend="sdpa",
+                 flashinfer_use_tensor_cores=True):
         super().__init__(config)
         self.model = Qwen3Model(
-            config, world_size, max_num_pages, page_size, attention_backend
+            config, world_size, max_num_pages, page_size, attention_backend,
+            flashinfer_use_tensor_cores,
         )
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
