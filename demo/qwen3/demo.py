@@ -1539,6 +1539,11 @@ if __name__ == "__main__":
                                 step=graph_step,
                                 stream=stream,
                             )
+                        # Capture records the decode work but does not produce
+                        # the current step's output.  Replay once immediately
+                        # so graph_logits contains the first decoded token.
+                        with torch.cuda.stream(stream):
+                            normal_decode_graph.replay()
                     else:
                         with torch.cuda.stream(stream):
                             graph_input_ids.copy_(current_input)
