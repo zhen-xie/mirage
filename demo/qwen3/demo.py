@@ -189,6 +189,11 @@ if __name__ == "__main__":
         help="Include greedy argmax in the normal CUDA Graph",
     )
     parser.add_argument(
+        "--normal-cuda-graph-prefill",
+        action="store_true",
+        help="Capture and replay the fixed-shape B=1 normal prefill",
+    )
+    parser.add_argument(
         "--normal-flashinfer-no-tensor-cores",
         action="store_true",
         help="Use the FlashInfer CUDA Core decode kernel instead of Tensor Core",
@@ -463,6 +468,10 @@ if __name__ == "__main__":
         f"{'ENABLED' if args.normal_cuda_graph_argmax else 'DISABLED'}"
     )
     print(
+        "Normal CUDA graph prefill: "
+        f"{'ENABLED' if args.normal_cuda_graph_prefill else 'DISABLED'}"
+    )
+    print(
         "Normal FlashInfer decode cores: "
         f"{'CUDA' if args.normal_flashinfer_no_tensor_cores else 'TENSOR'}"
     )
@@ -524,6 +533,18 @@ if __name__ == "__main__":
             )
     if args.normal_cuda_graph_argmax and not args.normal_cuda_graph:
         parser.error("--normal-cuda-graph-argmax requires --normal-cuda-graph")
+    if args.normal_cuda_graph_prefill:
+        if args.backend != "normal" or args.normal_attention != "flashinfer":
+            parser.error(
+                "--normal-cuda-graph-prefill requires normal FlashInfer"
+            )
+        if args.max_num_batched_requests != 1:
+            parser.error("--normal-cuda-graph-prefill currently requires B=1")
+        if args.in_process_warmup < 1:
+            parser.error(
+                "--normal-cuda-graph-prefill requires --in-process-warmup 1 "
+                "or greater"
+            )
     if args.normal_flashinfer_kv_page_size is not None:
         if args.backend != "normal" or args.normal_attention != "flashinfer":
             parser.error(
@@ -1533,6 +1554,12 @@ if __name__ == "__main__":
     graph_step = None
     graph_logits = None
     graph_next_token = None
+    normal_prefill_graph = None
+    prefill_graph_input_ids = None
+    prefill_graph_cos = None
+    prefill_graph_sin = None
+    prefill_graph_step = None
+    prefill_graph_logits = None
 
     def reset_generation_state():
         tokens.zero_()
@@ -1610,14 +1637,41 @@ if __name__ == "__main__":
         run_generation_warmup()
         reset_generation_state()
 
+    if args.normal_cuda_graph_prefill:
+        prefill_graph_input_ids = tokens[:, :prompt_len].clone()
+        prefill_graph_cos = position_embeddings[0][:, :prompt_len].clone()
+        prefill_graph_sin = position_embeddings[1][:, :prompt_len].clone()
+        prefill_graph_step = step.clone()
+        prefill_graph_step.fill_(prompt_len - 1)
+        normal_prefill_graph = torch.cuda.CUDAGraph()
+        torch.cuda.synchronize()
+        with torch.cuda.graph(normal_prefill_graph, stream=stream):
+            prefill_graph_logits = model.forward(
+                input_ids=prefill_graph_input_ids,
+                position_embeddings=(prefill_graph_cos, prefill_graph_sin),
+                step=prefill_graph_step,
+                stream=stream,
+            )
+        with torch.cuda.stream(stream):
+            normal_prefill_graph.replay()
+        torch.cuda.synchronize()
+        print("Normal prefill CUDA graph captured before measured generation")
+        reset_generation_state()
+
     if args.normal_cuda_graph:
         # Build the reusable decode graph before the measured generation.  A
         # sacrificial prefill establishes the same KV-cache state as the first
         # real decode step; reset_generation_state() then restores the request
         # state while keeping the captured graph and its fixed tensor pointers.
-        logits = execute_prefill(
-            model, tokens, prompt_len, position_embeddings, step, stream
-        )
+        if normal_prefill_graph is not None:
+            with torch.cuda.stream(stream):
+                normal_prefill_graph.replay()
+            torch.cuda.current_stream().wait_stream(stream)
+            logits = prefill_graph_logits
+        else:
+            logits = execute_prefill(
+                model, tokens, prompt_len, position_embeddings, step, stream
+            )
         tokens[0, prompt_len] = select_normal_token(
             logits, args, model, prompt_len
         )
@@ -1702,7 +1756,17 @@ if __name__ == "__main__":
                 phase_end = torch.cuda.Event(enable_timing=True)
                 phase_start.record()
             if phase == "prefill":
-                logits = execute_prefill(model, tokens, prompt_len, position_embeddings, step, stream)
+                if normal_prefill_graph is not None:
+                    default_stream = torch.cuda.current_stream()
+                    stream.wait_stream(default_stream)
+                    with torch.cuda.stream(stream):
+                        normal_prefill_graph.replay()
+                    default_stream.wait_stream(stream)
+                    logits = prefill_graph_logits
+                else:
+                    logits = execute_prefill(
+                        model, tokens, prompt_len, position_embeddings, step, stream
+                    )
                 if args.save_prefill_kv:
                     save_prefill_kv_snapshot(args.save_prefill_kv, model, tokens,
                                              prompt_len, args.backend, args.mpk_policy)
