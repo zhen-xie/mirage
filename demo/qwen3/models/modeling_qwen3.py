@@ -229,6 +229,7 @@ class Qwen3Attention(nn.Module):
         self.head_dim = config.head_dim
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.decode_wrapper = None
         self.key_cache, self.value_cache = kv_cache
         assert kv_cache[0].ndim == 5
         assert kv_cache[0].shape == kv_cache[1].shape
@@ -314,26 +315,40 @@ class Qwen3Attention(nn.Module):
                 self.key_cache[self.layer_idx, 0, :q_len] = key_states[0]
                 self.value_cache[self.layer_idx, 0, :q_len] = value_states[0]
             else:
-                self.key_cache[self.layer_idx, 0, step] = key_states[0]
-                self.value_cache[self.layer_idx, 0, step] = value_states[0]
+                if self.attention_backend == "flashinfer":
+                    cache_positions = step.to(dtype=torch.long)
+                    self.key_cache[self.layer_idx, 0].index_copy_(
+                        0, cache_positions, key_states[0]
+                    )
+                    self.value_cache[self.layer_idx, 0].index_copy_(
+                        0, cache_positions, value_states[0]
+                    )
+                else:
+                    self.key_cache[self.layer_idx, 0, step] = key_states[0]
+                    self.value_cache[self.layer_idx, 0, step] = value_states[0]
 
             q = query_states[0]
-            kv_seq_len = q_len if q_len > 1 else step.item() + 1
             if self.attention_backend == "flashinfer":
                 flashinfer = get_flashinfer()
-                k = self.key_cache[self.layer_idx, 0, :kv_seq_len]
-                v = self.value_cache[self.layer_idx, 0, :kv_seq_len]
                 if q_len > 1:
+                    k = self.key_cache[self.layer_idx, 0, :q_len]
+                    v = self.value_cache[self.layer_idx, 0, :q_len]
                     attn_output = flashinfer.single_prefill_with_kv_cache(
                         q, k, v, causal=True, kv_layout="NHD",
                         pos_encoding_mode="NONE",
                     )
                 else:
-                    attn_output = flashinfer.single_decode_with_kv_cache(
-                        q[0], k, v, kv_layout="NHD",
-                        pos_encoding_mode="NONE", use_tensor_cores=True,
-                    ).unsqueeze(0)
+                    if self.decode_wrapper is None:
+                        raise RuntimeError("FlashInfer decode wrapper is not initialized")
+                    attn_output = self.decode_wrapper.run(
+                        query_states[:, 0],
+                        (
+                            self.key_cache[self.layer_idx],
+                            self.value_cache[self.layer_idx],
+                        ),
+                    ).unsqueeze(1)
             else:
+                kv_seq_len = q_len if q_len > 1 else step.item() + 1
                 attn_output = naive_attention(
                     q, self.key_cache, self.value_cache, kv_seq_len,
                     self.layer_idx, q_len > 1, True,
@@ -501,7 +516,44 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-        self.kv_last_page_len = torch.tensor([0], dtype=torch.int32, device="cuda")
+        # FlashInfer requires a valid last-page length during plan().  Forward
+        # updates this fixed-address buffer to the current sequence length.
+        self.kv_last_page_len = torch.ones(1, dtype=torch.int32, device="cuda")
+        self.decode_wrapper = None
+        if attention_backend == "flashinfer":
+            flashinfer = get_flashinfer()
+            self.flashinfer_workspace = torch.empty(
+                128 * 1024 * 1024, dtype=torch.uint8, device="cuda"
+            )
+            self.flashinfer_kv_indptr = torch.tensor(
+                [0, 1], dtype=torch.int32, device="cuda"
+            )
+            self.flashinfer_kv_indices = torch.tensor(
+                [0], dtype=torch.int32, device="cuda"
+            )
+            self.decode_wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(
+                self.flashinfer_workspace,
+                kv_layout="NHD",
+                use_cuda_graph=True,
+                paged_kv_indptr_buffer=self.flashinfer_kv_indptr,
+                paged_kv_indices_buffer=self.flashinfer_kv_indices,
+                paged_kv_last_page_len_buffer=self.kv_last_page_len,
+                use_tensor_cores=True,
+            )
+            self.decode_wrapper.plan(
+                self.flashinfer_kv_indptr,
+                self.flashinfer_kv_indices,
+                self.kv_last_page_len,
+                config.num_attention_heads // world_size,
+                config.num_key_value_heads // world_size,
+                config.head_dim,
+                page_size,
+                pos_encoding_mode="NONE",
+                q_data_type=torch.bfloat16,
+                kv_data_type=torch.bfloat16,
+            )
+            for layer in self.layers:
+                layer.self_attn.decode_wrapper = self.decode_wrapper
 
     def get_input_embeddings(self):
         return self.embed_tokens

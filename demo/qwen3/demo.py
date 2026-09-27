@@ -178,6 +178,11 @@ if __name__ == "__main__":
         default="sdpa",
         help="Attention implementation used by normal prefill/decode phases",
     )
+    parser.add_argument(
+        "--normal-cuda-graph",
+        action="store_true",
+        help="Capture and replay the B=1 normal FlashInfer decode step",
+    )
     parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only", "workload-aware"), default=None,
                         help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
@@ -396,6 +401,7 @@ if __name__ == "__main__":
     print(f"Execution backend: {args.backend.upper()}"
           + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
     print(f"Normal attention backend: {args.normal_attention.upper()}")
+    print(f"Normal CUDA graph: {'ENABLED' if args.normal_cuda_graph else 'DISABLED'}")
     print(f"world_size({world_size}) rank({rank})")
     if args.mpk_policy in ("prefill-only", "decode-only") and world_size != 1:
         parser.error("Mixed backend policies currently require a single GPU")
@@ -406,6 +412,22 @@ if __name__ == "__main__":
             "FlashInfer normal attention currently supports one request; "
             "batched support requires the paged batch wrappers"
         )
+    if args.normal_cuda_graph:
+        if args.normal_attention != "flashinfer":
+            parser.error("--normal-cuda-graph requires --normal-attention flashinfer")
+        if args.backend == "mpk" and args.mpk_policy != "prefill-only":
+            parser.error(
+                "--normal-cuda-graph requires a normal decode phase"
+            )
+        if not args.ignore_eos or args.do_sample:
+            parser.error(
+                "--normal-cuda-graph currently requires --ignore-eos and "
+                "greedy decoding"
+            )
+        if args.in_process_warmup < 1:
+            parser.error(
+                "--normal-cuda-graph requires --in-process-warmup 1 or greater"
+            )
     if args.save_intermediates and world_size != 1:
         parser.error("--save-intermediates currently requires a single GPU")
     if args.save_prefill_kv and world_size != 1:
@@ -1478,6 +1500,12 @@ if __name__ == "__main__":
         decode_limit = prompt_len + output_len
         start_pos = prompt_len + (args.mpk_policy == "prefill-only")
         phase_events = []
+        normal_decode_graph = None
+        graph_input_ids = None
+        graph_cos = None
+        graph_sin = None
+        graph_step = None
+        graph_logits = None
         for cur_pos in range(start_pos, decode_limit):
             phase = "prefill" if cur_pos == prompt_len else "decode"
             if args.phase_timing:
@@ -1490,7 +1518,40 @@ if __name__ == "__main__":
                     save_prefill_kv_snapshot(args.save_prefill_kv, model, tokens,
                                              prompt_len, args.backend, args.mpk_policy)
             else:
-                logits = execute_decode_step(model, tokens, cur_pos, position_embeddings, step, stream)
+                if args.normal_cuda_graph:
+                    step.fill_(cur_pos - 1)
+                    current_input = tokens[:, cur_pos - 1:cur_pos]
+                    current_cos = position_embeddings[0][:, cur_pos - 1:cur_pos]
+                    current_sin = position_embeddings[1][:, cur_pos - 1:cur_pos]
+                    default_stream = torch.cuda.current_stream()
+                    stream.wait_stream(default_stream)
+                    if normal_decode_graph is None:
+                        graph_input_ids = current_input.clone()
+                        graph_cos = current_cos.clone()
+                        graph_sin = current_sin.clone()
+                        graph_step = step.clone()
+                        normal_decode_graph = torch.cuda.CUDAGraph()
+                        torch.cuda.synchronize()
+                        with torch.cuda.graph(normal_decode_graph, stream=stream):
+                            graph_logits = model.forward(
+                                input_ids=graph_input_ids,
+                                position_embeddings=(graph_cos, graph_sin),
+                                step=graph_step,
+                                stream=stream,
+                            )
+                    else:
+                        with torch.cuda.stream(stream):
+                            graph_input_ids.copy_(current_input)
+                            graph_cos.copy_(current_cos)
+                            graph_sin.copy_(current_sin)
+                            graph_step.copy_(step)
+                            normal_decode_graph.replay()
+                    default_stream.wait_stream(stream)
+                    logits = graph_logits
+                else:
+                    logits = execute_decode_step(
+                        model, tokens, cur_pos, position_embeddings, step, stream
+                    )
             if total_num_requests == 1:
                 next_token = select_normal_token(logits, args, model, cur_pos)
                 tokens[0, cur_pos] = next_token
@@ -1564,6 +1625,7 @@ if __name__ == "__main__":
                 "generate_length": tokens_generated,
                 "mode": "mpk_prefill_normal_decode" if args.mpk_policy == "prefill-only" else "torch",
                 "normal_attention": args.normal_attention,
+                "normal_cuda_graph": args.normal_cuda_graph,
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
@@ -1668,6 +1730,7 @@ if __name__ == "__main__":
                 "generate_length": tokens_generated,
                 "mode": "normal_prefill_mpk_decode" if args.mpk_policy == "decode-only" else "mpk",
                 "normal_attention": args.normal_attention,
+                "normal_cuda_graph": args.normal_cuda_graph,
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
