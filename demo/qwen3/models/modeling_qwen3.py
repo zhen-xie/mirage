@@ -34,7 +34,10 @@ from .configuration_qwen3 import Qwen3Config
 import time
 
 import mirage as mi
-from .rope import apply_rotary_pos_emb_triton
+from .rope import (
+    apply_rotary_pos_emb_triton,
+    apply_rotary_pos_emb_triton_decode_cache,
+)
 
 
 _flashinfer = None
@@ -329,6 +332,7 @@ class Qwen3Attention(nn.Module):
         self.rope_theta = config.rope_theta
         self.is_causal = True
         self.attention_dropout = config.attention_dropout
+        self.use_fused_decode_rope_kv_cache = False
         self.q_proj = nn.Linear(
             self.hidden_size,
             (self.num_heads // world_size) * self.head_dim,
@@ -367,6 +371,9 @@ class Qwen3Attention(nn.Module):
             0,
             1,
         ).contiguous()
+
+    def enable_fused_decode_rope_kv_cache(self):
+        self.use_fused_decode_rope_kv_cache = True
 
     def forward(
         self,
@@ -413,9 +420,27 @@ class Qwen3Attention(nn.Module):
         cos, sin = position_embeddings
 
         # query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, unsqueeze_dim=2)
-        query_states, key_states = apply_rotary_pos_emb_triton(
-            query_states, key_states, cos, sin, unsqueeze_dim=2
+        fused_decode_cache = (
+            self.use_fused_decode_rope_kv_cache
+            and self.attention_backend == "flashinfer"
+            and bsz == 1
+            and q_len == 1
         )
+        if fused_decode_cache:
+            query_states = apply_rotary_pos_emb_triton_decode_cache(
+                query_states,
+                key_states,
+                value_states,
+                cos,
+                sin,
+                self.key_cache[self.layer_idx],
+                self.value_cache[self.layer_idx],
+                step,
+            )
+        else:
+            query_states, key_states = apply_rotary_pos_emb_triton(
+                query_states, key_states, cos, sin, unsqueeze_dim=2
+            )
 
         if bsz == 1:
             # Preserve the established single-request attention path.
@@ -423,7 +448,9 @@ class Qwen3Attention(nn.Module):
                 self.key_cache[self.layer_idx, 0, :q_len] = key_states[0]
                 self.value_cache[self.layer_idx, 0, :q_len] = value_states[0]
             else:
-                if self.attention_backend == "flashinfer":
+                if fused_decode_cache:
+                    pass
+                elif self.attention_backend == "flashinfer":
                     cache_positions = step.to(dtype=torch.long)
                     self.key_cache[self.layer_idx, 0].index_copy_(
                         0, cache_positions, key_states[0]
@@ -703,6 +730,10 @@ class Qwen3Model(Qwen3PreTrainedModel):
         for layer in self.layers:
             layer.mlp.enable_flashinfer_silu_and_mul()
 
+    def enable_fused_decode_rope_kv_cache(self):
+        for layer in self.layers:
+            layer.self_attn.enable_fused_decode_rope_kv_cache()
+
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
@@ -785,6 +816,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def enable_flashinfer_silu_and_mul(self):
         self.model.enable_flashinfer_silu_and_mul()
+
+    def enable_fused_decode_rope_kv_cache(self):
+        self.model.enable_fused_decode_rope_kv_cache()
 
     def superoptimize_kernels(self):
         self.model.superoptimize_kernels()

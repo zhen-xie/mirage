@@ -208,6 +208,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Use FlashInfer fused SiLU and multiply in the normal MLP",
     )
+    parser.add_argument(
+        "--normal-fused-decode-rope-kv-cache",
+        action="store_true",
+        help="Fuse decode Q/K RoPE with K/V cache writes in the normal backend",
+    )
     parser.add_argument("--mpk-policy", choices=("always", "decode-only", "prefill-only", "workload-aware"), default=None,
                         help="MPK execution policy")
     parser.add_argument("--use-mirage", action="store_true",
@@ -457,6 +462,10 @@ if __name__ == "__main__":
         "Normal FlashInfer SiLU and mul: "
         f"{'ENABLED' if args.normal_flashinfer_silu_and_mul else 'DISABLED'}"
     )
+    print(
+        "Normal fused decode RoPE and KV cache: "
+        f"{'ENABLED' if args.normal_fused_decode_rope_kv_cache else 'DISABLED'}"
+    )
     if (
         args.normal_flashinfer_rmsnorm
         or args.normal_flashinfer_fused_add_rmsnorm
@@ -492,6 +501,16 @@ if __name__ == "__main__":
         if args.in_process_warmup < 1:
             parser.error(
                 "--normal-cuda-graph requires --in-process-warmup 1 or greater"
+            )
+    if args.normal_fused_decode_rope_kv_cache:
+        if args.normal_attention != "flashinfer":
+            parser.error(
+                "--normal-fused-decode-rope-kv-cache requires "
+                "--normal-attention flashinfer"
+            )
+        if args.max_num_batched_requests != 1:
+            parser.error(
+                "--normal-fused-decode-rope-kv-cache currently requires B=1"
             )
     if args.save_intermediates and world_size != 1:
         parser.error("--save-intermediates currently requires a single GPU")
@@ -558,6 +577,8 @@ if __name__ == "__main__":
         model.enable_flashinfer_fused_add_rmsnorm()
     if args.normal_flashinfer_silu_and_mul:
         model.enable_flashinfer_silu_and_mul()
+    if args.normal_fused_decode_rope_kv_cache:
+        model.enable_fused_decode_rope_kv_cache()
 
     total_num_requests = args.max_num_batched_requests
     normal_hidden = {}
@@ -1561,6 +1582,18 @@ if __name__ == "__main__":
             :, capture_pos - 1:capture_pos
         ].clone()
         graph_step = step.clone()
+        # Materialize any shape-specialized Triton or FlashInfer kernels before
+        # CUDA Graph capture.  In particular, the fused decode RoPE/KV append
+        # kernel is not exercised by prefill and would otherwise JIT compile
+        # while the stream is being captured.
+        with torch.cuda.stream(stream):
+            _ = model.forward(
+                input_ids=graph_input_ids,
+                position_embeddings=(graph_cos, graph_sin),
+                step=graph_step,
+                stream=stream,
+            )
+        torch.cuda.synchronize()
         normal_decode_graph = torch.cuda.CUDAGraph()
         torch.cuda.synchronize()
         with torch.cuda.graph(normal_decode_graph, stream=stream):
@@ -1743,6 +1776,9 @@ if __name__ == "__main__":
                 "normal_flashinfer_silu_and_mul": (
                     args.normal_flashinfer_silu_and_mul
                 ),
+                "normal_fused_decode_rope_kv_cache": (
+                    args.normal_fused_decode_rope_kv_cache
+                ),
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
@@ -1858,6 +1894,9 @@ if __name__ == "__main__":
                 ),
                 "normal_flashinfer_silu_and_mul": (
                     args.normal_flashinfer_silu_and_mul
+                ),
+                "normal_fused_decode_rope_kv_cache": (
+                    args.normal_fused_decode_rope_kv_cache
                 ),
             }
             if total_num_requests > 1:

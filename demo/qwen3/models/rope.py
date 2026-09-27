@@ -197,3 +197,182 @@ def apply_rotary_pos_emb_triton(q, k, cos, sin, position_ids=None, unsqueeze_dim
             BLOCK_K,
         )
     return q_out, k_out
+
+
+@triton.jit
+def decode_rotary_kv_cache_kernel(
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    cos_ptr,
+    sin_ptr,
+    q_out_ptr,
+    key_cache_ptr,
+    value_cache_ptr,
+    step_ptr,
+    num_kv_heads,
+    half_dim,
+    q_stride_b,
+    q_stride_h,
+    q_stride_d,
+    k_stride_b,
+    k_stride_h,
+    k_stride_d,
+    v_stride_b,
+    v_stride_h,
+    v_stride_d,
+    cos_stride_d,
+    sin_stride_d,
+    q_out_stride_b,
+    q_out_stride_h,
+    q_out_stride_d,
+    kc_stride_b,
+    kc_stride_s,
+    kc_stride_h,
+    kc_stride_d,
+    vc_stride_b,
+    vc_stride_s,
+    vc_stride_h,
+    vc_stride_d,
+    BLOCK_K: tl.constexpr,
+):
+    pid_b = tl.program_id(0)
+    pid_h = tl.program_id(1)
+    rk = tl.arange(0, BLOCK_K // 2)
+    mask = rk < half_dim
+
+    cos = tl.load(cos_ptr + rk * cos_stride_d, mask=mask, other=1.0)
+    sin = tl.load(sin_ptr + rk * sin_stride_d, mask=mask, other=0.0)
+
+    q_offset = (
+        pid_b * q_stride_b + pid_h * q_stride_h + rk * q_stride_d
+    )
+    q_first = tl.load(q_ptr + q_offset, mask=mask, other=0.0)
+    q_second = tl.load(
+        q_ptr + q_offset + half_dim * q_stride_d,
+        mask=mask,
+        other=0.0,
+    )
+    q_out_offset = (
+        pid_b * q_out_stride_b
+        + pid_h * q_out_stride_h
+        + rk * q_out_stride_d
+    )
+    tl.store(
+        q_out_ptr + q_out_offset,
+        q_first * cos - q_second * sin,
+        mask=mask,
+    )
+    tl.store(
+        q_out_ptr + q_out_offset + half_dim * q_out_stride_d,
+        q_second * cos + q_first * sin,
+        mask=mask,
+    )
+
+    if pid_h < num_kv_heads:
+        position = tl.load(step_ptr)
+        k_offset = (
+            pid_b * k_stride_b + pid_h * k_stride_h + rk * k_stride_d
+        )
+        k_first = tl.load(k_ptr + k_offset, mask=mask, other=0.0)
+        k_second = tl.load(
+            k_ptr + k_offset + half_dim * k_stride_d,
+            mask=mask,
+            other=0.0,
+        )
+        kc_offset = (
+            pid_b * kc_stride_b
+            + position * kc_stride_s
+            + pid_h * kc_stride_h
+            + rk * kc_stride_d
+        )
+        tl.store(
+            key_cache_ptr + kc_offset,
+            k_first * cos - k_second * sin,
+            mask=mask,
+        )
+        tl.store(
+            key_cache_ptr + kc_offset + half_dim * kc_stride_d,
+            k_second * cos + k_first * sin,
+            mask=mask,
+        )
+
+        v_offset = (
+            pid_b * v_stride_b + pid_h * v_stride_h + rk * v_stride_d
+        )
+        vc_offset = (
+            pid_b * vc_stride_b
+            + position * vc_stride_s
+            + pid_h * vc_stride_h
+            + rk * vc_stride_d
+        )
+        tl.store(
+            value_cache_ptr + vc_offset,
+            tl.load(v_ptr + v_offset, mask=mask, other=0.0),
+            mask=mask,
+        )
+        tl.store(
+            value_cache_ptr + vc_offset + half_dim * vc_stride_d,
+            tl.load(
+                v_ptr + v_offset + half_dim * v_stride_d,
+                mask=mask,
+                other=0.0,
+            ),
+            mask=mask,
+        )
+
+
+def apply_rotary_pos_emb_triton_decode_cache(
+    q, k, v, cos, sin, key_cache, value_cache, step
+):
+    """Apply decode RoPE and append K/V to fixed-address paged caches."""
+    batch_size, seq_len, num_heads, head_dim = q.shape
+    _, _, num_kv_heads, _ = k.shape
+    if seq_len != 1:
+        raise ValueError("Fused decode RoPE/cache append requires one token")
+    if key_cache.shape[0] < batch_size or value_cache.shape[0] < batch_size:
+        raise ValueError("KV cache does not have one page per request")
+
+    q_out = torch.empty_like(q)
+    half_dim = head_dim // 2
+    block_k = triton.next_power_of_2(head_dim)
+    grid = (batch_size, num_heads)
+
+    with torch.cuda.device(q.device):
+        decode_rotary_kv_cache_kernel[grid](
+            q,
+            k,
+            v,
+            cos,
+            sin,
+            q_out,
+            key_cache,
+            value_cache,
+            step,
+            num_kv_heads,
+            half_dim,
+            q.stride(0),
+            q.stride(2),
+            q.stride(3),
+            k.stride(0),
+            k.stride(2),
+            k.stride(3),
+            v.stride(0),
+            v.stride(2),
+            v.stride(3),
+            cos.stride(-1),
+            sin.stride(-1),
+            q_out.stride(0),
+            q_out.stride(2),
+            q_out.stride(3),
+            key_cache.stride(0),
+            key_cache.stride(1),
+            key_cache.stride(2),
+            key_cache.stride(3),
+            value_cache.stride(0),
+            value_cache.stride(1),
+            value_cache.stride(2),
+            value_cache.stride(3),
+            BLOCK_K=block_k,
+        )
+    return q_out
