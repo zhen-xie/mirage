@@ -20,6 +20,7 @@ BACKENDS = (
     "normal_flashinfer",
     "normal_flashinfer_cuda_graph",
     "mpk_decode_only",
+    "mpk_decode_only_split_kv",
 )
 
 
@@ -64,6 +65,14 @@ def command_for(args, prompt, backend, output):
         ]
     elif backend == "mpk_decode_only":
         command += ["--backend", "mpk", "--mpk-policy", "decode-only"]
+    elif backend == "mpk_decode_only_split_kv":
+        command += [
+            "--backend",
+            "mpk",
+            "--mpk-policy",
+            "decode-only",
+            "--split-kv-cache",
+        ]
     else:
         raise ValueError(f"Unknown backend: {backend}")
     return command
