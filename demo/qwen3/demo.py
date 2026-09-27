@@ -249,6 +249,12 @@ if __name__ == "__main__":
     parser.add_argument("--page-size", default=4096, type=int, help="Page size")
     parser.add_argument("--max-num-pages", default=16, type=int, help="Max num pages")
     parser.add_argument("--output-dir", help="Output files directory")
+    parser.add_argument(
+        "--mpk-kernel-cache-dir",
+        type=str,
+        default=None,
+        help="Compile an MPK kernel once and reuse it from this directory",
+    )
     parser.add_argument("--trace-name", default="", help="Perfetto trace output name")
     parser.add_argument("--phase-timing", action="store_true",
                         help="Record normal prefill and per-step decode CUDA timings")
@@ -1572,7 +1578,26 @@ if __name__ == "__main__":
         with open(f"kernel_{rank}.cu", "w") as f:
             f.write(results["cuda_code"])
 
-        mpk.compile(output_dir=args.output_dir)
+        if args.mpk_kernel_cache_dir:
+            cache_dir = os.path.abspath(args.mpk_kernel_cache_dir)
+            python_tag = f"{os.sys.version_info.major}{os.sys.version_info.minor}"
+            required_cache_files = (
+                os.path.join(
+                    cache_dir,
+                    f"mpk_launcher_rank{rank}.cpython-{python_tag}-"
+                    "x86_64-linux-gnu.so",
+                ),
+                os.path.join(cache_dir, f"task_graph_rank{rank}.json"),
+                os.path.join(cache_dir, f"kernel_metadata_rank{rank}.json"),
+            )
+            if all(os.path.isfile(path) for path in required_cache_files):
+                print(f"Loading cached MPK kernel from: {cache_dir}")
+                mpk.load_mpk_kernel(output_dir=cache_dir)
+            else:
+                print(f"Compiling and caching MPK kernel in: {cache_dir}")
+                mpk.compile(output_dir=cache_dir)
+        else:
+            mpk.compile(output_dir=args.output_dir)
 
     # g = torch.cuda.CUDAGraph()
     stream = torch.cuda.Stream()

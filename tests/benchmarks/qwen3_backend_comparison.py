@@ -33,6 +33,11 @@ BACKENDS = (
 
 
 def command_for(args, prompt, backend, output):
+    page_size = (
+        args.mpk_page_size
+        if backend.startswith("mpk_") and args.mpk_page_size is not None
+        else args.page_size
+    )
     command = [
         sys.executable,
         str(DEMO),
@@ -47,7 +52,7 @@ def command_for(args, prompt, backend, output):
         "--in-process-warmup",
         str(args.warmup),
         "--page-size",
-        str(args.page_size),
+        str(page_size),
         "--max-num-pages",
         "1",
         "--max-num-batched-tokens",
@@ -59,6 +64,11 @@ def command_for(args, prompt, backend, output):
     ]
     if args.no_system_message:
         command.append("--no-system-message")
+    if backend.startswith("mpk_") and args.mpk_kernel_cache_dir is not None:
+        command += [
+            "--mpk-kernel-cache-dir",
+            str(args.mpk_kernel_cache_dir),
+        ]
     if (
         backend.startswith("normal_flashinfer")
         and args.flashinfer_kv_page_size is not None
@@ -276,6 +286,13 @@ def main():
     parser.add_argument("--context-length", type=int, required=True)
     parser.add_argument("--decode-steps", type=int, required=True)
     parser.add_argument("--page-size", type=int, default=4096)
+    parser.add_argument(
+        "--mpk-page-size",
+        type=int,
+        default=None,
+        help="Optional MPK-specific page size for mixed backend comparisons",
+    )
+    parser.add_argument("--mpk-kernel-cache-dir", type=Path, default=None)
     parser.add_argument("--flashinfer-kv-page-size", type=int, default=None)
     parser.add_argument(
         "--flashinfer-prefill-backend",
@@ -309,6 +326,11 @@ def main():
         parser.error("repeat must be positive")
     if args.context_length + args.decode_steps + 1 > args.page_size:
         parser.error("context and generated tokens must fit in one KV page")
+    if (
+        args.mpk_page_size is not None
+        and args.context_length + args.decode_steps + 1 > args.mpk_page_size
+    ):
+        parser.error("context and generated tokens must fit in one MPK page")
     if not 0 <= args.minimum_token_match_fraction <= 1:
         parser.error("minimum-token-match-fraction must be in [0, 1]")
 
