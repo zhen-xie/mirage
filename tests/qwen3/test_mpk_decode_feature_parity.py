@@ -26,6 +26,7 @@ def test_mpk_backend_name_does_not_claim_unverified_alignment():
     benchmark = load_benchmark_module()
     assert "mpk_decode_only_aligned_attention" not in benchmark.BACKENDS
     assert "mpk_decode_only_page128_split_kv" in benchmark.BACKENDS
+    assert "mpk_decode_only_adaptive_attention" in benchmark.BACKENDS
 
 
 def test_parity_manifest_covers_every_optimized_normal_feature():
@@ -45,4 +46,3 @@ def test_full_parity_requires_every_feature_to_pass():
         for result in benchmark.MPK_DECODE_FEATURE_PARITY.values()
     )
     assert benchmark.mpk_decode_parity_complete() is expected
-

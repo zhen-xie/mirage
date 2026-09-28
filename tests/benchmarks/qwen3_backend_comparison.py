@@ -29,10 +29,6 @@ BACKENDS = (
     "mpk_decode_only",
     "mpk_decode_only_optimized_prefill",
     "mpk_decode_only_adaptive_attention",
-    "mpk_decode_only_fused_qkv",
-    "mpk_decode_only_fused_gate_up",
-    "mpk_decode_only_fused_lm_head",
-    "mpk_decode_only_fused_all",
     "mpk_decode_only_page128_split_kv",
     "mpk_decode_only_split_kv",
 )
@@ -67,6 +63,12 @@ MPK_DECODE_FEATURE_PARITY = {
         "equivalent": False,
         "implementation": "mirage_paged_attention",
         "missing": "FlashInfer-equivalent work partition and online-softmax path",
+        "performance_note": (
+            "The adaptive MPK backend selects regular attention for maximum "
+            "sequence lengths up to 256 and 128-token split-KV chunks above "
+            "256; this matched or exceeded Optimized Normal in three B=1 "
+            "representative cases."
+        ),
     },
     "kv_page_size": {
         "equivalent": True,
@@ -74,8 +76,9 @@ MPK_DECODE_FEATURE_PARITY = {
     },
     "split_kv": {
         "equivalent": False,
-        "implementation": "mirage_fixed_chunk_split_kv",
+        "implementation": "mirage_configurable_chunk_split_kv",
         "missing": "FlashInfer-equivalent split heuristic and LSE merge",
+        "performance_note": "128-token chunks were fastest in both tested long-sequence cases.",
     },
     "qkv_projection": {
         "equivalent": True,
@@ -277,10 +280,6 @@ def command_for(args, prompt, backend, output):
     elif backend in (
         "mpk_decode_only_optimized_prefill",
         "mpk_decode_only_adaptive_attention",
-        "mpk_decode_only_fused_qkv",
-        "mpk_decode_only_fused_gate_up",
-        "mpk_decode_only_fused_lm_head",
-        "mpk_decode_only_fused_all",
     ):
         command += [
             "--backend",
@@ -301,17 +300,6 @@ def command_for(args, prompt, backend, output):
             command.append("--normal-flashinfer-silu-prefill-only")
         if backend == "mpk_decode_only_adaptive_attention":
             command += ["--mpk-attention-policy", "auto"]
-        fused_stages = {
-            "mpk_decode_only_fused_qkv": ("qkv",),
-            "mpk_decode_only_fused_gate_up": ("gate-up",),
-            "mpk_decode_only_fused_lm_head": ("lm-head",),
-            "mpk_decode_only_fused_all": ("qkv", "gate-up", "lm-head"),
-        }.get(backend)
-        if fused_stages:
-            command += [
-                "--mpk-fused-rmsnorm-linear-stages",
-                *fused_stages,
-            ]
     elif backend == "mpk_decode_only_page128_split_kv":
         command += [
             "--backend",
