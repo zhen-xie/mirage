@@ -6,6 +6,7 @@ import shutil
 import sys
 import sysconfig
 import json
+import struct
 
 from ..core import *
 from ..kernel import get_key_paths, KNGraph, TBGraph
