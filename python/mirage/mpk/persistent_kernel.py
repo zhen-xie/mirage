@@ -7,6 +7,9 @@ import sys
 import sysconfig
 import json
 import struct
+import hashlib
+from functools import lru_cache
+from pathlib import Path
 
 from ..core import *
 from ..kernel import get_key_paths, KNGraph, TBGraph
@@ -18,6 +21,32 @@ from .multigpu import (
   auto_select_allreduce_implementation
 )
 from typing import Optional
+
+
+@lru_cache(maxsize=1)
+def _kernel_source_fingerprint() -> str:
+    """Hash sources that affect a cached persistent-kernel binary."""
+    repository_root = Path(__file__).resolve().parents[3]
+    roots = (
+        repository_root / "include" / "mirage" / "persistent_kernel",
+        repository_root / "src" / "kernel",
+    )
+    sources = [Path(__file__).resolve()]
+    for root in roots:
+        if root.is_dir():
+            sources.extend(
+                path
+                for path in root.rglob("*")
+                if path.is_file()
+                and path.suffix in {".h", ".hpp", ".cuh", ".cc", ".cu"}
+            )
+    digest = hashlib.sha256()
+    for path in sorted(sources, key=lambda item: item.as_posix()):
+        digest.update(path.relative_to(repository_root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 HARD_CODE = """
 #include <Python.h>
@@ -560,6 +589,7 @@ class PersistentKernel:
             "rank": self.mpi_rank,
             "cuda_cc": self.target_cc,
             "tensor_names": sorted(self._model_tensors.keys()),
+            "kernel_source_fingerprint": _kernel_source_fingerprint(),
         }
         with open(path, "w") as f:
             json.dump(metadata, f, indent=2)
@@ -580,6 +610,7 @@ class PersistentKernel:
             ("world_size", self.world_size),
             ("rank", self.mpi_rank),
             ("cuda_cc", self.target_cc),
+            ("kernel_source_fingerprint", _kernel_source_fingerprint()),
         ]
         for key, current in checks:
             if saved.get(key) != current:

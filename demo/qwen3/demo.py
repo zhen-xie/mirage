@@ -1610,7 +1610,14 @@ if __name__ == "__main__":
             )
             if all(os.path.isfile(path) for path in required_cache_files):
                 print(f"Loading cached MPK kernel from: {cache_dir}")
-                mpk.load_mpk_kernel(output_dir=cache_dir)
+                try:
+                    mpk.load_mpk_kernel(output_dir=cache_dir)
+                except ValueError as error:
+                    print(
+                        "Cached MPK kernel is stale; recompiling it: "
+                        f"{error}"
+                    )
+                    mpk.compile(output_dir=cache_dir)
             else:
                 print(f"Compiling and caching MPK kernel in: {cache_dir}")
                 mpk.compile(output_dir=cache_dir)
@@ -2310,6 +2317,23 @@ if __name__ == "__main__":
             )
             layer0_mlp_mid_all = mpk_layer0_mlp_mid.index_select(
                 0, snapshot_indices
+            )
+            # The fused MPK gate/up weight is stored as alternating 64-column
+            # groups. Restore the conventional [all gate, all up] layout used
+            # by the normal backend before writing diagnostic snapshots.
+            mlp_groups = grid_for_rmsnorm_linear_layer(
+                2 * model.config.intermediate_size, args.use_cutlass_kernel
+            ) // 2
+            mlp_chunk = model.config.intermediate_size // mlp_groups
+            grouped_mlp_mid = layer0_mlp_mid_all.reshape(
+                *layer0_mlp_mid_all.shape[:-1], mlp_groups, 2, mlp_chunk
+            )
+            layer0_mlp_mid_all = torch.cat(
+                (
+                    grouped_mlp_mid[..., :, 0, :].flatten(-2),
+                    grouped_mlp_mid[..., :, 1, :].flatten(-2),
+                ),
+                dim=-1,
             )
             layer0_silu_mul_all = mpk_layer0_silu_mul.index_select(
                 0, snapshot_indices

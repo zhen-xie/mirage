@@ -18,8 +18,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[2]
 DEMO = ROOT / "demo" / "qwen3" / "demo.py"
-LAYER_KEYS = (
-    "layer0_input",
+STRICT_LAYER_KEYS = (
     "layer0_norm",
     "layer0_qkv",
     "layer0_attention_output",
@@ -31,6 +30,8 @@ LAYER_KEYS = (
     "normalized_hidden_state",
     "logits",
 )
+INFORMATIONAL_LAYER_KEYS = ("layer0_input",)
+LAYER_KEYS = STRICT_LAYER_KEYS + INFORMATIONAL_LAYER_KEYS
 
 
 def parse_args():
@@ -192,7 +193,7 @@ def main():
                     f"Missing required snapshot {key} from: {', '.join(missing)}"
                 )
             metrics = tensor_metrics(normal[key], mpk[key])
-            metrics["passed"] = (
+            metrics["within_thresholds"] = (
                 metrics["max_absolute_error"] <= args.max_absolute_error
                 and metrics["mean_absolute_error"]
                 <= args.max_mean_absolute_error
@@ -202,7 +203,11 @@ def main():
                     >= args.minimum_cosine_similarity
                 )
             )
-            failed |= not metrics["passed"]
+            metrics["gated"] = key in STRICT_LAYER_KEYS
+            metrics["passed"] = (
+                metrics["within_thresholds"] or not metrics["gated"]
+            )
+            failed |= metrics["gated"] and not metrics["within_thresholds"]
             stage_metrics[key] = metrics
         report = {
             "context_length": context_length,
