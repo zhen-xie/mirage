@@ -599,9 +599,15 @@ if __name__ == "__main__":
                 "or greater"
             )
     if args.normal_flashinfer_kv_page_size is not None:
-        if args.backend != "normal" or args.normal_attention != "flashinfer":
+        uses_normal_backend = (
+            args.backend == "normal"
+            or args.backend == "mpk"
+            and args.mpk_policy in ("decode-only", "prefill-only")
+        )
+        if not uses_normal_backend or args.normal_attention != "flashinfer":
             parser.error(
-                "--normal-flashinfer-kv-page-size requires normal FlashInfer"
+                "--normal-flashinfer-kv-page-size requires a normal "
+                "FlashInfer phase"
             )
         if args.max_num_batched_requests != 1:
             parser.error(
