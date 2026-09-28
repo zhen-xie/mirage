@@ -427,7 +427,7 @@ def main():
     parser.add_argument(
         "--mpk-split-kv-chunk-size",
         type=int,
-        choices=(64, 128, 256, 512),
+        choices=(64, 128, 256),
         default=256,
     )
     parser.add_argument("--flashinfer-kv-page-size", type=int, default=None)

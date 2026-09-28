@@ -374,7 +374,7 @@ if __name__ == "__main__":
         "--mpk-split-kv-chunk-size",
         type=int,
         default=256,
-        choices=(64, 128, 256, 512),
+        choices=(64, 128, 256),
         help=(
             "Tokens handled by each MPK split-KV attention task "
             "(default: 256)"
@@ -2236,12 +2236,16 @@ if __name__ == "__main__":
         run_time = starter.elapsed_time(ender)
         phase_timing_data = None
         if args.phase_timing:
+            completed_generation_length = max(
+                0,
+                step.max().item() + 1 - prompt_lengths[0].item(),
+            )
             phase_timing_data = {
                 "prefill_ms": (mpk_prefill_start.elapsed_time(mpk_prefill_end)
                                if args.mpk_policy == "always"
                                else normal_prefill_start.elapsed_time(normal_prefill_end)),
                 "decode_ms": mpk_decode_start.elapsed_time(mpk_decode_end),
-                "decode_steps": output_len - 1,
+                "decode_steps": max(completed_generation_length - 1, 0),
                 "decode_step_ms": None,
             }
             print(f"Phase timing: prefill={phase_timing_data['prefill_ms']:.3f} ms, "
