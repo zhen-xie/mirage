@@ -493,7 +493,9 @@ int TaskRegister::register_inkling_moe_router_sm100_task(
 
 int TaskRegister::register_rmsnorm_linear_task(threadblock::Graph const &bgraph,
                                                std::vector<int> const &params) {
-  assert(params.size() == 0);
+  assert(params.size() == 1);
+  float eps;
+  std::memcpy(&eps, &params[0], sizeof(float));
   int batch_size = 0, output_size = 0, reduction_size = 0, output_stride = 0;
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
@@ -531,7 +533,7 @@ int TaskRegister::register_rmsnorm_linear_task(threadblock::Graph const &bgraph,
   code.e("    task_desc->input_ptrs[1],");
   code.e("    task_desc->input_ptrs[2],");
   code.e("    runtime_config.qo_indptr_buffer[MPK_MAX_NUM_BATCHED_REQUESTS],");
-  code.e("    1e-6f,");
+  code.e("    $f,", eps);
   code.e("    task_desc->output_ptrs[0]);");
   return register_task_variant(TASK_RMS_NORM_LINEAR, code.to_string());
 }

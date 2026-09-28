@@ -255,6 +255,16 @@ if __name__ == "__main__":
         default=None,
         help="Compile an MPK kernel once and reuse it from this directory",
     )
+    parser.add_argument(
+        "--mpk-fused-rmsnorm-linear-stages",
+        nargs="+",
+        choices=("qkv", "gate-up", "lm-head"),
+        default=(),
+        help=(
+            "Experimentally fuse MPK RMSNorm with selected projections; "
+            "multiple stages may be provided"
+        ),
+    )
     parser.add_argument("--trace-name", default="", help="Perfetto trace output name")
     parser.add_argument("--phase-timing", action="store_true",
                         help="Record normal prefill and per-step decode CUDA timings")
@@ -363,6 +373,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.save_token_limit < 1:
         parser.error("--save-token-limit must be positive")
+    args.mpk_fused_rmsnorm_linear_stages = set(
+        args.mpk_fused_rmsnorm_linear_stages
+    )
+    if args.mpk_fused_rmsnorm_linear_stages and args.backend != "mpk":
+        parser.error("--mpk-fused-rmsnorm-linear-stages requires --backend mpk")
+    if args.mpk_fused_rmsnorm_linear_stages and args.save_intermediates:
+        parser.error(
+            "Fused MPK RMSNorm/linear does not materialize the normalized "
+            "snapshot required by --save-intermediates"
+        )
     if args.normal_flashinfer_fused_add_rmsnorm:
         args.normal_flashinfer_rmsnorm = True
     if (
@@ -497,6 +517,12 @@ if __name__ == "__main__":
     print("Input arguments:", args)
     print(f"Execution backend: {args.backend.upper()}"
           + (f", MPK policy: {args.mpk_policy}" if args.backend == "mpk" else ""))
+    if args.backend == "mpk":
+        fused_stages = sorted(args.mpk_fused_rmsnorm_linear_stages)
+        print(
+            "MPK fused RMSNorm/linear stages: "
+            + (", ".join(fused_stages) if fused_stages else "DISABLED")
+        )
     print(f"Normal attention backend: {args.normal_attention.upper()}")
     if args.normal_flashinfer_kv_page_size is not None:
         print(
@@ -1245,14 +1271,15 @@ if __name__ == "__main__":
                 num_groups=model.config.num_key_value_heads // world_size,
                 name=f"layer_{i}_qkv_proj",
             )
-            mpk.rmsnorm_layer(
-                input=x,
-                weight=w_norm,
-                output=rmsnorm_out,
-                grid_dim=(mpk.max_num_batched_tokens, 1, 1),
-                block_dim=(128, 1, 1),
-                eps=model.config.rms_norm_eps,
-            )
+            if "qkv" not in args.mpk_fused_rmsnorm_linear_stages:
+                mpk.rmsnorm_layer(
+                    input=x,
+                    weight=w_norm,
+                    output=rmsnorm_out,
+                    grid_dim=(mpk.max_num_batched_tokens, 1, 1),
+                    block_dim=(128, 1, 1),
+                    eps=model.config.rms_norm_eps,
+                )
             if args.save_intermediates and i == 0:
                 mpk.copy_layer(
                     input=rmsnorm_out,
@@ -1260,13 +1287,31 @@ if __name__ == "__main__":
                     grid_dim=(1, 1, 1),
                     block_dim=(128, 1, 1),
                 )
-            mpk.linear_layer(
-                input=rmsnorm_out,
-                weight=w_qkv,
-                output=attn_in,
-                grid_dim=(grid_for_rmsnorm_linear_layer(w_qkv.dim(0), args.use_cutlass_kernel), 1, 1),
-                block_dim=(128, 1, 1),
+            qkv_grid = (
+                grid_for_rmsnorm_linear_layer(
+                    w_qkv.dim(0), args.use_cutlass_kernel
+                ),
+                1,
+                1,
             )
+            if "qkv" in args.mpk_fused_rmsnorm_linear_stages:
+                mpk.rmsnorm_linear_layer(
+                    input=x,
+                    weight_norm=w_norm,
+                    weight_linear=w_qkv,
+                    output=attn_in,
+                    grid_dim=qkv_grid,
+                    block_dim=(128, 1, 1),
+                    eps=model.config.rms_norm_eps,
+                )
+            else:
+                mpk.linear_layer(
+                    input=rmsnorm_out,
+                    weight=w_qkv,
+                    output=attn_in,
+                    grid_dim=qkv_grid,
+                    block_dim=(128, 1, 1),
+                )
             if args.save_intermediates and i == 0:
                 mpk.copy_layer(
                     input=attn_in,
@@ -1413,14 +1458,15 @@ if __name__ == "__main__":
                 num_groups=rmsnorm_num_tasks//2,
                 name=f"layer_{i}_gatedup_proj",
             )
-            mpk.rmsnorm_layer(
-                input=x,
-                weight=w_norm,
-                output=rmsnorm_out,
-                grid_dim=(mpk.max_num_batched_tokens, 1, 1),
-                block_dim=(128, 1, 1),
-                eps=model.config.rms_norm_eps,
-            )
+            if "gate-up" not in args.mpk_fused_rmsnorm_linear_stages:
+                mpk.rmsnorm_layer(
+                    input=x,
+                    weight=w_norm,
+                    output=rmsnorm_out,
+                    grid_dim=(mpk.max_num_batched_tokens, 1, 1),
+                    block_dim=(128, 1, 1),
+                    eps=model.config.rms_norm_eps,
+                )
             if args.save_intermediates and i == 0:
                 mpk.copy_layer(
                     input=rmsnorm_out,
@@ -1428,13 +1474,24 @@ if __name__ == "__main__":
                     grid_dim=(1, 1, 1),
                     block_dim=(128, 1, 1),
                 )
-            mpk.linear_layer(
-                input=rmsnorm_out,
-                weight=w_gatedup,
-                output=mlp_mid,
-                grid_dim=(rmsnorm_num_tasks, 1, 1),
-                block_dim=(128, 1, 1),
-            )
+            if "gate-up" in args.mpk_fused_rmsnorm_linear_stages:
+                mpk.rmsnorm_linear_layer(
+                    input=x,
+                    weight_norm=w_norm,
+                    weight_linear=w_gatedup,
+                    output=mlp_mid,
+                    grid_dim=(rmsnorm_num_tasks, 1, 1),
+                    block_dim=(128, 1, 1),
+                    eps=model.config.rms_norm_eps,
+                )
+            else:
+                mpk.linear_layer(
+                    input=rmsnorm_out,
+                    weight=w_gatedup,
+                    output=mlp_mid,
+                    grid_dim=(rmsnorm_num_tasks, 1, 1),
+                    block_dim=(128, 1, 1),
+                )
             if args.save_intermediates and i == 0:
                 mpk.copy_layer(
                     input=mlp_mid,
@@ -1509,27 +1566,39 @@ if __name__ == "__main__":
             torch_tensor=model.model.norm.weight, name="model_norm_weight"
         )
         w_proj = mpk.attach_input(torch_tensor=lm_head_weight, name="lm_head")
-        mpk.rmsnorm_layer(
-            input=x,
-            weight=w_norm,
-            output=rmsnorm_out,
-            grid_dim=(mpk.max_num_batched_tokens, 1, 1),
-            block_dim=(128, 1, 1),
-            eps=model.config.rms_norm_eps,
-        )
-        mpk.linear_layer(
-            input=rmsnorm_out,
-            weight=w_proj,
-            output=argmax_in,
-            grid_dim=(
-                grid_for_rmsnorm_linear_layer(
-                    w_proj.dim(0), args.use_cutlass_kernel
-                ),
-                1,
-                1,
+        lm_head_grid = (
+            grid_for_rmsnorm_linear_layer(
+                w_proj.dim(0), args.use_cutlass_kernel
             ),
-            block_dim=(128, 1, 1),
+            1,
+            1,
         )
+        if "lm-head" in args.mpk_fused_rmsnorm_linear_stages:
+            mpk.rmsnorm_linear_layer(
+                input=x,
+                weight_norm=w_norm,
+                weight_linear=w_proj,
+                output=argmax_in,
+                grid_dim=lm_head_grid,
+                block_dim=(128, 1, 1),
+                eps=model.config.rms_norm_eps,
+            )
+        else:
+            mpk.rmsnorm_layer(
+                input=x,
+                weight=w_norm,
+                output=rmsnorm_out,
+                grid_dim=(mpk.max_num_batched_tokens, 1, 1),
+                block_dim=(128, 1, 1),
+                eps=model.config.rms_norm_eps,
+            )
+            mpk.linear_layer(
+                input=rmsnorm_out,
+                weight=w_proj,
+                output=argmax_in,
+                grid_dim=lm_head_grid,
+                block_dim=(128, 1, 1),
+            )
         #mpk.rmsnorm_linear_layer(
         #    input=x,
         #    weight_norm=w_norm,

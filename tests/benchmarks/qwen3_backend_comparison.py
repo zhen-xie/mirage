@@ -28,6 +28,10 @@ BACKENDS = (
     "normal_flashinfer_cuda_graph_fused_rope_kv_argmax",
     "mpk_decode_only",
     "mpk_decode_only_optimized_prefill",
+    "mpk_decode_only_fused_qkv",
+    "mpk_decode_only_fused_gate_up",
+    "mpk_decode_only_fused_lm_head",
+    "mpk_decode_only_fused_all",
     "mpk_decode_only_page128_split_kv",
     "mpk_decode_only_split_kv",
 )
@@ -151,9 +155,10 @@ def command_for(args, prompt, backend, output):
     if args.no_system_message:
         command.append("--no-system-message")
     if backend.startswith("mpk_") and args.mpk_kernel_cache_dir is not None:
+        backend_cache_dir = args.mpk_kernel_cache_dir / backend
         command += [
             "--mpk-kernel-cache-dir",
-            str(args.mpk_kernel_cache_dir),
+            str(backend_cache_dir),
         ]
     if (
         backend.startswith("normal_flashinfer")
@@ -268,7 +273,13 @@ def command_for(args, prompt, backend, output):
         ]
     elif backend == "mpk_decode_only":
         command += ["--backend", "mpk", "--mpk-policy", "decode-only"]
-    elif backend == "mpk_decode_only_optimized_prefill":
+    elif backend in (
+        "mpk_decode_only_optimized_prefill",
+        "mpk_decode_only_fused_qkv",
+        "mpk_decode_only_fused_gate_up",
+        "mpk_decode_only_fused_lm_head",
+        "mpk_decode_only_fused_all",
+    ):
         command += [
             "--backend",
             "mpk",
@@ -284,6 +295,17 @@ def command_for(args, prompt, backend, output):
             "--normal-flashinfer-prefill-backend",
             "auto",
         ]
+        fused_stages = {
+            "mpk_decode_only_fused_qkv": ("qkv",),
+            "mpk_decode_only_fused_gate_up": ("gate-up",),
+            "mpk_decode_only_fused_lm_head": ("lm-head",),
+            "mpk_decode_only_fused_all": ("qkv", "gate-up", "lm-head"),
+        }.get(backend)
+        if fused_stages:
+            command += [
+                "--mpk-fused-rmsnorm-linear-stages",
+                *fused_stages,
+            ]
     elif backend == "mpk_decode_only_page128_split_kv":
         command += [
             "--backend",
