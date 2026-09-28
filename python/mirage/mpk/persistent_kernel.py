@@ -1312,6 +1312,9 @@ class PersistentKernel:
         num_kv_heads = k_cache.dim(2)
         num_q_heads = attention_params[0]
         num_kv_chunks = attention_params[1]
+        kv_chunk_size = attention_params[2]
+        assert kv_chunk_size > 0
+        assert grid_dim[2] == num_kv_chunks
         
         rotary_embed = 0
         if cos_pos_embed is not None or sin_pos_embed is not None:
@@ -1335,7 +1338,17 @@ class PersistentKernel:
         # params[4]: max_seq_len
         # params[5]: page_size
         # params[6]: num_kv_chunks
-        params = [num_q_heads, num_kv_heads, qk_norm, rotary_embed, self.max_seq_length, self.page_size, num_kv_chunks]
+        # params[7]: kv_chunk_size
+        params = [
+            num_q_heads,
+            num_kv_heads,
+            qk_norm,
+            rotary_embed,
+            self.max_seq_length,
+            self.page_size,
+            num_kv_chunks,
+            kv_chunk_size,
+        ]
 
         tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
         assert grid_dim[0] == self.max_num_batched_requests
@@ -1385,6 +1398,8 @@ class PersistentKernel:
 
         num_q_heads = attention_params[0]
         head_dim = attention_params[1]
+        kv_chunk_size = attention_params[2]
+        assert kv_chunk_size > 0
         num_qo_heads_per_kv = num_q_heads / grid_dim[1]
         num_kv_heads = grid_dim[1]
         # params[0]: num_qo_heads_per_kv
@@ -1392,7 +1407,15 @@ class PersistentKernel:
         # params[2]: max_seq_len
         # params[3]: page_size
         # params[4]: num_kv_heads
-        params = [num_qo_heads_per_kv, head_dim, self.max_seq_length, self.page_size, num_kv_heads]
+        # params[5]: kv_chunk_size
+        params = [
+            num_qo_heads_per_kv,
+            head_dim,
+            self.max_seq_length,
+            self.page_size,
+            num_kv_heads,
+            kv_chunk_size,
+        ]
 
         tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
         tb_graph.new_input(lse, (-1, 2, -1), -1, True)

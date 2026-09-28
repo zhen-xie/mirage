@@ -3927,7 +3927,8 @@ int TaskRegister::register_paged_attention_split_kv_sm100_task(
   // params[4]: max_seq_len
   // params[5]: page_size
   // params[6]: num_kv_chunks
-  assert(params.size() == 7);
+  // params[7]: kv_chunk_size
+  assert(params.size() == 8);
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
   int num_inputs = 7;
@@ -3954,14 +3955,13 @@ int TaskRegister::register_paged_attention_split_kv_sm100_task(
   int max_seq_len = params[4];
   int page_size = params[5];
   int num_kv_chunks = params[6];
+  int seq_len_per_block = params[7];
   // Assert that k_cache has the same head_dim
   assert(input_ops[1]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[1]->output_tensors[0].dim[3]);
   assert(input_ops[2]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[2]->output_tensors[0].dim[3]);
   int max_tokens = input_ops[0]->dtensor.dim[0];
-  constexpr int SEQ_LEN_PER_BLOCK = 256;
-
   mirage::transpiler::CodeKeeper code;
   code.inc_indent();
   code.e("kernel::multitoken_paged_attention_split_kv_task_impl<bfloat16, $, "
@@ -3974,7 +3974,7 @@ int TaskRegister::register_paged_attention_split_kv_sm100_task(
          qkv_stride,
          output_size * num_kv_chunks, // o_stride should consider num_kv_chunks
          head_dim,
-         SEQ_LEN_PER_BLOCK,
+         seq_len_per_block,
          max_seq_len,
          page_size,
          max_tokens,
@@ -4010,7 +4010,8 @@ int TaskRegister::register_paged_attention_split_kv_merge_sm100_task(
   // params[2]: max_seq_len
   // params[3]: page_size
   // params[4]: num_kv_heads
-  assert(params.size() == 5);
+  // params[5]: kv_chunk_size
+  assert(params.size() == 6);
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
   int num_inputs = 2;
@@ -4033,9 +4034,9 @@ int TaskRegister::register_paged_attention_split_kv_merge_sm100_task(
   int max_seq_len = params[2];
   int page_size = params[3];
   int num_kv_heads = params[4];
+  int seq_len_per_block = params[5];
 
   int max_tokens = input_ops[0]->dtensor.dim[0];
-  constexpr int SEQ_LEN_PER_BLOCK = 256;
 
   mirage::transpiler::CodeKeeper code;
   code.inc_indent();
@@ -4048,9 +4049,9 @@ int TaskRegister::register_paged_attention_split_kv_merge_sm100_task(
          head_dim,
          max_tokens,
          true,
-         std::max(1, (max_seq_len + SEQ_LEN_PER_BLOCK - 1) /
-                         SEQ_LEN_PER_BLOCK),
-         SEQ_LEN_PER_BLOCK,
+         std::max(1, (max_seq_len + seq_len_per_block - 1) /
+                         seq_len_per_block),
+         seq_len_per_block,
          page_size);
   code.e("    task_desc->input_ptrs[0],");
   code.e("    task_desc->input_ptrs[1],");
@@ -4460,7 +4461,8 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
   // params[4]: max_seq_len
   // params[5]: page_size
   // params[6]: num_kv_chunks
-  assert(params.size() == 7);
+  // params[7]: kv_chunk_size
+  assert(params.size() == 8);
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
   int num_inputs = 7;
@@ -4487,14 +4489,13 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
   int max_seq_len = params[4];
   int page_size = params[5];
   int num_kv_chunks = params[6];
+  int seq_len_per_block = params[7];
   // Assert that k_cache has the same head_dim
   assert(input_ops[1]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[1]->output_tensors[0].dim[3]);
   assert(input_ops[2]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[2]->output_tensors[0].dim[3]);
   int max_tokens = input_ops[0]->dtensor.dim[0];
-  constexpr int SEQ_LEN_PER_BLOCK = 256;
-
   mirage::transpiler::CodeKeeper code;
   code.inc_indent();
   code.e("kernel::multitoken_paged_attention_hopper_impl<bfloat16, $, "
@@ -4508,7 +4509,7 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
          output_size *
              num_kv_chunks, /* O_STRIDE (should consider num_kv_chunks) */
          head_dim,          /* HEAD_DIM */
-         SEQ_LEN_PER_BLOCK, /* SEQ_LEN */
+         seq_len_per_block, /* SEQ_LEN */
          max_seq_len,       /* MAX_SEQ_LEN */
          page_size,         /* PAGE_SIZE */
          max_tokens,        /* MAX_TOKENS */

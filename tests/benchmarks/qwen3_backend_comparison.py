@@ -324,6 +324,8 @@ def command_for(args, prompt, backend, output):
             "--normal-flashinfer-silu-prefill-only",
             "--normal-flashinfer-prefill-backend",
             "auto",
+            "--mpk-split-kv-chunk-size",
+            str(args.mpk_split_kv_chunk_size),
         ]
     elif backend == "mpk_decode_only_split_kv":
         command += [
@@ -332,6 +334,8 @@ def command_for(args, prompt, backend, output):
             "--mpk-policy",
             "decode-only",
             "--split-kv-cache",
+            "--mpk-split-kv-chunk-size",
+            str(args.mpk_split_kv_chunk_size),
         ]
     else:
         raise ValueError(f"Unknown backend: {backend}")
@@ -420,6 +424,12 @@ def main():
         help="Optional MPK-specific page size for mixed backend comparisons",
     )
     parser.add_argument("--mpk-kernel-cache-dir", type=Path, default=None)
+    parser.add_argument(
+        "--mpk-split-kv-chunk-size",
+        type=int,
+        choices=(64, 128, 256, 512),
+        default=256,
+    )
     parser.add_argument("--flashinfer-kv-page-size", type=int, default=None)
     parser.add_argument(
         "--flashinfer-prefill-backend",

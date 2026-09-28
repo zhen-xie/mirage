@@ -370,9 +370,23 @@ if __name__ == "__main__":
                         help="Use a user-only chat template for short input-length sweeps")
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
+    parser.add_argument(
+        "--mpk-split-kv-chunk-size",
+        type=int,
+        default=256,
+        choices=(64, 128, 256, 512),
+        help=(
+            "Tokens handled by each MPK split-KV attention task "
+            "(default: 256)"
+        ),
+    )
     args = parser.parse_args()
     if args.save_token_limit < 1:
         parser.error("--save-token-limit must be positive")
+    if args.mpk_split_kv_chunk_size != 256 and not args.split_kv_cache:
+        parser.error(
+            "--mpk-split-kv-chunk-size requires --split-kv-cache"
+        )
     args.mpk_fused_rmsnorm_linear_stages = set(
         args.mpk_fused_rmsnorm_linear_stages
     )
@@ -523,6 +537,11 @@ if __name__ == "__main__":
             "MPK fused RMSNorm/linear stages: "
             + (", ".join(fused_stages) if fused_stages else "DISABLED")
         )
+        if args.split_kv_cache:
+            print(
+                "MPK split-KV chunk size: "
+                f"{args.mpk_split_kv_chunk_size} tokens"
+            )
     print(f"Normal attention backend: {args.normal_attention.upper()}")
     if args.normal_flashinfer_kv_page_size is not None:
         print(
@@ -914,7 +933,12 @@ if __name__ == "__main__":
         head_dim = model.config.head_dim
         fused_outdim_1 = (num_q_heads + 2 * num_kv_heads) * head_dim
         fused_outdim_2 = 2 * intermediate_size
-        num_kv_cache_chunks = max(1, (args.max_seq_length + 255) // 256)
+        split_kv_chunk_size = args.mpk_split_kv_chunk_size
+        num_kv_cache_chunks = max(
+            1,
+            (args.max_seq_length + split_kv_chunk_size - 1)
+            // split_kv_chunk_size,
+        )
 
         spec_decode_config = mi.mpk.spec_decode_class(
             args.spec_decode,
@@ -1365,7 +1389,11 @@ if __name__ == "__main__":
                     sin_pos_embed=sin_pos_embed,
                     lse=lse,
                     output=attn_out_tmp,
-                    attention_params=(num_local_q_heads, num_kv_cache_chunks),
+                    attention_params=(
+                        num_local_q_heads,
+                        num_kv_cache_chunks,
+                        split_kv_chunk_size,
+                    ),
                     grid_dim=(mpk.max_num_batched_requests, num_local_kv_heads, num_kv_cache_chunks),
                     block_dim=(128, 1, 1),
                 )
@@ -1374,7 +1402,11 @@ if __name__ == "__main__":
                     lse=lse,
                     output_tmp=attn_out_tmp,
                     output=attn_out,
-                    attention_params=(num_local_q_heads, head_dim),
+                    attention_params=(
+                        num_local_q_heads,
+                        head_dim,
+                        split_kv_chunk_size,
+                    ),
                     grid_dim=(mpk.max_num_batched_requests, num_local_kv_heads, 1),
                     block_dim=(128, 1, 1),
                 )
@@ -2153,6 +2185,12 @@ if __name__ == "__main__":
                 "normal_fused_decode_rope_kv_cache": (
                     args.normal_fused_decode_rope_kv_cache
                 ),
+                "mpk_split_kv": args.split_kv_cache,
+                "mpk_split_kv_chunk_size": (
+                    args.mpk_split_kv_chunk_size
+                    if args.split_kv_cache
+                    else None
+                ),
             }
             if total_num_requests > 1:
                 out["batch_size"] = total_num_requests
@@ -2276,6 +2314,12 @@ if __name__ == "__main__":
                 ),
                 "normal_fused_decode_rope_kv_cache": (
                     args.normal_fused_decode_rope_kv_cache
+                ),
+                "mpk_split_kv": args.split_kv_cache,
+                "mpk_split_kv_chunk_size": (
+                    args.mpk_split_kv_chunk_size
+                    if args.split_kv_cache
+                    else None
                 ),
             }
             if total_num_requests > 1:
