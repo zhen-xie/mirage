@@ -28,9 +28,89 @@ BACKENDS = (
     "normal_flashinfer_cuda_graph_fused_rope_kv_argmax",
     "mpk_decode_only",
     "mpk_decode_only_optimized_prefill",
-    "mpk_decode_only_aligned_attention",
+    "mpk_decode_only_page128_split_kv",
     "mpk_decode_only_split_kv",
 )
+
+
+# This manifest is deliberately explicit.  A backend may only be described as
+# aligned with Optimized Normal after every decode optimization below is marked
+# equivalent and backed by a focused correctness test.  Sharing a page size or
+# using split-KV is not sufficient.
+OPTIMIZED_NORMAL_DECODE_FEATURES = {
+    "launch_amortization": "cuda_graph",
+    "paged_attention": "flashinfer_paged_attention",
+    "kv_page_size": 128,
+    "split_kv": "flashinfer_split_kv",
+    "qkv_projection": "fused_qkv_projection",
+    "qk_norm_rope_kv_write": "fused_decode_rope_kv_write",
+    "attention_output_projection": "projection_then_fused_add_rmsnorm",
+    "rmsnorm": "flashinfer_rmsnorm",
+    "gate_up_projection": "fused_gate_up_projection",
+    "activation": "silu_and_mul",
+    "mlp_output_projection": "projection_then_residual_add",
+    "token_selection": "greedy_argmax",
+}
+
+
+MPK_DECODE_FEATURE_PARITY = {
+    "launch_amortization": {
+        "equivalent": True,
+        "implementation": "persistent_kernel",
+    },
+    "paged_attention": {
+        "equivalent": False,
+        "implementation": "mirage_paged_attention",
+        "missing": "FlashInfer-equivalent work partition and online-softmax path",
+    },
+    "kv_page_size": {
+        "equivalent": True,
+        "implementation": 128,
+    },
+    "split_kv": {
+        "equivalent": False,
+        "implementation": "mirage_fixed_chunk_split_kv",
+        "missing": "FlashInfer-equivalent split heuristic and LSE merge",
+    },
+    "qkv_projection": {
+        "equivalent": True,
+        "implementation": "single_shuffled_qkv_projection",
+    },
+    "qk_norm_rope_kv_write": {
+        "equivalent": True,
+        "implementation": "fused_in_mpk_attention_task",
+    },
+    "attention_output_projection": {
+        "equivalent": True,
+        "implementation": "fused_projection_and_residual_then_rmsnorm",
+        "note": "The fusion boundary differs but avoids the same residual materialization",
+    },
+    "rmsnorm": {
+        "equivalent": False,
+        "implementation": "mirage_rmsnorm_hopper",
+        "missing": "numerical parity test against FlashInfer RMSNorm",
+    },
+    "gate_up_projection": {
+        "equivalent": True,
+        "implementation": "single_shuffled_gate_up_projection",
+    },
+    "activation": {
+        "equivalent": True,
+        "implementation": "mirage_silu_mul",
+    },
+    "mlp_output_projection": {
+        "equivalent": True,
+        "implementation": "fused_down_projection_and_residual",
+    },
+    "token_selection": {
+        "equivalent": True,
+        "implementation": "partial_reduce_argmax_with_lowest_id_tie_break",
+    },
+}
+
+
+def mpk_decode_parity_complete():
+    return all(item["equivalent"] for item in MPK_DECODE_FEATURE_PARITY.values())
 
 
 def command_for(args, prompt, backend, output):
@@ -204,7 +284,7 @@ def command_for(args, prompt, backend, output):
             "--normal-flashinfer-prefill-backend",
             "auto",
         ]
-    elif backend == "mpk_decode_only_aligned_attention":
+    elif backend == "mpk_decode_only_page128_split_kv":
         command += [
             "--backend",
             "mpk",
@@ -437,6 +517,9 @@ def main():
         "reference_backend": "normal_sdpa",
         "compared_token_positions": compared_tokens,
         "required_token_matches": required_matches,
+        "optimized_normal_decode_features": OPTIMIZED_NORMAL_DECODE_FEATURES,
+        "mpk_decode_feature_parity": MPK_DECODE_FEATURE_PARITY,
+        "mpk_decode_feature_parity_complete": mpk_decode_parity_complete(),
         "positional_matches_vs_sdpa": match_counts,
         "full_positional_matches_vs_sdpa": full_match_counts,
         "full_positional_match_fractions_vs_sdpa": full_match_fractions,

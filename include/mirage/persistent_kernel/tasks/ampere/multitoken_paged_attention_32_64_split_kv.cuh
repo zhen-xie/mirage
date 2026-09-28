@@ -827,8 +827,9 @@ __device__ __forceinline__ void
           int offset = head_idx +
                        token_idx * NUM_KV_CHUNKS * NUM_QO_HEADS * NUM_QO_GROUPS;
 
+          // Store base-2 LSE in the same scaled score domain used by exp2.
           reinterpret_cast<float *>(lse)[offset] =
-              ptx_log2(d[m][j]) + m_local[m][j];
+              ptx_log2(d[m][j]) + m_local[m][j] * sm_scale;
         }
       }
     }

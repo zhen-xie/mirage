@@ -1244,6 +1244,7 @@ if __name__ == "__main__":
                 output=rmsnorm_out,
                 grid_dim=(mpk.max_num_batched_tokens, 1, 1),
                 block_dim=(128, 1, 1),
+                eps=model.config.rms_norm_eps,
             )
             if args.save_intermediates and i == 0:
                 mpk.copy_layer(
@@ -1411,6 +1412,7 @@ if __name__ == "__main__":
                 output=rmsnorm_out,
                 grid_dim=(mpk.max_num_batched_tokens, 1, 1),
                 block_dim=(128, 1, 1),
+                eps=model.config.rms_norm_eps,
             )
             if args.save_intermediates and i == 0:
                 mpk.copy_layer(
@@ -1506,6 +1508,7 @@ if __name__ == "__main__":
             output=rmsnorm_out,
             grid_dim=(mpk.max_num_batched_tokens, 1, 1),
             block_dim=(128, 1, 1),
+            eps=model.config.rms_norm_eps,
         )
         mpk.linear_layer(
             input=rmsnorm_out,

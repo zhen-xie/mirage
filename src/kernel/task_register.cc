@@ -16,6 +16,8 @@
 #include "mirage/kernel/operator.h"
 #include "mirage/transpiler/utils.h"
 
+#include <cstring>
+
 namespace mirage {
 namespace runtime {
 
@@ -90,7 +92,10 @@ int TaskRegister::register_embedding_task(threadblock::Graph const &bgraph,
 
 int TaskRegister::register_rmsnorm_task(threadblock::Graph const &bgraph,
                                         std::vector<int> const &params) {
-  assert(params.size() == 0);
+  assert(params.size() == 1);
+  float eps;
+  static_assert(sizeof(eps) == sizeof(params[0]));
+  std::memcpy(&eps, &params[0], sizeof(eps));
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
   int num_inputs = 2;
@@ -119,7 +124,7 @@ int TaskRegister::register_rmsnorm_task(threadblock::Graph const &bgraph,
   code.e("    task_desc->input_ptrs[0],");
   code.e("    task_desc->input_ptrs[1],");
   code.e("    task_desc->output_ptrs[0],");
-  code.e("    1e-6f);");
+  code.e("    $f);", eps);
   return register_task_variant(TASK_RMS_NORM, code.to_string());
 }
 
@@ -1522,7 +1527,10 @@ int TaskRegister::register_paged_attention_hopper_task(
 
 int TaskRegister::register_rmsnorm_hopper_task(threadblock::Graph const &bgraph,
                                                std::vector<int> const &params) {
-  assert(params.size() == 0);
+  assert(params.size() == 1);
+  float eps;
+  static_assert(sizeof(eps) == sizeof(params[0]));
+  std::memcpy(&eps, &params[0], sizeof(eps));
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
   int num_inputs = 2;
@@ -1553,7 +1561,7 @@ int TaskRegister::register_rmsnorm_hopper_task(threadblock::Graph const &bgraph,
   code.e("    task_desc->input_ptrs[0],");
   code.e("    task_desc->input_ptrs[1],");
   code.e("    task_desc->output_ptrs[0],");
-  code.e("    1e-6f);");
+  code.e("    $f);", eps);
   return register_task_variant(TASK_RMS_NORM_HOPPER, code.to_string());
 }
 

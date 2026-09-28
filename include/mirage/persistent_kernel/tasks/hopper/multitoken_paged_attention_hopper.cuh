@@ -796,8 +796,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
             int offset = head_idx + token_idx * NUM_KV_CHUNKS * NUM_QO_HEADS *
                                         NUM_QO_GROUPS;
 
+            // The merge kernel consumes base-2 LSE values. m_local contains
+            // an unscaled QK maximum, while d was accumulated with
+            // exp2(score * sm_scale), so the maximum must use the same scale.
             reinterpret_cast<float *>(lse)[offset] =
-                ptx_log2(d[m][j]) + m_local[m][j];
+                ptx_log2(d[m][j]) + m_local[m][j] * sm_scale;
           }
         }
       }
