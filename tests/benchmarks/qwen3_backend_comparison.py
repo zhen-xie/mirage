@@ -287,14 +287,16 @@ def command_for(args, prompt, backend, output):
             "decode-only",
             "--normal-attention",
             "flashinfer",
-            "--normal-cuda-graph-prefill",
             "--normal-fused-projections",
             "--normal-flashinfer-rmsnorm",
             "--normal-flashinfer-fused-add-rmsnorm",
-            "--normal-flashinfer-silu-prefill-only",
             "--normal-flashinfer-prefill-backend",
             "auto",
         ]
+        if args.cuda_graph_prefill:
+            command.append("--normal-cuda-graph-prefill")
+        if args.flashinfer_silu_prefill_only:
+            command.append("--normal-flashinfer-silu-prefill-only")
         fused_stages = {
             "mpk_decode_only_fused_qkv": ("qkv",),
             "mpk_decode_only_fused_gate_up": ("gate-up",),
@@ -445,8 +447,17 @@ def main():
 
     if args.context_length < 1 or args.decode_steps < 1:
         parser.error("context-length and decode-steps must be positive")
-    if args.warmup < 1:
-        parser.error("warmup must be at least 1 because CUDA Graph capture requires it")
+    if args.warmup < 0:
+        parser.error("warmup must be nonnegative")
+    selected_for_validation = tuple(args.backends or BACKENDS)
+    needs_cuda_graph_warmup = args.cuda_graph_prefill or any(
+        "cuda_graph" in backend for backend in selected_for_validation
+    )
+    if needs_cuda_graph_warmup and args.warmup < 1:
+        parser.error(
+            "warmup must be at least 1 when a CUDA Graph backend or prefill "
+            "CUDA Graph is selected"
+        )
     if args.repeat < 1:
         parser.error("repeat must be positive")
     if args.context_length + args.decode_steps + 1 > args.page_size:
