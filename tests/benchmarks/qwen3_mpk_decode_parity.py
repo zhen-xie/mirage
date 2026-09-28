@@ -1,8 +1,10 @@
 """Run stage-level parity gates for Optimized Normal and MPK decode.
 
-Each case starts from the same optimized Normal prefill and compares the first
+Each case starts from the same eager FlashInfer prefill and compares the first
 decode step, before autoregressive token divergence can contaminate later
-layers.  The snapshots cover every major Qwen3 decoder stage.
+layers. CUDA Graph is intentionally disabled because diagnostic snapshots are
+incompatible with its required in-process warmup; graph replay does not change
+operator math. The snapshots cover every major Qwen3 decoder stage.
 """
 
 import argparse
@@ -104,11 +106,9 @@ def common_command(args, context_length, prompt, snapshot):
         "flashinfer",
         "--normal-flashinfer-kv-page-size",
         str(args.page_size),
-        "--normal-cuda-graph-prefill",
         "--normal-fused-projections",
         "--normal-flashinfer-rmsnorm",
         "--normal-flashinfer-fused-add-rmsnorm",
-        "--normal-flashinfer-silu-prefill-only",
         "--normal-flashinfer-prefill-backend",
         "auto",
     ]
@@ -122,7 +122,6 @@ def run_backend(args, context_length, prompt, backend, case_dir):
         command += [
             "--backend",
             "normal",
-            "--normal-cuda-graph",
             "--normal-fused-decode-rope-kv-cache",
         ]
     elif backend == "mpk_page128_split_kv":

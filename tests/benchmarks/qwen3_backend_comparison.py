@@ -86,9 +86,9 @@ MPK_DECODE_FEATURE_PARITY = {
         "note": "The fusion boundary differs but avoids the same residual materialization",
     },
     "rmsnorm": {
-        "equivalent": False,
+        "equivalent": True,
         "implementation": "mirage_rmsnorm_hopper",
-        "missing": "numerical parity test against FlashInfer RMSNorm",
+        "evidence": "qwen3_rmsnorm_parity_probe.py: exact BF16 match on H100",
     },
     "gate_up_projection": {
         "equivalent": True,

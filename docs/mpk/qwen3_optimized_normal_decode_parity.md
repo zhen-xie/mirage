@@ -13,7 +13,7 @@ equivalent in `tests/benchmarks/qwen3_backend_comparison.py`.
 | QKV projection | One fused QKV projection | One shuffled QKV projection | Equivalent method |
 | Q/K norm, RoPE, KV write | Fused decode kernel | Fused in MPK attention task | Equivalent method |
 | Attention output and residual | Projection, fused add RMSNorm | Fused projection and residual, then RMSNorm | Equivalent memory fusion |
-| RMSNorm | FlashInfer RMSNorm | Mirage Hopper RMSNorm | Needs numerical parity test |
+| RMSNorm | FlashInfer RMSNorm | Mirage Hopper RMSNorm | Equivalent: exact BF16 H100 probe |
 | Gate/up projection | One fused gate/up projection | One shuffled gate/up projection | Equivalent method |
 | Activation | SiLU and multiply | Mirage SiLU and multiply | Equivalent method |
 | Down projection and residual | Projection then residual add | Fused projection and residual | Equivalent method |
