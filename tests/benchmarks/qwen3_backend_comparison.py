@@ -28,6 +28,7 @@ BACKENDS = (
     "normal_flashinfer_cuda_graph_fused_rope_kv_argmax",
     "mpk_decode_only",
     "mpk_decode_only_optimized_prefill",
+    "mpk_decode_only_adaptive_attention",
     "mpk_decode_only_fused_qkv",
     "mpk_decode_only_fused_gate_up",
     "mpk_decode_only_fused_lm_head",
@@ -275,6 +276,7 @@ def command_for(args, prompt, backend, output):
         command += ["--backend", "mpk", "--mpk-policy", "decode-only"]
     elif backend in (
         "mpk_decode_only_optimized_prefill",
+        "mpk_decode_only_adaptive_attention",
         "mpk_decode_only_fused_qkv",
         "mpk_decode_only_fused_gate_up",
         "mpk_decode_only_fused_lm_head",
@@ -297,6 +299,8 @@ def command_for(args, prompt, backend, output):
             command.append("--normal-cuda-graph-prefill")
         if args.flashinfer_silu_prefill_only:
             command.append("--normal-flashinfer-silu-prefill-only")
+        if backend == "mpk_decode_only_adaptive_attention":
+            command += ["--mpk-attention-policy", "auto"]
         fused_stages = {
             "mpk_decode_only_fused_qkv": ("qkv",),
             "mpk_decode_only_fused_gate_up": ("gate-up",),

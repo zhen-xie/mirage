@@ -371,6 +371,16 @@ if __name__ == "__main__":
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     parser.add_argument(
+        "--mpk-attention-policy",
+        choices=("default", "split-kv", "auto"),
+        default="default",
+        help=(
+            "MPK attention implementation. Auto uses the regular kernel for "
+            "maximum sequence lengths up to 256 and split-KV with 128-token "
+            "chunks for longer sequences."
+        ),
+    )
+    parser.add_argument(
         "--mpk-split-kv-chunk-size",
         type=int,
         default=256,
@@ -383,6 +393,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.save_token_limit < 1:
         parser.error("--save-token-limit must be positive")
+    if args.split_kv_cache and args.mpk_attention_policy != "default":
+        parser.error(
+            "--split-kv-cache cannot be combined with "
+            "--mpk-attention-policy"
+        )
+    requested_mpk_attention_policy = args.mpk_attention_policy
+    if args.mpk_attention_policy == "split-kv":
+        args.split_kv_cache = True
+    elif args.mpk_attention_policy == "auto":
+        args.split_kv_cache = args.max_seq_length > 256
+        if args.split_kv_cache:
+            args.mpk_split_kv_chunk_size = 128
     if args.mpk_split_kv_chunk_size != 256 and not args.split_kv_cache:
         parser.error(
             "--mpk-split-kv-chunk-size requires --split-kv-cache"
@@ -542,6 +564,12 @@ if __name__ == "__main__":
                 "MPK split-KV chunk size: "
                 f"{args.mpk_split_kv_chunk_size} tokens"
             )
+        resolved_attention = "split-kv" if args.split_kv_cache else "default"
+        print(
+            "MPK attention policy: "
+            f"{requested_mpk_attention_policy.upper()} "
+            f"(resolved: {resolved_attention.upper()})"
+        )
     print(f"Normal attention backend: {args.normal_attention.upper()}")
     if args.normal_flashinfer_kv_page_size is not None:
         print(
@@ -2186,6 +2214,7 @@ if __name__ == "__main__":
                     args.normal_fused_decode_rope_kv_cache
                 ),
                 "mpk_split_kv": args.split_kv_cache,
+                "mpk_attention_policy": requested_mpk_attention_policy,
                 "mpk_split_kv_chunk_size": (
                     args.mpk_split_kv_chunk_size
                     if args.split_kv_cache
@@ -2320,6 +2349,7 @@ if __name__ == "__main__":
                     args.normal_fused_decode_rope_kv_cache
                 ),
                 "mpk_split_kv": args.split_kv_cache,
+                "mpk_attention_policy": requested_mpk_attention_policy,
                 "mpk_split_kv_chunk_size": (
                     args.mpk_split_kv_chunk_size
                     if args.split_kv_cache
