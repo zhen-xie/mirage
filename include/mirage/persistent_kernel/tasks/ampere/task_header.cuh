@@ -9,6 +9,7 @@
 #include "embedding.cuh"
 #include "identity.cuh"
 #include "multitoken_paged_attention.cuh"
+#include "norm_linear_new.cuh"
 #include "reduction.cuh"
 #include "rmsnorm.cuh"
 #include "rotary_embedding.cuh"

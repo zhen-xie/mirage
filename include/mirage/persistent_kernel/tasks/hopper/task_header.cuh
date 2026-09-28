@@ -2,6 +2,7 @@
 #include "tasks/ampere/argmax.cuh"
 #include "tasks/ampere/embedding.cuh"
 #include "tasks/ampere/merge_splitkv.cuh"
+#include "tasks/ampere/norm_linear_new.cuh"
 #include "tasks/ampere/reduction.cuh"
 #include "tasks/ampere/silu_mul.cuh"
 
