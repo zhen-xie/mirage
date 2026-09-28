@@ -182,8 +182,15 @@ def main():
 
         stage_metrics = {}
         for key in LAYER_KEYS:
-            if key not in normal or key not in mpk:
-                raise ValueError(f"Missing required snapshot: {key}")
+            missing = [
+                name
+                for name, probe in (("optimized_normal", normal), ("mpk", mpk))
+                if key not in probe
+            ]
+            if missing:
+                raise ValueError(
+                    f"Missing required snapshot {key} from: {', '.join(missing)}"
+                )
             metrics = tensor_metrics(normal[key], mpk[key])
             metrics["passed"] = (
                 metrics["max_absolute_error"] <= args.max_absolute_error

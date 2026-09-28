@@ -721,6 +721,13 @@ if __name__ == "__main__":
             normal_hidden["last"] = output[:, -1, :].detach()
         model.model.norm.register_forward_hook(capture_normal_hidden)
     if args.save_intermediates and args.backend == "normal":
+        # Projection modules are bypassed when fused weights are enabled, so
+        # the attention and MLP modules publish their fused intermediates into
+        # this dictionary as well as supporting the legacy module hooks below.
+        model.model.layers[0].self_attn._debug_capture = normal_layer0
+        model.model.layers[0].mlp._debug_capture = normal_layer0
+        model.model.layers[0]._debug_capture = normal_layer0
+
         def capture_layer0_input(_module, _inputs, output):
             normal_layer0["input"] = output[:, -1, :].detach()
 
@@ -738,9 +745,6 @@ if __name__ == "__main__":
 
         def capture_layer0_v(_module, _inputs, output):
             normal_layer0["v"] = output[:, -1, :].detach()
-
-        def capture_layer0_after_attention(_module, inputs):
-            normal_layer0["after_attention"] = inputs[1][:, -1, :].detach()
 
         def capture_layer0_post_attention_norm(_module, _inputs, output):
             normal_layer0["post_attention_norm"] = output[:, -1, :].detach()
@@ -774,9 +778,6 @@ if __name__ == "__main__":
         )
         model.model.layers[0].self_attn.v_proj.register_forward_hook(
             capture_layer0_v
-        )
-        model.model.layers[0].mlp.register_forward_pre_hook(
-            capture_layer0_after_attention
         )
         model.model.layers[0].post_attention_layernorm.register_forward_hook(
             capture_layer0_post_attention_norm

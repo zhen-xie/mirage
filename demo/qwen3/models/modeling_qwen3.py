@@ -254,21 +254,30 @@ class Qwen3MLP(nn.Module):
     ):
         if not already_normalized:
             hidden_state = input_layernorm(hidden_state)
+        debug_capture = getattr(self, "_debug_capture", None)
+        if debug_capture is not None:
+            debug_capture["post_attention_norm"] = (
+                hidden_state[:, -1, :].detach()
+            )
         if hasattr(self, "fused_weight"):
             gate_up = torch.matmul(hidden_state, self.fused_weight)
+            gate_output, up_output = torch.chunk(gate_up, 2, dim=-1)
             if self.use_flashinfer_silu_and_mul:
                 activated = self._flashinfer_silu_and_mul(
                     gate_up, enable_pdl=False
                 )
             else:
-                gate_output, up_output = torch.chunk(gate_up, 2, dim=-1)
                 activated = self.act_fn(gate_output) * up_output
             output = self.down_proj(activated)
         else:
-            output = self.down_proj(
-                self.act_fn(self.gate_proj(hidden_state))
-                * self.up_proj(hidden_state)
-            )
+            gate_output = self.gate_proj(hidden_state)
+            up_output = self.up_proj(hidden_state)
+            activated = self.act_fn(gate_output) * up_output
+            output = self.down_proj(activated)
+        if debug_capture is not None:
+            debug_capture["gate"] = gate_output[:, -1, :].detach()
+            debug_capture["up"] = up_output[:, -1, :].detach()
+            debug_capture["silu_mul"] = activated[:, -1, :].detach()
         if self.world_size > 1:
             dist.all_reduce(output)
 
@@ -417,6 +426,11 @@ class Qwen3Attention(nn.Module):
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
+        debug_capture = getattr(self, "_debug_capture", None)
+        if debug_capture is not None:
+            debug_capture["q"] = query_states[:, -1, :].detach()
+            debug_capture["k"] = key_states[:, -1, :].detach()
+            debug_capture["v"] = value_states[:, -1, :].detach()
 
         query_states = self.q_norm(
             query_states.view(
@@ -598,6 +612,16 @@ class Qwen3DecoderLayer(nn.Module):
             )
         else:
             hidden_states = residual + hidden_states
+
+        debug_capture = getattr(self, "_debug_capture", None)
+        if debug_capture is not None:
+            after_attention = (
+                residual if self.use_flashinfer_fused_add_rmsnorm
+                else hidden_states
+            )
+            debug_capture["after_attention"] = (
+                after_attention[:, -1, :].detach()
+            )
 
         # Fully Connected
         if self.use_flashinfer_fused_add_rmsnorm:
