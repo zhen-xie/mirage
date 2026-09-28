@@ -25,6 +25,11 @@ def parse_args():
     parser.add_argument("--atol", type=float, default=0.03125)
     parser.add_argument("--mean-atol", type=float, default=0.001)
     parser.add_argument(
+        "--allow-torch-reference",
+        action="store_true",
+        help="Use the FP32 formula only when FlashInfer cannot be loaded",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("results/qwen3_rmsnorm_parity_probe"),
@@ -38,13 +43,17 @@ def torch_reference(value, weight, eps):
     return (fp32 * torch.rsqrt(variance + eps) * weight.float()).to(value.dtype)
 
 
-def flashinfer_reference(value, weight, eps):
+def flashinfer_reference(value, weight, eps, allow_torch_reference):
     try:
         import flashinfer
 
         output = flashinfer.norm.rmsnorm(value, weight, eps=eps)
         return output, "flashinfer"
     except Exception as error:
+        if not allow_torch_reference:
+            raise RuntimeError(
+                "FlashInfer RMSNorm is required for this parity gate"
+            ) from error
         print(f"FlashInfer RMSNorm unavailable: {error}")
         return torch_reference(value, weight, eps), "torch_fp32_formula"
 
@@ -62,7 +71,9 @@ def main():
     )
     weight = torch.randn(args.hidden_size, device=device, dtype=dtype)
     output = torch.full_like(value, float("nan"))
-    reference, reference_backend = flashinfer_reference(value, weight, args.eps)
+    reference, reference_backend = flashinfer_reference(
+        value, weight, args.eps, args.allow_torch_reference
+    )
 
     num_workers, num_schedulers = mirage.get_configurations_from_gpu(0)
     params = PersistentKernel.get_default_init_parameters()
