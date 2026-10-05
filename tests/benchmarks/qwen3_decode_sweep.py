@@ -26,6 +26,7 @@ BENCHMARK = Path(__file__).with_name("qwen3_decode_backend.py")
 FIELDS = (
     "batch_size", "s_in", "s_out", "context_length", "decode_steps", "repeat", "warmup",
     "page_size", "max_num_pages", "max_num_batched_tokens", "split_kv_cache",
+    "mpk_attention_policy", "optimized_normal",
     "estimated_kv_gib", "gpu_total_gib", "status", "status_reason",
     "model", "batch_prompt_mode", "prompt_sha256", "git_commit", "gpu_name", "driver_version",
     "torch_version", "torch_cuda_version", "transformers_version",
@@ -298,6 +299,8 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             args.split_kv_cache_min_batch_size > 0
             and batch_size >= args.split_kv_cache_min_batch_size
         ),
+        "mpk_attention_policy": args.mpk_attention_policy,
+        "optimized_normal": args.optimized_normal,
     }
     if any(summary.get(key) != value for key, value in expected.items()):
         raise ValueError(f"Existing summary has different parameters: {summary_path}")
@@ -456,6 +459,8 @@ def unavailable_rows(batch_size, context_length, s_out, args, environment, page_
                 args.split_kv_cache_min_batch_size > 0
                 and batch_size >= args.split_kv_cache_min_batch_size
             ),
+            "mpk_attention_policy": args.mpk_attention_policy,
+            "optimized_normal": args.optimized_normal,
             "estimated_kv_gib": estimated_kv_gib,
             "gpu_total_gib": gpu_total_gib,
             "status": status,
@@ -521,6 +526,18 @@ def main():
         help=("Use split-KV attention for MPK policies at this batch size and "
               "above; use 0 to disable automatic split-KV attention"),
     )
+    parser.add_argument(
+        "--mpk-attention-policy",
+        choices=("default", "split-kv", "auto"),
+        help=("Use an explicit MPK attention policy for every case. This "
+              "disables the legacy batch-size split-KV selector."),
+    )
+    parser.add_argument(
+        "--optimized-normal",
+        action="store_true",
+        help=("Use the optimized FlashInfer normal path as the reference and "
+              "as decode-only prefill"),
+    )
     parser.add_argument("--progress-interval-seconds", type=int, default=30,
                         help="Seconds between idle progress heartbeats; use 0 to disable them")
     parser.add_argument("--source-prompts-file", type=Path,
@@ -574,6 +591,12 @@ def main():
         parser.error("--max-mpk-batch-size must be positive")
     if args.split_kv_cache_min_batch_size < 0:
         parser.error("--split-kv-cache-min-batch-size must be nonnegative")
+    if args.mpk_attention_policy and args.split_kv_cache_min_batch_size:
+        parser.error(
+            "--mpk-attention-policy requires --split-kv-cache-min-batch-size 0"
+        )
+    if args.optimized_normal and args.warmup < 1:
+        parser.error("--optimized-normal requires --warmup >= 1")
 
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -731,6 +754,8 @@ def main():
                         args.split_kv_cache_min_batch_size > 0
                         and batch_size >= args.split_kv_cache_min_batch_size
                     ),
+                    "mpk_attention_policy": args.mpk_attention_policy,
+                    "optimized_normal": args.optimized_normal,
                     "reserve_gib": args.reserve_gib,
                     "model": args.model,
                     "prompt_sha256": prompt_sha256,
@@ -765,6 +790,12 @@ def main():
                         command.append("--include-continuous-always")
                     if manifest["split_kv_cache"]:
                         command.append("--split-kv-cache")
+                    if args.mpk_attention_policy:
+                        command += [
+                            "--mpk-attention-policy", args.mpk_attention_policy
+                        ]
+                    if args.optimized_normal:
+                        command.append("--optimized-normal")
                     log_path = case_dir / "benchmark.log"
                     progress.show(f"{case_label}: starting")
                     case_started = time.monotonic()

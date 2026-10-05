@@ -79,8 +79,23 @@ def run_case(args, prompt, policy, index, warmup):
         command.append("--no-system-message")
     if policy != "normal":
         command += ["--mpk-policy", "always" if policy == "always-continuous" else policy]
+        if args.mpk_attention_policy:
+            command += ["--mpk-attention-policy", args.mpk_attention_policy]
         if args.split_kv_cache:
             command.append("--split-kv-cache")
+    if args.optimized_normal:
+        command += [
+            "--normal-attention", "flashinfer",
+            "--normal-fused-projections",
+            "--normal-flashinfer-rmsnorm",
+            "--normal-flashinfer-fused-add-rmsnorm",
+            "--normal-flashinfer-prefill-backend", "auto",
+        ]
+        if args.batch_size == 1:
+            command += ["--normal-cuda-graph-prefill",
+                        "--normal-flashinfer-silu-prefill-only"]
+            if policy == "normal":
+                command.append("--normal-cuda-graph")
     if args.batch_size > 1:
         command += ["--max-num-batched-requests", str(args.batch_size),
                     "--batch-prompts-file", str(args.batch_prompts_file)]
@@ -164,6 +179,17 @@ def main():
                         help="Also run continuous MPK always and record its full kernel duration")
     parser.add_argument("--split-kv-cache", action="store_true",
                         help="Use split-KV attention for every MPK policy")
+    parser.add_argument(
+        "--mpk-attention-policy",
+        choices=("default", "split-kv", "auto"),
+        help="Select the MPK attention implementation independently per case",
+    )
+    parser.add_argument(
+        "--optimized-normal",
+        action="store_true",
+        help=("Use FlashInfer attention, fused projections/norms, and B=1 CUDA "
+              "Graphs for the normal path and decode-only prefill"),
+    )
     parser.add_argument("--allow-correctness-failures", action="store_true",
                         help="Record first-30 mismatches without rejecting the timing sample")
     parser.add_argument("--timeout", type=int, default=900)
@@ -177,6 +203,10 @@ def main():
     args = parser.parse_args()
     if len(set(args.policies)) != len(args.policies):
         parser.error("--policies must not contain duplicates")
+    if args.split_kv_cache and args.mpk_attention_policy:
+        parser.error("Use either --split-kv-cache or --mpk-attention-policy")
+    if args.optimized_normal and args.batch_size == 1 and args.warmup < 1:
+        parser.error("--optimized-normal requires --warmup >= 1 for B=1 CUDA Graphs")
     if args.batch_size < 1 or args.batch_size > 128:
         parser.error("batch-size must be in [1, 128] for this benchmark")
     args.max_num_pages = args.max_num_pages or max(16, args.batch_size)
@@ -287,6 +317,8 @@ def main():
         "max_num_pages": args.max_num_pages,
         "max_num_batched_tokens": args.max_num_batched_tokens,
         "split_kv_cache": args.split_kv_cache,
+        "mpk_attention_policy": args.mpk_attention_policy,
+        "optimized_normal": args.optimized_normal,
         "decode_steps": args.decode_steps,
         "warmup": args.warmup,
         "repeat": args.repeat,
