@@ -26,7 +26,7 @@ BENCHMARK = Path(__file__).with_name("qwen3_decode_backend.py")
 FIELDS = (
     "batch_size", "s_in", "s_out", "context_length", "decode_steps", "repeat", "warmup",
     "page_size", "max_num_pages", "max_num_batched_tokens", "split_kv_cache",
-    "mpk_attention_policy", "optimized_normal",
+    "mpk_attention_policy", "optimized_normal", "optimized_normal_applied",
     "estimated_kv_gib", "gpu_total_gib", "status", "status_reason",
     "model", "batch_prompt_mode", "prompt_sha256", "git_commit", "gpu_name", "driver_version",
     "torch_version", "torch_cuda_version", "transformers_version",
@@ -380,6 +380,7 @@ def load_rows(summary_path, batch_size, context_length, s_out, args, environment
             )
         rows.append({
             **expected,
+            "optimized_normal_applied": args.optimized_normal and batch_size == 1,
             "s_in": context_length,
             "s_out": s_out,
             **environment,
@@ -461,6 +462,7 @@ def unavailable_rows(batch_size, context_length, s_out, args, environment, page_
             ),
             "mpk_attention_policy": args.mpk_attention_policy,
             "optimized_normal": args.optimized_normal,
+            "optimized_normal_applied": args.optimized_normal and batch_size == 1,
             "estimated_kv_gib": estimated_kv_gib,
             "gpu_total_gib": gpu_total_gib,
             "status": status,

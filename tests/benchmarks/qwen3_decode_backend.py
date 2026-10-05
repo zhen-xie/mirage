@@ -83,7 +83,10 @@ def run_case(args, prompt, policy, index, warmup):
             command += ["--mpk-attention-policy", args.mpk_attention_policy]
         if args.split_kv_cache:
             command.append("--split-kv-cache")
-    if args.optimized_normal:
+    # The current FlashInfer normal path uses the single-request wrappers.
+    # Keep the optimized path for B=1 and fall back to the established batched
+    # SDPA path for larger batches. MPK decode remains unchanged.
+    if args.optimized_normal and args.batch_size == 1:
         command += [
             "--normal-attention", "flashinfer",
             "--normal-fused-projections",
@@ -91,11 +94,10 @@ def run_case(args, prompt, policy, index, warmup):
             "--normal-flashinfer-fused-add-rmsnorm",
             "--normal-flashinfer-prefill-backend", "auto",
         ]
-        if args.batch_size == 1:
-            command += ["--normal-cuda-graph-prefill",
-                        "--normal-flashinfer-silu-prefill-only"]
-            if policy == "normal":
-                command.append("--normal-cuda-graph")
+        command += ["--normal-cuda-graph-prefill",
+                    "--normal-flashinfer-silu-prefill-only"]
+        if policy == "normal":
+            command.append("--normal-cuda-graph")
     if args.batch_size > 1:
         command += ["--max-num-batched-requests", str(args.batch_size),
                     "--batch-prompts-file", str(args.batch_prompts_file)]
@@ -319,6 +321,7 @@ def main():
         "split_kv_cache": args.split_kv_cache,
         "mpk_attention_policy": args.mpk_attention_policy,
         "optimized_normal": args.optimized_normal,
+        "optimized_normal_applied": args.optimized_normal and args.batch_size == 1,
         "decode_steps": args.decode_steps,
         "warmup": args.warmup,
         "repeat": args.repeat,
