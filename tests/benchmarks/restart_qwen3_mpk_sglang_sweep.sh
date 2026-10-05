@@ -80,6 +80,17 @@ if [[ "$MODE" == mpk ]]; then
     export TVM_FFI_DISABLE_TORCH_C_DLPACK=1
     export FLASHINFER_USE_CUDA_NORM=1
     export NVCC_PREPEND_FLAGS="--threads 8${NVCC_PREPEND_FLAGS:+ $NVCC_PREPEND_FLAGS}"
+    CUDA_TOOLKIT=${MIRAGE_CUDA_HOME:-/opt/ohpc/pub/apps/cuda/13.3}
+    if [[ -x "$CUDA_TOOLKIT/bin/nvcc" ]]; then
+        export CUDA_HOME="$CUDA_TOOLKIT"
+        export CUDA_PATH="$CUDA_TOOLKIT"
+        export CUDACXX="$CUDA_TOOLKIT/bin/nvcc"
+        export PATH="$CUDA_TOOLKIT/bin:$PATH"
+        export LD_LIBRARY_PATH="$CUDA_TOOLKIT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+
+    printf 'CUDA compiler: %s\n' "$(command -v nvcc)"
+    nvcc --version | tail -n 1
 
     printf 'Running Python syntax checks...\n'
     python -m py_compile \
