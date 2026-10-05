@@ -6,6 +6,8 @@ warmups after model and MPK setup in that same process, then records one sample.
 
 import argparse
 import json
+import os
+import signal
 import statistics
 import subprocess
 import sys
@@ -105,15 +107,29 @@ def run_case(args, prompt, policy, index, warmup):
                 "--max-num-pages", str(args.max_num_pages),
                 "--max-num-batched-tokens", str(args.max_num_batched_tokens)]
     with log.open("w") as log_file:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         try:
-            completed = subprocess.run(command, cwd=ROOT, stdout=log_file,
-                                       stderr=subprocess.STDOUT, timeout=args.timeout,
-                                       check=False)
+            returncode = process.wait(timeout=args.timeout)
         except subprocess.TimeoutExpired as error:
-            raise RuntimeError(f"{policy} timed out; see {log}") from error
-    if completed.returncode:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            raise RuntimeError(
+                f"{policy} timed out after {args.timeout}s; its process group "
+                f"was terminated; see {log}"
+            ) from error
+    if returncode:
         tail = "\n".join(log.read_text(errors="replace").splitlines()[-80:])
-        raise RuntimeError(f"{policy} exited {completed.returncode}; {log}\n{tail}")
+        raise RuntimeError(f"{policy} exited {returncode}; {log}\n{tail}")
     data = json.loads(output.read_text())
     if data["prompt_length"] != args.context_length:
         raise ValueError(f"Unexpected prompt length in {output}")
