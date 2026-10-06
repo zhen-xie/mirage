@@ -466,7 +466,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-        self.kv_last_page_len = torch.tensor([0], dtype=torch.int32, device="cuda")
+        self.kv_last_page_len = torch.zeros(
+            max_num_pages, dtype=torch.int32, device="cuda"
+        )
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -491,7 +493,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         # decoder layers
         next_decoder_cache = None
-        self.kv_last_page_len.copy_(step + 1)
+        self.kv_last_page_len[: step.numel()].copy_(step + 1)
 
         for decoder_layer in self.layers:
             layer_outputs = decoder_layer(

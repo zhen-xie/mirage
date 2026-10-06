@@ -159,6 +159,12 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--cases",
+        nargs="+",
+        choices=[case[0] for case in CASES],
+        help="Run only the selected Step 4 cases.",
+    )
     args = parser.parse_args()
     args.output_dir = args.output_dir.resolve()
     args.cache_dir = args.output_dir / "cache"
@@ -166,9 +172,16 @@ def main():
     if args.cache_dir.exists():
         shutil.rmtree(args.cache_dir)
 
+    selected_cases = (
+        [case for case in CASES if case[0] in args.cases]
+        if args.cases else list(CASES)
+    )
+    required_shapes = {case[1] for case in selected_cases}
     references = {}
     all_passed = True
     for name, (s_in, s_out, max_seq_length) in REFERENCE_SHAPES.items():
+        if name not in required_shapes:
+            continue
         result = execute(
             args, f"reference_{name}", s_in, s_out, max_seq_length, 1
         )
@@ -183,7 +196,7 @@ def main():
         references[name] = data["token_ids"]
 
     rows = []
-    for case, shape, batch_size in CASES:
+    for case, shape, batch_size in selected_cases:
         s_in, s_out, max_seq_length = REFERENCE_SHAPES[shape]
         result = execute(
             args, case, s_in, s_out, max_seq_length, batch_size

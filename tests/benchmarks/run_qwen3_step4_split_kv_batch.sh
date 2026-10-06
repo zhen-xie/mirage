@@ -6,6 +6,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 OUTDIR=${OUTDIR:-"$ROOT/results/qwen3_step4_split_kv_batch"}
 MODEL=${MODEL:-"Qwen/Qwen3-8B"}
 TIMEOUT=${TIMEOUT:-3600}
+CASES=${CASES:-}
 BUILD_LOG="$OUTDIR/build.log"
 
 cd "$ROOT" || exit 1
@@ -52,9 +53,15 @@ else
 fi
 
 printf 'Running Step 4 split-KV batch validation...\n'
+case_args=()
+if [[ -n "$CASES" ]]; then
+    read -r -a selected_cases <<< "$CASES"
+    case_args=(--cases "${selected_cases[@]}")
+fi
 python tests/benchmarks/qwen3_step4_split_kv_batch.py \
     --model "$MODEL" \
     --timeout "$TIMEOUT" \
+    "${case_args[@]}" \
     --output-dir "$OUTDIR"
 result=$?
 
