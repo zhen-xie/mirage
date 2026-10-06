@@ -3993,7 +3993,9 @@ int TaskRegister::register_paged_attention_split_kv_sm100_task(
   assert(input_ops[2]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[2]->output_tensors[0].dim[3]);
   int max_tokens = input_ops[0]->dtensor.dim[0];
-  constexpr int SEQ_LEN_PER_BLOCK = 256;
+  assert(num_kv_chunks > 0);
+  int seq_len_per_block =
+      (max_seq_len + num_kv_chunks - 1) / num_kv_chunks;
 
   mirage::transpiler::CodeKeeper code;
   code.inc_indent();
@@ -4007,7 +4009,7 @@ int TaskRegister::register_paged_attention_split_kv_sm100_task(
          qkv_stride,
          output_size * num_kv_chunks, // o_stride should consider num_kv_chunks
          head_dim,
-         SEQ_LEN_PER_BLOCK,
+         seq_len_per_block,
          max_seq_len,
          page_size,
          max_tokens,
@@ -4071,7 +4073,16 @@ int TaskRegister::register_paged_attention_split_kv_merge_sm100_task(
   int num_kv_heads = params[4];
 
   int max_tokens = input_ops[0]->dtensor.dim[0];
-  constexpr int SEQ_LEN_PER_BLOCK = 256;
+  // The temporary LSE tensor is laid out as
+  // [token, kv_chunk * qo_head_per_kv, kv_head]. Derive the chunk count from
+  // that layout instead of assuming the historical 256-token partition.
+  // A mismatch changes the token stride in merge_splitkv: request 0 still
+  // reads offset zero, while later requests read another request's chunk slot.
+  int num_kv_chunks =
+      input_ops[0]->dtensor.dim[1] / num_q_heads_per_kv;
+  assert(num_kv_chunks > 0);
+  int seq_len_per_block =
+      (max_seq_len + num_kv_chunks - 1) / num_kv_chunks;
 
   mirage::transpiler::CodeKeeper code;
   code.inc_indent();
@@ -4084,8 +4095,8 @@ int TaskRegister::register_paged_attention_split_kv_merge_sm100_task(
          head_dim,
          max_tokens,
          true,
-         (max_seq_len / SEQ_LEN_PER_BLOCK),
-         SEQ_LEN_PER_BLOCK,
+         num_kv_chunks,
+         seq_len_per_block,
          page_size);
   code.e("    task_desc->input_ptrs[0],");
   code.e("    task_desc->input_ptrs[1],");
@@ -4553,7 +4564,9 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
   assert(input_ops[2]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[2]->output_tensors[0].dim[3]);
   int max_tokens = input_ops[0]->dtensor.dim[0];
-  constexpr int SEQ_LEN_PER_BLOCK = 256;
+  assert(num_kv_chunks > 0);
+  int seq_len_per_block =
+      (max_seq_len + num_kv_chunks - 1) / num_kv_chunks;
 
   mirage::transpiler::CodeKeeper code;
   code.inc_indent();
@@ -4568,7 +4581,7 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
          output_size *
              num_kv_chunks, /* O_STRIDE (should consider num_kv_chunks) */
          head_dim,          /* HEAD_DIM */
-         SEQ_LEN_PER_BLOCK, /* SEQ_LEN */
+         seq_len_per_block, /* SEQ_LEN */
          max_seq_len,       /* MAX_SEQ_LEN */
          page_size,         /* PAGE_SIZE */
          max_tokens,        /* MAX_TOKENS */

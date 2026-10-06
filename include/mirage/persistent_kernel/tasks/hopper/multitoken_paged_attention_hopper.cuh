@@ -353,7 +353,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
           min(seq_len - (iter + 1) * KV_TILE_SIZE, KV_TILE_SIZE);
 
       if (next_iter_len > 0) {
-        int page_idx = page_indices[(iter + 1) * KV_TILE_SIZE / PAGE_SIZE];
+        int page_idx = page_indices[
+            ((iter + 1) * KV_TILE_SIZE + kv_cache_offset) / PAGE_SIZE];
 #pragma unroll
         for (int chunk_idx = threadIdx.x - NUM_THREADS * CONSUMER_WARPGROUPS;
              chunk_idx < KV_TILE_SIZE * HEAD_DIM / CP_CHUNK_SIZE;
@@ -555,7 +556,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
       // update the KV Cache
       if (kv_tokens_to_process > 0) {
-        int page_idx = page_indices[first_kv_token_to_process / PAGE_SIZE];
+        int page_idx = page_indices[
+            (first_kv_token_to_process + kv_cache_offset) / PAGE_SIZE];
         for (int elem_idx = threadIdx.x;
              elem_idx < kv_tokens_to_process * HEAD_DIM;
              elem_idx += NUM_THREADS) {
@@ -614,7 +616,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
           int token_idx = row / NUM_QO_PER_KV;
           bool is_valid =
               (row < num_tokens * NUM_QO_PER_KV) &&
-              (col + iter * KV_TILE_SIZE <= token_idx + seq_len - num_tokens);
+              (col + iter * KV_TILE_SIZE + kv_cache_offset <=
+               token_idx + global_seq_len - num_tokens);
           x_frag_f[m][frag_idx] = is_valid ? x_frag_f[m][frag_idx] : -inf;
           m_local[m][(frag_idx & 0x3) >> 1] =
               max(m_local[m][(frag_idx & 0x3) >> 1], x_frag_f[m][frag_idx]);

@@ -393,7 +393,9 @@ if __name__ == "__main__":
             args.mpk_split_kv_chunk_size if args.split_kv_cache else 256
         )
         num_kv_cache_chunks = max(
-            1, args.max_seq_length // split_kv_chunk_size
+            1,
+            (args.max_seq_length + split_kv_chunk_size - 1)
+            // split_kv_chunk_size,
         )
         if args.split_kv_cache:
             print(
