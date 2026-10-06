@@ -71,6 +71,15 @@ def max_factor_leq_n(m: int, n: int) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--use-mirage", action="store_true", help="Use Mirage kernels")
+    parser.add_argument(
+        "--mpk-policy",
+        choices=("always", "decode-only"),
+        default="always",
+        help=(
+            "Select whether MPK runs the whole request or only decode after "
+            "a Torch prefill. This option requires --use-mirage."
+        ),
+    )
     parser.add_argument("--max-num-batched-tokens", default=8, type=int, help="Max number of tokens in a batch")
     parser.add_argument("--max-num-batched-requests", default=1, type=int, help="Max number of requests in a batch")
     parser.add_argument("--page-size", default=4096, type=int, help="Tokens per page")
@@ -164,6 +173,19 @@ if __name__ == "__main__":
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
+    if args.mpk_policy != "always" and not args.use_mirage:
+        parser.error("--mpk-policy requires --use-mirage")
+    if args.mpk_policy == "decode-only":
+        if args.spec_decode is not None:
+            parser.error("decode-only does not support speculative decoding")
+        if args.do_sample:
+            parser.error("decode-only currently supports greedy decoding only")
+        if not args.ignore_eos or args.max_new_tokens is None:
+            parser.error(
+                "decode-only requires --ignore-eos and --max-new-tokens"
+            )
+        if args.max_new_tokens < 2:
+            parser.error("decode-only requires --max-new-tokens >= 2")
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
@@ -293,6 +315,16 @@ if __name__ == "__main__":
     prompt_lengths = torch.full(
         (total_num_requests,), prompt_length, dtype=torch.int, device="cuda"
     )
+    if args.mpk_policy == "decode-only":
+        if args.page_size < args.max_seq_length:
+            parser.error(
+                "decode-only currently requires one KV page per request: "
+                "--page-size must be at least --max-seq-length"
+            )
+        if max_num_pages < total_num_requests:
+            parser.error(
+                "decode-only requires at least one KV page per request"
+            )
     positions = torch.arange(32768).unsqueeze(0).to(model.device)
     position_embeddings = model.model.rotary_emb(positions)
 
@@ -879,7 +911,14 @@ if __name__ == "__main__":
     if not args.use_mirage:
         prompt_len = prompt_lengths[0].item()
         decode_limit = prompt_len + output_len
+        prefill_starter = torch.cuda.Event(enable_timing=True)
+        prefill_ender = torch.cuda.Event(enable_timing=True)
+        decode_starter = torch.cuda.Event(enable_timing=True)
+        decode_ender = torch.cuda.Event(enable_timing=True)
+        prefill_starter.record()
         for cur_pos in range(prompt_len, decode_limit):
+            if cur_pos == prompt_len + 1:
+                decode_starter.record()
             step.fill_(cur_pos - 1)
             input_ids = tokens[:, prev_pos:cur_pos]
             cos_embeddings = position_embeddings[0][:, prev_pos:cur_pos]
@@ -914,27 +953,34 @@ if __name__ == "__main__":
             next_token = next_token[0, -1]
             tokens[0, cur_pos] = next_token
             prev_pos = cur_pos
+            if cur_pos == prompt_len:
+                prefill_ender.record()
             if (not args.ignore_eos
                     and next_token == model.config.eos_token_id):
                 break
-            if cur_pos == prompt_len + warmup:
-                torch.cuda.synchronize()
-                starter.record()
 
-        ender.record()
+        decode_ender.record()
         torch.cuda.synchronize()
-        run_time = starter.elapsed_time(ender)
+        prefill_time = prefill_starter.elapsed_time(prefill_ender)
+        decode_steps = max(0, output_len - 1)
+        decode_time = (
+            decode_starter.elapsed_time(decode_ender) if decode_steps else 0.0
+        )
+        run_time = prefill_time + decode_time
 
         end_idx = prev_pos + 1
         generated_ids = tokens[:, :end_idx]
         tokens_generated = max(0, end_idx - prompt_len)
-        per_tok_ms = run_time / max(prompt_len + tokens_generated, 1)
+        decode_step_ms = decode_time / max(decode_steps, 1)
+        per_tok_ms = run_time / max(tokens_generated, 1)
 
         response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
         print(response)
         print(
-            "Prompt length {}, generate length {}, per-token latency {:.3f} ms".format(
-                prompt_len, tokens_generated, per_tok_ms
+            "Prompt length {}, generate length {}, prefill {:.3f} ms, "
+            "decode {:.3f} ms, decode-step {:.3f} ms".format(
+                prompt_len, tokens_generated, prefill_time, decode_time,
+                decode_step_ms,
             )
         )
 
@@ -951,6 +997,10 @@ if __name__ == "__main__":
                 "token_ids": token_ids,
                 "text": tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True),
                 "total_time_ms": run_time,
+                "prefill_time_ms": prefill_time,
+                "decode_time_ms": decode_time,
+                "decode_steps": decode_steps,
+                "decode_step_time_ms": decode_step_ms,
                 "latency_ms_per_token": per_tok_ms,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
@@ -964,11 +1014,44 @@ if __name__ == "__main__":
             print(f"Saved tokens to {save_path}")
 
     else:
-        starter.record()
+        prompt_len = prompt_lengths[0].item()
+        prefill_time = None
+        decode_time = None
+        decode_steps = None
+        if args.mpk_policy == "decode-only":
+            # Torch and MPK share model.model.kv_cache. Torch writes the prompt
+            # K/V entries and produces the first generated token. Seeding step
+            # at prompt_len lets the offline MPK scheduler resume from there.
+            step.fill_(prompt_len - 1)
+            prefill_starter = torch.cuda.Event(enable_timing=True)
+            prefill_ender = torch.cuda.Event(enable_timing=True)
+            prefill_starter.record()
+            prefill_logits = model.forward(
+                input_ids=tokens[:, :prompt_len],
+                position_embeddings=(
+                    position_embeddings[0][:, :prompt_len],
+                    position_embeddings[1][:, :prompt_len],
+                ),
+                step=step,
+                stream=stream,
+            )
+            tokens[:, prompt_len] = prefill_logits[:, -1].argmax(dim=-1)
+            step.fill_(prompt_len)
+            prefill_ender.record()
+            starter.record()
+        else:
+            starter.record()
         mpk()
         ender.record()
         torch.cuda.synchronize()
-        run_time = starter.elapsed_time(ender)
+        mpk_time = starter.elapsed_time(ender)
+        if args.mpk_policy == "decode-only":
+            prefill_time = prefill_starter.elapsed_time(prefill_ender)
+            decode_time = mpk_time
+            decode_steps = max(0, output_len - 1)
+            run_time = prefill_time + decode_time
+        else:
+            run_time = mpk_time
 
         print("tokens.shape = ", tokens.shape)
         for r in range(total_num_requests):
@@ -980,12 +1063,27 @@ if __name__ == "__main__":
             print(f"Output length of each batch is same: {(step.max() == step.min()).item()}")
 
         tokens_generated = step.max().item() + 1 - prompt_lengths[0].item()
-        per_tok_ms = run_time / max(prompt_lengths[0].item() + tokens_generated, 1)
-
-        print("Prompt length {}, generate length {}, per-token latency: {:.3f} ms".format(
-              prompt_lengths[0], tokens_generated, per_tok_ms
-            )
+        decode_step_ms = (
+            decode_time / max(decode_steps, 1)
+            if decode_time is not None else None
         )
+        per_tok_ms = run_time / max(tokens_generated, 1)
+
+        if args.mpk_policy == "decode-only":
+            print(
+                "Prompt length {}, generate length {}, prefill {:.3f} ms, "
+                "decode {:.3f} ms, decode-step {:.3f} ms".format(
+                    prompt_lengths[0], tokens_generated, prefill_time,
+                    decode_time, decode_step_ms,
+                )
+            )
+        else:
+            print(
+                "Prompt length {}, generate length {}, total latency: "
+                "{:.3f} ms".format(
+                    prompt_lengths[0], tokens_generated, run_time
+                )
+            )
 
         # -------- CI dumps outputs to json files ----------
         if save_path and rank == 0:
@@ -1005,13 +1103,20 @@ if __name__ == "__main__":
                 "token_ids": token_ids,
                 "text": response_text,
                 "total_time_ms": run_time,
+                "prefill_time_ms": prefill_time,
+                "decode_time_ms": decode_time,
+                "decode_steps": decode_steps,
+                "decode_step_time_ms": decode_step_ms,
                 "latency_ms_per_token": per_tok_ms,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
                 "requested_generate_length": output_len,
                 "vocab_size": model.config.vocab_size,
                 "invalid_token_count": invalid_token_count,
-                "mode": "mpk",
+                "mode": (
+                    "normal_prefill_mpk_decode"
+                    if args.mpk_policy == "decode-only" else "mpk_always"
+                ),
             }
             with open(save_path, "w") as f:
                 json.dump(out, f, indent=2)
