@@ -2463,8 +2463,19 @@ class PersistentKernel:
         assert input.num_dims == 2  # (batch_size, hidden_size / world_size)
         assert weight.num_dims == 2  # (hidden_size, hidden_size / world_size)
         assert output.num_dims == 2  # (batch_size, hidden_size)
-        tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
-        tb_graph.new_input(input, (-1, -1, -1), 1, True)
+        # Hopper's swapAB kernel handles at most 16 rows per task. Partition
+        # larger token batches over grid.y so each task receives a <=16-row
+        # view instead of instantiating an unsupported BATCH_SIZE=32/128
+        # kernel. Choose a divisor to keep every tile the same size.
+        batch_tiles = 1
+        if self.target_cc == 90 and input.dim(0) > 16:
+            batch_tiles = (input.dim(0) + 15) // 16
+            while input.dim(0) % batch_tiles != 0:
+                batch_tiles += 1
+        effective_grid_dim = (grid_dim[0], batch_tiles, grid_dim[2])
+        batch_map = 0 if batch_tiles > 1 else -1
+        tb_graph = TBGraph(CyTBGraph(effective_grid_dim, block_dim, 1, 64))
+        tb_graph.new_input(input, (-1, batch_map, -1), 1, True)
         tb_graph.new_input(weight, (0, -1, -1), 1, True)
         if bias is not None:
             assert bias.num_dims == 2  # (1, hidden_size) -- one shared row
@@ -2472,7 +2483,7 @@ class PersistentKernel:
             assert bias.dim(1) == output.dim(1)
             # Same partition as the output: each task takes its column slice.
             tb_graph.new_input(bias, (1, -1, -1), -1, True)
-        tb_graph.new_input(output, (1, -1, -1), -1, True)
+        tb_graph.new_input(output, (1, batch_map, -1), -1, True)
         graph_inputs = [input, weight] + ([bias] if bias is not None else [])
         self.kn_graph.customized(graph_inputs + [output], tb_graph)
 
@@ -2523,11 +2534,18 @@ class PersistentKernel:
         assert weight.num_dims == 2  # (hidden_size, hidden_size / world_size)
         assert residual.num_dims == 2  # (batch_size, hidden_size)
         assert output.num_dims == 2  # (batch_size, hidden_size)
-        tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
-        tb_graph.new_input(input, (-1, -1, -1), 1, True)
+        batch_tiles = 1
+        if self.target_cc == 90 and input.dim(0) > 16:
+            batch_tiles = (input.dim(0) + 15) // 16
+            while input.dim(0) % batch_tiles != 0:
+                batch_tiles += 1
+        effective_grid_dim = (grid_dim[0], batch_tiles, grid_dim[2])
+        batch_map = 0 if batch_tiles > 1 else -1
+        tb_graph = TBGraph(CyTBGraph(effective_grid_dim, block_dim, 1, 64))
+        tb_graph.new_input(input, (-1, batch_map, -1), 1, True)
         tb_graph.new_input(weight, (0, -1, -1), 1, True)
-        tb_graph.new_input(residual, (1, -1, -1), -1, True)
-        tb_graph.new_input(output, (1, -1, -1), -1, True)
+        tb_graph.new_input(residual, (1, batch_map, -1), -1, True)
+        tb_graph.new_input(output, (1, batch_map, -1), -1, True)
         self.kn_graph.customized([input, weight, residual, output], tb_graph)
         
         params = []

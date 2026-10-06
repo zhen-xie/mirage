@@ -26,7 +26,6 @@ if [[ -x "$CUDA_TOOLKIT/bin/nvcc" ]]; then
     export LD_LIBRARY_PATH="$CUDA_TOOLKIT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-printf 'Git commit: %s\n' "$(git rev-parse HEAD)"
 printf 'CUDA compiler: %s\n' "$(command -v nvcc)"
 nvcc --version | tail -n 1
 

@@ -3992,7 +3992,11 @@ int TaskRegister::register_paged_attention_split_kv_sm100_task(
   assert(head_dim == input_ops[1]->output_tensors[0].dim[3]);
   assert(input_ops[2]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[2]->output_tensors[0].dim[3]);
-  int max_tokens = input_ops[0]->dtensor.dim[0];
+  // Each split-attention task handles one request. The graph-level token
+  // buffer grows with batch size, but a decode request contributes one token.
+  // Keep the established per-request capacity so shared memory does not scale
+  // with B=32/128.
+  int max_tokens = std::min(input_ops[0]->dtensor.dim[0], 8);
   assert(num_kv_chunks > 0);
   int seq_len_per_block =
       (max_seq_len + num_kv_chunks - 1) / num_kv_chunks;
@@ -4563,7 +4567,11 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
   assert(head_dim == input_ops[1]->output_tensors[0].dim[3]);
   assert(input_ops[2]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[2]->output_tensors[0].dim[3]);
-  int max_tokens = input_ops[0]->dtensor.dim[0];
+  // Each split-attention task handles one request. The graph-level token
+  // buffer grows with batch size, but a decode request contributes one token.
+  // Keep the established per-request capacity so shared memory does not scale
+  // with B=32/128.
+  int max_tokens = std::min(input_ops[0]->dtensor.dim[0], 8);
   assert(num_kv_chunks > 0);
   int seq_len_per_block =
       (max_seq_len + num_kv_chunks - 1) / num_kv_chunks;
