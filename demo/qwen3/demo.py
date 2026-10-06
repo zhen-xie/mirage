@@ -152,12 +152,29 @@ if __name__ == "__main__":
         default="Give me a short introduction to large language model.",
         help="Custom prompt text to generate from.",
     )
+    parser.add_argument(
+        "--input-length",
+        type=int,
+        default=None,
+        help=(
+            "Use a deterministic synthetic prompt with exactly this many "
+            "tokens. This bypasses chat-template tokenization."
+        ),
+    )
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     args = parser.parse_args()
     if args.do_sample and args.temperature <= 0.0:
         parser.error("--do-sample needs --temperature > 0 "
                      "(temperature 0 is greedy decoding, i.e. no --do-sample)")
+    if args.input_length is not None:
+        if args.input_length <= 0:
+            parser.error("--input-length must be positive")
+        if args.input_length >= args.max_seq_length:
+            parser.error("--input-length must be smaller than --max-seq-length")
+        if (args.max_new_tokens is not None
+                and args.input_length + args.max_new_tokens > args.max_seq_length):
+            parser.error("--input-length + --max-new-tokens exceeds --max-seq-length")
     try:
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
@@ -249,41 +266,33 @@ if __name__ == "__main__":
     # get all model weight tensors
     tokens = torch.full((total_num_requests, args.max_seq_length), 0, dtype=torch.long, device="cuda")
 
-    prompt = args.prompt
-    # This prompt is copied from https://github.com/apoorvumang/prompt-lookup-decoding/blob/main/demo-pld.ipynb
-    code_text = """import numpy as np
-                import matplotlib.pyplot as plt
-
-                # Calculate the average
-                average_throughput = np.mean(tokens_per_sec_arr)
-                print(f"Average Throughput: {average_throughput} tokens/sec")
-
-                # Plotting the histogram
-                plt.hist(tokens_per_sec_arr, bins=20, color='blue', edgecolor='black', alpha=0.7)
-                plt.title('Histogram of Throughput Values')
-                plt.xlabel('Tokens per Second')
-                plt.ylabel('Frequency')
-                plt.axvline(average_throughput, color='red', linestyle='dashed', linewidth=1)
-                plt.text(average_throughput*0.9, max(plt.ylim())*0.9, f'Average: {average_throughput:.2f}', color = 'red')
-                plt.show()
-                """
-    #question = "Can you please change x axis to start from 0"
-    #prompt = code_text + "\n" + question
-    messages = [
-        {
-            "role": "system",
-            "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
-        },
-        {"role": "user", "content": prompt},
-    ]
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+    if args.input_length is None:
+        messages = [
+            {
+                "role": "system",
+                "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
+            },
+            {"role": "user", "content": args.prompt},
+        ]
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        prompt_ids = tokenizer([text], return_tensors="pt").input_ids[0].to(
+            model.device
+        )
+    else:
+        # Keep every id inside the ordinary vocabulary while avoiding special
+        # tokens. The same sequence is used by Torch and MPK baselines.
+        token_span = max(1, min(32000, model.config.vocab_size - 100))
+        prompt_ids = 100 + (
+            torch.arange(args.input_length, dtype=torch.long, device=model.device)
+            * 1543
+        ) % token_span
+    prompt_length = int(prompt_ids.numel())
+    tokens[:, :prompt_length] = prompt_ids
+    prompt_lengths = torch.full(
+        (total_num_requests,), prompt_length, dtype=torch.int, device="cuda"
     )
-    model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-    for r in range(total_num_requests):
-        for i in range(model_inputs.input_ids.shape[-1]):
-            tokens[r, i] = model_inputs.input_ids[0, i]
-    prompt_lengths = torch.full((total_num_requests,), model_inputs.input_ids.shape[-1], dtype=torch.int, device="cuda")
     positions = torch.arange(32768).unsqueeze(0).to(model.device)
     position_embeddings = model.model.rotary_emb(positions)
 
@@ -905,7 +914,8 @@ if __name__ == "__main__":
             next_token = next_token[0, -1]
             tokens[0, cur_pos] = next_token
             prev_pos = cur_pos
-            if next_token == model.config.eos_token_id:
+            if (not args.ignore_eos
+                    and next_token == model.config.eos_token_id):
                 break
             if cur_pos == prompt_len + warmup:
                 torch.cuda.synchronize()
@@ -932,12 +942,21 @@ if __name__ == "__main__":
         if save_path and rank == 0:
             slice_end = min(end_idx, prompt_len + MAX_SAVE_TOKENS)
             token_ids = tokens[0, prompt_len:slice_end].tolist()
+            all_generated_ids = tokens[0, prompt_len:end_idx]
+            invalid_token_count = int(
+                ((all_generated_ids < 0)
+                 | (all_generated_ids >= model.config.vocab_size)).sum().item()
+            )
             out = {
                 "token_ids": token_ids,
                 "text": tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True),
+                "total_time_ms": run_time,
                 "latency_ms_per_token": per_tok_ms,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
+                "requested_generate_length": output_len,
+                "vocab_size": model.config.vocab_size,
+                "invalid_token_count": invalid_token_count,
                 "mode": "torch",
             }
             with open(save_path, "w") as f:
@@ -976,13 +995,22 @@ if __name__ == "__main__":
             per_tok_ms = per_tok_ms
             slice_end = min(end_idx, prompt_len + MAX_SAVE_TOKENS)
             token_ids = tokens[0, prompt_len:slice_end].tolist()
+            all_generated_ids = tokens[0, prompt_len:end_idx]
+            invalid_token_count = int(
+                ((all_generated_ids < 0)
+                 | (all_generated_ids >= model.config.vocab_size)).sum().item()
+            )
             response_text = tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True)
             out = {
                 "token_ids": token_ids,
                 "text": response_text,
+                "total_time_ms": run_time,
                 "latency_ms_per_token": per_tok_ms,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
+                "requested_generate_length": output_len,
+                "vocab_size": model.config.vocab_size,
+                "invalid_token_count": invalid_token_count,
                 "mode": "mpk",
             }
             with open(save_path, "w") as f:
