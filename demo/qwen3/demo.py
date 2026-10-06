@@ -179,9 +179,26 @@ if __name__ == "__main__":
     )
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
+    parser.add_argument(
+        "--mpk-split-kv-chunk-size",
+        type=int,
+        default=128,
+        help="Number of KV tokens processed by each MPK split-KV task.",
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
+    if args.split_kv_cache and not args.use_mirage:
+        parser.error("--split-kv-cache requires --use-mirage")
+    if args.mpk_split_kv_chunk_size <= 0:
+        parser.error("--mpk-split-kv-chunk-size must be positive")
+    if args.split_kv_cache and (
+        args.max_seq_length % args.mpk_split_kv_chunk_size != 0
+    ):
+        parser.error(
+            "Split-KV currently requires --max-seq-length to be divisible "
+            "by --mpk-split-kv-chunk-size"
+        )
     if args.mpk_policy == "decode-only":
         if args.spec_decode is not None:
             parser.error("decode-only does not support speculative decoding")
@@ -372,7 +389,20 @@ if __name__ == "__main__":
         head_dim = model.config.head_dim
         fused_outdim_1 = (num_q_heads + 2 * num_kv_heads) * head_dim
         fused_outdim_2 = 2 * intermediate_size
-        num_kv_cache_chunks = max(1, args.max_seq_length // 256)
+        split_kv_chunk_size = (
+            args.mpk_split_kv_chunk_size if args.split_kv_cache else 256
+        )
+        num_kv_cache_chunks = max(
+            1, args.max_seq_length // split_kv_chunk_size
+        )
+        if args.split_kv_cache:
+            print(
+                "MPK attention: SPLIT-KV "
+                f"(chunk_size={args.mpk_split_kv_chunk_size}, "
+                f"chunks={num_kv_cache_chunks})"
+            )
+        else:
+            print("MPK attention: DEFAULT")
 
         if args.profiling:
             profiler_tensor = torch.zeros(
@@ -1153,6 +1183,16 @@ if __name__ == "__main__":
                 "mpk_kernel_cache_dir": (
                     os.path.abspath(args.mpk_kernel_cache_dir)
                     if args.mpk_kernel_cache_dir else None
+                ),
+                "mpk_attention": (
+                    "split-kv" if args.split_kv_cache else "default"
+                ),
+                "mpk_split_kv_chunk_size": (
+                    args.mpk_split_kv_chunk_size
+                    if args.split_kv_cache else None
+                ),
+                "mpk_split_kv_num_chunks": (
+                    num_kv_cache_chunks if args.split_kv_cache else None
                 ),
                 "mode": (
                     "normal_prefill_mpk_decode"
