@@ -1041,7 +1041,7 @@ if __name__ == "__main__":
             starter.record()
         else:
             starter.record()
-        mpk()
+        mpk(resume_after_prefill=args.mpk_policy == "decode-only")
         ender.record()
         torch.cuda.synchronize()
         mpk_time = starter.elapsed_time(ender)
