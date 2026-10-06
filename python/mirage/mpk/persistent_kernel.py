@@ -6,6 +6,7 @@ import shutil
 import sys
 import sysconfig
 import json
+import hashlib
 
 from ..core import *
 from ..kernel import get_key_paths, KNGraph, TBGraph
@@ -688,7 +689,40 @@ class PersistentKernel:
             "eos_token_id": -1,
         }
 
-    def _save_kernel_metadata(self, path: str) -> None:
+    def _source_fingerprint(self) -> str:
+        """Fingerprint sources that can change the generated MPK binary."""
+        mirage_root, _, _ = get_key_paths()
+        roots = (
+            os.path.join(mirage_root, "include", "mirage", "persistent_kernel"),
+            os.path.join(mirage_root, "src", "kernel"),
+        )
+        digest = hashlib.sha256()
+        for root in roots:
+            if not os.path.isdir(root):
+                continue
+            for current_root, _, files in os.walk(root):
+                for filename in sorted(files):
+                    if not filename.endswith((".h", ".hpp", ".cuh", ".cc", ".cu")):
+                        continue
+                    path = os.path.join(current_root, filename)
+                    relative = os.path.relpath(path, mirage_root).replace(os.sep, "/")
+                    digest.update(relative.encode("utf-8"))
+                    with open(path, "rb") as source:
+                        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                            digest.update(chunk)
+        return digest.hexdigest()
+
+    def _tensor_signatures(self):
+        return {
+            name: {
+                "shape": list(tensor.shape),
+                "stride": list(tensor.stride()),
+                "dtype": str(tensor.dtype),
+            }
+            for name, tensor in sorted(self._model_tensors.items())
+        }
+
+    def _save_kernel_metadata(self, path: str, task_graph_path: str) -> None:
         """Save kernel config for validation when loading."""
         metadata = {
             "mode": self.mode,
@@ -701,8 +735,29 @@ class PersistentKernel:
             "world_size": self.world_size,
             "rank": self.mpi_rank,
             "cuda_cc": self.target_cc,
-            "tensor_names": sorted(self._model_tensors.keys()),
+            "num_workers": self.num_workers,
+            "num_local_schedulers": self.num_local_schedulers,
+            "num_remote_schedulers": self.num_remote_schedulers,
+            "use_cutlass_kernel": self.use_cutlass_kernel,
+            "test_mode": self.test_mode,
+            "profiling": self.profiler_tensor is not None,
+            "spec_decode_config": repr(self.spec_decode_config),
+            "kv_groups": [
+                {
+                    "block_size": group.block_size,
+                    "window_size": group.window_size,
+                }
+                for group in self.kv_groups
+            ],
+            "python_ext_suffix": sysconfig.get_config_var("EXT_SUFFIX"),
+            "torch_cuda_version": torch.version.cuda,
+            "source_sha256": self._source_fingerprint(),
+            "tensor_signatures": self._tensor_signatures(),
         }
+        with open(task_graph_path, "rb") as task_graph:
+            metadata["task_graph_sha256"] = hashlib.sha256(
+                task_graph.read()
+            ).hexdigest()
         with open(path, "w") as f:
             json.dump(metadata, f, indent=2)
     
@@ -723,21 +778,28 @@ class PersistentKernel:
             ("world_size", self.world_size),
             ("rank", self.mpi_rank),
             ("cuda_cc", self.target_cc),
+            ("num_workers", self.num_workers),
+            ("num_local_schedulers", self.num_local_schedulers),
+            ("num_remote_schedulers", self.num_remote_schedulers),
+            ("use_cutlass_kernel", self.use_cutlass_kernel),
+            ("test_mode", self.test_mode),
+            ("profiling", self.profiler_tensor is not None),
+            ("spec_decode_config", repr(self.spec_decode_config)),
+            ("kv_groups", [
+                {
+                    "block_size": group.block_size,
+                    "window_size": group.window_size,
+                }
+                for group in self.kv_groups
+            ]),
+            ("python_ext_suffix", sysconfig.get_config_var("EXT_SUFFIX")),
+            ("torch_cuda_version", torch.version.cuda),
+            ("source_sha256", self._source_fingerprint()),
+            ("tensor_signatures", self._tensor_signatures()),
         ]
         for key, current in checks:
             if saved.get(key) != current:
                 errors.append(f"{key}: saved={saved.get(key)}, current={current}")
-        
-        # Check tensor names
-        saved_tensors = set(saved.get("tensor_names", []))
-        current_tensors = set(self._model_tensors.keys())
-        if saved_tensors != current_tensors:
-            missing = saved_tensors - current_tensors
-            extra = current_tensors - saved_tensors
-            if missing:
-                errors.append(f"missing tensors: {sorted(missing)}")
-            if extra:
-                errors.append(f"extra tensors: {sorted(extra)}")
         
         if errors:
             raise ValueError(
@@ -3237,8 +3299,24 @@ class PersistentKernel:
             
         if output_dir is not None:
             os.makedirs(output_dir, exist_ok=True)
-            shutil.copy(cuda_code_path, os.path.join(output_dir, f"test_rank{self.mpi_rank}.cu"))
-            shutil.copy(json_file_path, os.path.join(output_dir, f"task_graph_rank{self.mpi_rank}.json"))
+            metadata_path = os.path.join(
+                output_dir, f"kernel_metadata_rank{self.mpi_rank}.json"
+            )
+            if os.path.exists(metadata_path):
+                os.remove(metadata_path)
+            cuda_output_path = os.path.join(
+                output_dir, f"test_rank{self.mpi_rank}.cu"
+            )
+            json_output_path = os.path.join(
+                output_dir, f"task_graph_rank{self.mpi_rank}.json"
+            )
+            for source, destination in (
+                (cuda_code_path, cuda_output_path),
+                (json_file_path, json_output_path),
+            ):
+                temporary_path = destination + f".tmp.{os.getpid()}"
+                shutil.copy(source, temporary_path)
+                os.replace(temporary_path, destination)
             so_output_path = os.path.join(output_dir, f"mpk_launcher_rank{self.mpi_rank}.cpython-{sys.version_info.major}{sys.version_info.minor}-x86_64-linux-gnu.so")
 
         cc = shutil.which("nvcc")
@@ -3357,12 +3435,15 @@ class PersistentKernel:
         # Copy .so to output_dir if specified
         if output_dir is not None:
             so_output_path = os.path.join(output_dir, f"mpk_launcher_rank{self.mpi_rank}.cpython-{sys.version_info.major}{sys.version_info.minor}-x86_64-linux-gnu.so")
-            shutil.copy(so_path, so_output_path)
+            temporary_so_path = so_output_path + f".tmp.{os.getpid()}"
+            shutil.copy(so_path, temporary_so_path)
+            os.replace(temporary_so_path, so_output_path)
             print(f"Saved compiled kernel to: {so_output_path}")
             
             # Save kernel metadata for compatibility validation during load
-            metadata_path = os.path.join(output_dir, f"kernel_metadata_rank{self.mpi_rank}.json")
-            self._save_kernel_metadata(metadata_path)
+            temporary_metadata_path = metadata_path + f".tmp.{os.getpid()}"
+            self._save_kernel_metadata(temporary_metadata_path, json_output_path)
+            os.replace(temporary_metadata_path, metadata_path)
 
         import importlib.util
 
@@ -3493,7 +3574,27 @@ class PersistentKernel:
             self._validate_kernel_compatibility(metadata_path)
             print(f"[load_mpk_kernel] Kernel compatibility check passed!")
         elif not skip_validation:
-            print(f"[load_mpk_kernel] Warning: No kernel metadata found. Skipping validation.")
+            raise FileNotFoundError(
+                f"Kernel metadata not found at {metadata_path}. "
+                "The cache is incomplete or predates validated caching."
+            )
+
+        with open(json_path, "rb") as task_graph:
+            task_graph_sha256 = hashlib.sha256(task_graph.read()).hexdigest()
+        if not skip_validation:
+            with open(metadata_path, "r") as metadata_file:
+                saved_metadata = json.load(metadata_file)
+            if saved_metadata.get("task_graph_sha256") != task_graph_sha256:
+                raise ValueError("Cached task graph does not match kernel metadata")
+            expected_task_graph_json = kwargs.get("expected_task_graph_json")
+            if expected_task_graph_json is not None:
+                expected_sha256 = hashlib.sha256(
+                    expected_task_graph_json.encode("utf-8")
+                ).hexdigest()
+                if task_graph_sha256 != expected_sha256:
+                    raise ValueError(
+                        "Cached task graph does not match the current graph"
+                    )
         
         print(f"[load_mpk_kernel] Loading launcher from: {so_path}")
         print(f"[load_mpk_kernel] Using task graph JSON: {json_path}")

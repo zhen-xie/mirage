@@ -4,7 +4,7 @@ from safetensors.torch import load_model
 import torch
 import torch.distributed as dist
 import argparse
-import os, json
+import os, json, time
 
 from models.qwen3_shard_loader import Qwen3ShardLoader
 from mirage.mpk.base_dynamic_shard_loader import ShardType
@@ -87,6 +87,13 @@ if __name__ == "__main__":
                         help="Memory budget for KV cache as a size('24GiB'). Exclusive with --max-num-pages")
     parser.add_argument("--max-num-pages", default=16, type=int, help="Max num pages. Exclusive with --kv-budget")
     parser.add_argument("--output-dir", help="Output files directory")
+    parser.add_argument(
+        "--mpk-kernel-cache-dir",
+        help=(
+            "Load a compatible MPK kernel from this directory, or compile "
+            "and populate it on a cache miss."
+        ),
+    )
     parser.add_argument("--trace-name", default="", help="Perfetto trace output name")
     parser.add_argument(
         "--profiling", action="store_true", help="Use Profiler to generate trace"
@@ -338,6 +345,8 @@ if __name__ == "__main__":
     )
     step = torch.full((total_num_requests, ), 0, dtype=torch.int32, device="cuda")
     num_new_tokens = torch.full((total_num_requests, ), 1, dtype=torch.int32, device="cuda")
+    mpk_kernel_cache_status = None
+    mpk_kernel_prepare_time_ms = None
 
     if args.use_mirage:
         import mirage as mi
@@ -900,7 +909,33 @@ if __name__ == "__main__":
         with open(f"kernel_{rank}.cu", "w") as f:
             f.write(results["cuda_code"])
 
-        mpk.compile(output_dir=args.output_dir)
+        kernel_prepare_started = time.perf_counter()
+        if args.mpk_kernel_cache_dir:
+            cache_dir = os.path.abspath(args.mpk_kernel_cache_dir)
+            try:
+                mpk.load_mpk_kernel(
+                    cache_dir,
+                    expected_task_graph_json=results["json_file"],
+                )
+                mpk_kernel_cache_status = "hit"
+                print(f"MPK kernel cache: HIT ({cache_dir})")
+            except (FileNotFoundError, ValueError, ImportError, OSError) as error:
+                print(f"MPK kernel cache: MISS ({error})")
+                os.makedirs(cache_dir, exist_ok=True)
+                mpk.compile(output_dir=cache_dir)
+                mpk_kernel_cache_status = "miss_compiled"
+                print(f"MPK kernel cache populated: {cache_dir}")
+        else:
+            mpk.compile(output_dir=args.output_dir)
+            mpk_kernel_cache_status = "disabled_compiled"
+        mpk_kernel_prepare_time_ms = (
+            time.perf_counter() - kernel_prepare_started
+        ) * 1000.0
+        print(
+            "MPK kernel preparation: status={}, time={:.3f} ms".format(
+                mpk_kernel_cache_status, mpk_kernel_prepare_time_ms
+            )
+        )
 
     # g = torch.cuda.CUDAGraph()
     stream = torch.cuda.Stream()
@@ -1113,6 +1148,12 @@ if __name__ == "__main__":
                 "requested_generate_length": output_len,
                 "vocab_size": model.config.vocab_size,
                 "invalid_token_count": invalid_token_count,
+                "mpk_kernel_cache_status": mpk_kernel_cache_status,
+                "mpk_kernel_prepare_time_ms": mpk_kernel_prepare_time_ms,
+                "mpk_kernel_cache_dir": (
+                    os.path.abspath(args.mpk_kernel_cache_dir)
+                    if args.mpk_kernel_cache_dir else None
+                ),
                 "mode": (
                     "normal_prefill_mpk_decode"
                     if args.mpk_policy == "decode-only" else "mpk_always"
