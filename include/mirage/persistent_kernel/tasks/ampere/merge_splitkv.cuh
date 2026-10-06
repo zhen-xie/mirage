@@ -68,6 +68,27 @@ __device__ __forceinline__ void
   }
   int const num_tokens = last_token_pos - first_token_pos;
 
+  // A single live KV partition needs no log-sum-exp reduction. Besides
+  // avoiding unnecessary work for short sequences, this keeps the global
+  // flattened-token offset explicit for batched requests.
+  if (num_chunks == 1) {
+    constexpr int VALUES_PER_TOKEN = NUM_QO_HEADS_PER_KV * HEAD_DIM;
+    constexpr int INPUT_TOKEN_STRIDE =
+        NUM_QO_GROUPS * NUM_KV_CHUNKS * VALUES_PER_TOKEN;
+    constexpr int OUTPUT_TOKEN_STRIDE =
+        NUM_QO_GROUPS * VALUES_PER_TOKEN;
+    for (int elem = threadIdx.x; elem < num_tokens * VALUES_PER_TOKEN;
+         elem += blockDim.x) {
+      int token_idx = elem / VALUES_PER_TOKEN;
+      int value_idx = elem % VALUES_PER_TOKEN;
+      output_ptr[(first_token_pos + token_idx) * OUTPUT_TOKEN_STRIDE +
+                 value_idx] =
+          o_ptr[(first_token_pos + token_idx) * INPUT_TOKEN_STRIDE +
+                value_idx];
+    }
+    return;
+  }
+
   constexpr int THREADS_PER_TOKEN = 16; // let 16 threads process one head
   constexpr int VAL_PER_THREAD = HEAD_DIM / THREADS_PER_TOKEN;
   constexpr int num_groups = NUM_THREADS / THREADS_PER_TOKEN;
