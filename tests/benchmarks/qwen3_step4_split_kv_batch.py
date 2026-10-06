@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 DEMO = ROOT / "demo" / "qwen3" / "demo.py"
 COMPARE_TOKENS = 10
 REFERENCE_SHAPES = {
-    "short_tail": (128, 16, 256),
+    # End exactly at max_seq_length while exercising a partially filled
+    # second 128-token split-KV chunk.
+    "short_tail": (240, 16, 256),
     "long_context": (1024, 128, 1152),
     "long_generation": (128, 1024, 1152),
 }

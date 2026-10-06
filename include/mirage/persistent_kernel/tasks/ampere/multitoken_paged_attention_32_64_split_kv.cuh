@@ -150,21 +150,8 @@ __device__ __forceinline__ void
   // num tokens = 8
   // Load the paged KV indices into shared memory
   __shared__ __align__(16) int page_indices[MAX_PAGES_PER_REQUEST];
-#pragma unroll
-  for (int i = threadIdx.x; i < num_pages * sizeof(int) / 16;
-       i += NUM_THREADS) {
-    __uint128_t const *src_ptr =
-        reinterpret_cast<__uint128_t const *>(paged_kv_indices_buffer_ptr) + i;
-    __uint128_t *dst_ptr = reinterpret_cast<__uint128_t *>(page_indices) + i;
-    *dst_ptr = *src_ptr;
-  }
-  if (num_pages % (16 / sizeof(int)) != 0) {
-    int tail_pages = num_pages % (16 / sizeof(int));
-    int tail_offset = num_pages - tail_pages;
-    for (int i = threadIdx.x; i < tail_pages; i += NUM_THREADS) {
-      page_indices[tail_offset + i] =
-          paged_kv_indices_buffer_ptr[first_page_pos + tail_offset + i];
-    }
+  for (int i = threadIdx.x; i < num_pages; i += NUM_THREADS) {
+    page_indices[i] = paged_kv_indices_buffer_ptr[first_page_pos + i];
   }
   wg_sync<128>(CONSUMER_WARPGROUP_SYNC_BARRIER_ID);
 
@@ -827,8 +814,9 @@ __device__ __forceinline__ void
           int token_idx = idx / NUM_QO_HEADS;
           int head_idx = idx % NUM_QO_HEADS;
 
-          int offset = head_idx +
-                       token_idx * NUM_KV_CHUNKS * NUM_QO_HEADS * NUM_QO_GROUPS;
+          int offset =
+              head_idx + (first_token_pos + token_idx) * NUM_KV_CHUNKS *
+                             NUM_QO_HEADS * NUM_QO_GROUPS;
 
           reinterpret_cast<float *>(lse)[offset] =
               ptx_log2(d[m][j]) + m_local[m][j];
