@@ -389,17 +389,19 @@ def convert_ctype_to_dtype(type):
         return None
 
 def convert_torch_type_to_dtype(type):
-    if type is torch.float8_e4m3fn:
-        return float8
-    elif type is torch.float8_e4m3fnuz:
-        return float8
-    elif type is torch.float8_e5m2:
-        return float8
-    elif type is torch.float8_e5m2fnuz:
-        return float8
-    elif type is torch.float8_e8m0fnu:
-        return float8
-    elif type is torch.int8:
+    # PyTorch adds FP8 variants over time. Access them by name so an older
+    # PyTorch build can still convert ordinary dtypes such as int64/bfloat16.
+    for torch_type_name in (
+        "float8_e4m3fn",
+        "float8_e4m3fnuz",
+        "float8_e5m2",
+        "float8_e5m2fnuz",
+        "float8_e8m0fnu",
+    ):
+        torch_type = getattr(torch, torch_type_name, None)
+        if torch_type is not None and type is torch_type:
+            return float8
+    if type is torch.int8:
         return int8
     elif type is torch.uint8:
         return uint8
@@ -421,8 +423,6 @@ def convert_torch_type_to_dtype(type):
         return int64
     elif type is torch.float64:
         return float64
-    elif type is torch.float8_e4m3fn:
-        return float8_e4m3
     else:
         raise RuntimeError(f"Unsupported dtype: {type}")
 
