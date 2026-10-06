@@ -171,11 +171,12 @@ def naive_attention(
     value_cache,
     kv_len,
     layer_idx,
+    page_idx=0,
     is_causal=True, 
     enable_gqa=True):
             
-    k = key_cache[layer_idx, 0, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
-    v = value_cache[layer_idx, 0, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
+    k = key_cache[layer_idx, page_idx, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
+    v = value_cache[layer_idx, page_idx, :kv_len, :, :] # [kv_seq_len, num_kv_heads, head_dim]
 
     q_for_sdpa = q.permute(1, 0, 2)    # [num_q_heads, 1, head_dim]
     k_for_sdpa = k.permute(1, 0, 2)    # [num_q_heads, kv_seq_len, head_dim]
@@ -287,37 +288,44 @@ class Qwen3Attention(nn.Module):
         )
 
         if q_len > 1:
-            self.key_cache[self.layer_idx, 0, :q_len] = key_states[0]
-            self.value_cache[self.layer_idx, 0, :q_len] = value_states[0]
+            self.key_cache[
+                self.layer_idx, :bsz, :q_len
+            ] = key_states
+            self.value_cache[
+                self.layer_idx, :bsz, :q_len
+            ] = value_states
+            attn_output = nn.functional.scaled_dot_product_attention(
+                query_states.permute(0, 2, 1, 3),
+                key_states.permute(0, 2, 1, 3),
+                value_states.permute(0, 2, 1, 3),
+                is_causal=True,
+                enable_gqa=True,
+            ).permute(0, 2, 1, 3)
         else:
-            self.key_cache[self.layer_idx, 0, step] = key_states[0]
-            self.value_cache[self.layer_idx, 0, step] = value_states[0]
+            outputs = []
+            for request_id in range(bsz):
+                request_step = int(step[request_id].item())
+                self.key_cache[
+                    self.layer_idx, request_id, request_step
+                ] = key_states[request_id, 0]
+                self.value_cache[
+                    self.layer_idx, request_id, request_step
+                ] = value_states[request_id, 0]
+                outputs.append(naive_attention(
+                    query_states[request_id],
+                    self.key_cache,
+                    self.value_cache,
+                    request_step + 1,
+                    self.layer_idx,
+                    page_idx=request_id,
+                    is_causal=False,
+                    enable_gqa=True,
+                ))
+            attn_output = torch.stack(outputs)
 
-        q = query_states[0] # Shape: [q_len, num_q_heads, head_dim]
-
-        if q_len > 1:
-            attn_output = naive_attention(
-                q,
-                self.key_cache,
-                self.value_cache,
-                q_len,
-                self.layer_idx,
-                True,
-                True
-            )
-        else:
-            kv_seq_len = step.item() + 1
-            attn_output = naive_attention(
-                q,
-                self.key_cache,
-                self.value_cache,
-                kv_seq_len,
-                self.layer_idx,
-                False,
-                True
-            )
-
-        attn_output = attn_output.reshape(bsz, q_len, self.local_qkv_size)
+        attn_output = attn_output.reshape(
+            bsz, q_len, self.local_qkv_size
+        )
 
         attn_output = self.o_proj(attn_output)
         if self.world_size > 1:

@@ -201,26 +201,27 @@ __global__ void init_kernel(RuntimeConfig config) {
 }
 
 #ifdef MODE_OFFLINE
-// Resume a single request whose prompt and first generated token were produced
-// by the normal backend. Qwen3 writes that request's shared KV cache to page 0.
+// Resume requests whose prompts and first generated tokens were produced by
+// the normal backend. Decode-only currently reserves one full KV page for
+// every request, with request r using page r in every KV group.
 __global__ void resume_after_prefill_kernel(RuntimeConfig config) {
   if (blockIdx.x == 0 && threadIdx.x == 0) {
-    assert(MPK_MAX_NUM_BATCHED_REQUESTS == 1);
-    assert(config.total_num_requests == 1);
-    int prompt_len = config.prompt_length[0];
-    assert(prompt_len > 0 && prompt_len < MPK_PAGE_SIZE);
-    config.step[0] = prompt_len;
-    config.request_ids[0] = 0;
-    *config.next_request_id = 1;
     config.qo_indptr_buffer[0] = 0;
-    config.qo_indptr_buffer[1] = 0;
-    for (int g = 0; g < MPK_NUM_KV_GROUPS; g++) {
-      config.paged_kv_indptr_buffer[g][0] = 0;
-      config.paged_kv_indptr_buffer[g][1] = 1;
-      config.paged_kv_indices_buffer[g][0] = 0;
-      config.paged_kv_last_page_len_buffer[g][0] = prompt_len;
+    for (int r = 0; r < config.total_num_requests; r++) {
+      int prompt_len = config.prompt_length[r];
+      assert(prompt_len > 0 && prompt_len < MPK_PAGE_SIZE);
+      config.step[r] = prompt_len;
+      config.request_ids[r] = r;
+      config.qo_indptr_buffer[r + 1] = 0;
+      for (int g = 0; g < MPK_NUM_KV_GROUPS; g++) {
+        config.paged_kv_indptr_buffer[g][r] = r;
+        config.paged_kv_indptr_buffer[g][r + 1] = r + 1;
+        config.paged_kv_indices_buffer[g][r] = r;
+        config.paged_kv_last_page_len_buffer[g][r] = prompt_len;
+      }
     }
-    *config.page_queue_head = 1;
+    *config.next_request_id = config.total_num_requests;
+    *config.page_queue_head = config.total_num_requests;
   }
 }
 #endif

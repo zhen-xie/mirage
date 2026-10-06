@@ -993,6 +993,7 @@ if __name__ == "__main__":
                 position_embeddings=(cos_embeddings, sin_embeddings),
                 step=step,
                 stream=stream,
+                num_logits_to_keep=1,
             )
             next_token = logits.argmax(dim=-1)
             if args.do_sample:
@@ -1099,6 +1100,7 @@ if __name__ == "__main__":
                 ),
                 step=step,
                 stream=stream,
+                num_logits_to_keep=1,
             )
             tokens[:, prompt_len] = prefill_logits[:, -1].argmax(dim=-1)
             step.fill_(prompt_len)
@@ -1121,7 +1123,13 @@ if __name__ == "__main__":
         print("tokens.shape = ", tokens.shape)
         for r in range(total_num_requests):
             generated_ids = tokens[r, : step[r] + 1]
-            response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+            valid_for_display = generated_ids[
+                (generated_ids >= 0)
+                & (generated_ids < model.config.vocab_size)
+            ]
+            response = tokenizer.decode(
+                valid_for_display, skip_special_tokens=True
+            )
             print(response)
         
         if total_num_requests > 1:
@@ -1152,20 +1160,35 @@ if __name__ == "__main__":
 
         # -------- CI dumps outputs to json files ----------
         if save_path and rank == 0:
-            end_idx = step[0].item() + 1
             prompt_len = prompt_lengths[0].item()
+            end_indices = [int(step[r].item()) + 1 for r in range(total_num_requests)]
+            end_idx = end_indices[0]
             tokens_generated = max(0, end_idx - prompt_len)
             per_tok_ms = per_tok_ms
-            slice_end = min(end_idx, prompt_len + MAX_SAVE_TOKENS)
-            token_ids = tokens[0, prompt_len:slice_end].tolist()
-            all_generated_ids = tokens[0, prompt_len:end_idx]
-            invalid_token_count = int(
-                ((all_generated_ids < 0)
-                 | (all_generated_ids >= model.config.vocab_size)).sum().item()
-            )
+            token_ids_by_request = []
+            generate_lengths_by_request = []
+            invalid_token_counts_by_request = []
+            for request_id, request_end_idx in enumerate(end_indices):
+                slice_end = min(request_end_idx, prompt_len + MAX_SAVE_TOKENS)
+                token_ids_by_request.append(
+                    tokens[request_id, prompt_len:slice_end].tolist()
+                )
+                generate_lengths_by_request.append(
+                    max(0, request_end_idx - prompt_len)
+                )
+                generated = tokens[
+                    request_id, prompt_len:request_end_idx
+                ]
+                invalid_token_counts_by_request.append(int(
+                    ((generated < 0)
+                     | (generated >= model.config.vocab_size)).sum().item()
+                ))
+            token_ids = token_ids_by_request[0]
+            invalid_token_count = sum(invalid_token_counts_by_request)
             response_text = tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True)
             out = {
                 "token_ids": token_ids,
+                "token_ids_by_request": token_ids_by_request,
                 "text": response_text,
                 "total_time_ms": run_time,
                 "prefill_time_ms": prefill_time,
@@ -1175,9 +1198,14 @@ if __name__ == "__main__":
                 "latency_ms_per_token": per_tok_ms,
                 "prompt_length": prompt_len,
                 "generate_length": tokens_generated,
+                "generate_lengths_by_request": generate_lengths_by_request,
                 "requested_generate_length": output_len,
                 "vocab_size": model.config.vocab_size,
                 "invalid_token_count": invalid_token_count,
+                "invalid_token_counts_by_request": (
+                    invalid_token_counts_by_request
+                ),
+                "batch_size": total_num_requests,
                 "mpk_kernel_cache_status": mpk_kernel_cache_status,
                 "mpk_kernel_prepare_time_ms": mpk_kernel_prepare_time_ms,
                 "mpk_kernel_cache_dir": (
