@@ -180,6 +180,24 @@ if __name__ == "__main__":
 
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
     parser.add_argument(
+        "--mpk-attention",
+        choices=("default", "split-kv", "auto"),
+        default="default",
+        help=(
+            "Select the MPK attention implementation. Auto uses default "
+            "attention for short workloads and split-KV for longer workloads."
+        ),
+    )
+    parser.add_argument(
+        "--mpk-auto-split-kv-threshold",
+        type=int,
+        default=256,
+        help=(
+            "With --mpk-attention auto, use split-KV when max sequence "
+            "length exceeds this value."
+        ),
+    )
+    parser.add_argument(
         "--mpk-split-kv-chunk-size",
         type=int,
         default=128,
@@ -188,8 +206,27 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
-    if args.split_kv_cache and not args.use_mirage:
-        parser.error("--split-kv-cache requires --use-mirage")
+    if args.split_kv_cache and args.mpk_attention != "default":
+        parser.error(
+            "--split-kv-cache cannot be combined with a non-default "
+            "--mpk-attention value"
+        )
+    if args.mpk_auto_split_kv_threshold <= 0:
+        parser.error("--mpk-auto-split-kv-threshold must be positive")
+    requested_mpk_attention = (
+        "split-kv" if args.split_kv_cache else args.mpk_attention
+    )
+    if requested_mpk_attention == "auto":
+        resolved_mpk_attention = (
+            "split-kv"
+            if args.max_seq_length > args.mpk_auto_split_kv_threshold
+            else "default"
+        )
+    else:
+        resolved_mpk_attention = requested_mpk_attention
+    args.split_kv_cache = resolved_mpk_attention == "split-kv"
+    if requested_mpk_attention != "default" and not args.use_mirage:
+        parser.error("--mpk-attention requires --use-mirage")
     if args.mpk_split_kv_chunk_size <= 0:
         parser.error("--mpk-split-kv-chunk-size must be positive")
     if args.split_kv_cache and (
@@ -405,6 +442,12 @@ if __name__ == "__main__":
             )
         else:
             print("MPK attention: DEFAULT")
+        if requested_mpk_attention == "auto":
+            print(
+                "MPK attention policy: AUTO "
+                f"(resolved: {resolved_mpk_attention.upper()}, "
+                f"threshold={args.mpk_auto_split_kv_threshold})"
+            )
 
         if args.profiling:
             profiler_tensor = torch.zeros(
@@ -1216,6 +1259,11 @@ if __name__ == "__main__":
                 ),
                 "mpk_attention": (
                     "split-kv" if args.split_kv_cache else "default"
+                ),
+                "mpk_attention_requested": requested_mpk_attention,
+                "mpk_auto_split_kv_threshold": (
+                    args.mpk_auto_split_kv_threshold
+                    if requested_mpk_attention == "auto" else None
                 ),
                 "mpk_split_kv_chunk_size": (
                     args.mpk_split_kv_chunk_size
