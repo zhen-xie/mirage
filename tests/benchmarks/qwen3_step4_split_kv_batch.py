@@ -74,9 +74,12 @@ def execute(args, name, s_in, s_out, max_seq_length, batch_size):
         cache = args.cache_dir / f"b{batch_size}_seq{max_seq_length}"
         command += [
             "--use-mirage", "--mpk-policy", "decode-only",
-            "--split-kv-cache", "--mpk-split-kv-chunk-size", "128",
             "--mpk-kernel-cache-dir", str(cache),
         ]
+        if args.attention_mode == "split-kv":
+            command += [
+                "--split-kv-cache", "--mpk-split-kv-chunk-size", "128",
+            ]
     print(
         f"Running {name}: B={batch_size} S_IN={s_in} S_OUT={s_out}",
         flush=True,
@@ -104,7 +107,9 @@ def execute(args, name, s_in, s_out, max_seq_length, batch_size):
     }
 
 
-def validate_case(result, reference, batch_size, s_out, max_seq_length):
+def validate_case(
+    result, reference, batch_size, s_out, max_seq_length, attention_mode
+):
     if result["status"] != "completed":
         return result["status"], result.get("reason"), {}
     data = result["data"]
@@ -135,12 +140,14 @@ def validate_case(result, reference, batch_size, s_out, max_seq_length):
         errors.append(f"incomplete_requests={incomplete_requests}")
     if invalid_total:
         errors.append(f"invalid_token_count={invalid_total}")
-    if data.get("mpk_attention") != "split-kv":
+    expected_attention = attention_mode
+    if data.get("mpk_attention") != expected_attention:
         errors.append(f"attention={data.get('mpk_attention')!r}")
-    if data.get("mpk_split_kv_chunk_size") != 128:
-        errors.append(f"chunk_size={data.get('mpk_split_kv_chunk_size')}")
-    if data.get("mpk_split_kv_num_chunks") != max_seq_length // 128:
-        errors.append(f"num_chunks={data.get('mpk_split_kv_num_chunks')}")
+    if expected_attention == "split-kv":
+        if data.get("mpk_split_kv_chunk_size") != 128:
+            errors.append(f"chunk_size={data.get('mpk_split_kv_chunk_size')}")
+        if data.get("mpk_split_kv_num_chunks") != max_seq_length // 128:
+            errors.append(f"num_chunks={data.get('mpk_split_kv_num_chunks')}")
     if data.get("mpk_kernel_cache_status") != "miss_compiled":
         errors.append(f"cache_status={data.get('mpk_kernel_cache_status')!r}")
     details = {
@@ -161,6 +168,10 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--attention-mode", choices=("default", "split-kv"),
+        default="split-kv",
+    )
     parser.add_argument(
         "--cases",
         nargs="+",
@@ -204,7 +215,8 @@ def main():
             args, case, s_in, s_out, max_seq_length, batch_size
         )
         status, reason, details = validate_case(
-            result, references[shape], batch_size, s_out, max_seq_length
+            result, references[shape], batch_size, s_out, max_seq_length,
+            args.attention_mode,
         )
         data = result.get("data", {})
         decode_ms = data.get("decode_time_ms")

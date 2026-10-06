@@ -7,6 +7,7 @@ OUTDIR=${OUTDIR:-"$ROOT/results/qwen3_step4_split_kv_batch"}
 MODEL=${MODEL:-"Qwen/Qwen3-8B"}
 TIMEOUT=${TIMEOUT:-3600}
 CASES=${CASES:-}
+ATTENTION_MODE=${ATTENTION_MODE:-split-kv}
 BUILD_LOG="$OUTDIR/build.log"
 
 cd "$ROOT" || exit 1
@@ -61,6 +62,7 @@ fi
 python tests/benchmarks/qwen3_step4_split_kv_batch.py \
     --model "$MODEL" \
     --timeout "$TIMEOUT" \
+    --attention-mode "$ATTENTION_MODE" \
     "${case_args[@]}" \
     --output-dir "$OUTDIR"
 result=$?
