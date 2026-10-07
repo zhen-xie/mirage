@@ -185,6 +185,15 @@ if __name__ == "__main__":
             "If path omitted, saves to outputs/qwen3/{torch_output.json|mpk_output.json}."
         ),
     )
+    parser.add_argument(
+        "--capture-final-logits-topk",
+        type=int,
+        default=0,
+        help=(
+            "Attach the MPK LM-head output and save the final step's top-k "
+            "logits. Intended for short correctness diagnostics."
+        ),
+    )
     parser.add_argument("--prompt",
         type=str,
         default="Give me a short introduction to large language model.",
@@ -230,6 +239,8 @@ if __name__ == "__main__":
         parser.error("--mpk-policy requires --use-mirage")
     if args.prefill_warmup_runs < 0:
         parser.error("--prefill-warmup-runs must be non-negative")
+    if args.capture_final_logits_topk < 0:
+        parser.error("--capture-final-logits-topk must be non-negative")
     if args.normal_prefill_cuda_graph:
         if not args.use_mirage or args.mpk_policy != "decode-only":
             parser.error(
@@ -442,6 +453,7 @@ if __name__ == "__main__":
     num_new_tokens = torch.full((total_num_requests, ), 1, dtype=torch.int32, device="cuda")
     mpk_kernel_cache_status = None
     mpk_kernel_prepare_time_ms = None
+    captured_mpk_logits = None
 
     if args.use_mirage:
         import mirage as mi
@@ -638,12 +650,23 @@ if __name__ == "__main__":
             name="mlp_final",
             io_category="nvshmem_tensor" if world_size > 1 else "cuda_tensor",
         )
-        argmax_in = mpk.new_tensor(
-            dims=(args.max_num_batched_tokens, vocab_size),
-            dtype=mi.bfloat16,
-            name="argmax_in",
-            io_category="cuda_tensor",
-        )
+        if args.capture_final_logits_topk:
+            captured_mpk_logits = torch.empty(
+                args.max_num_batched_tokens,
+                vocab_size,
+                dtype=torch.bfloat16,
+                device="cuda",
+            )
+            argmax_in = mpk.attach_input(
+                torch_tensor=captured_mpk_logits, name="argmax_in"
+            )
+        else:
+            argmax_in = mpk.new_tensor(
+                dims=(args.max_num_batched_tokens, vocab_size),
+                dtype=mi.bfloat16,
+                name="argmax_in",
+                io_category="cuda_tensor",
+            )
         argmax_part_value = mpk.new_tensor(
             dims=(args.max_num_batched_tokens, mpk.num_workers),
             dtype=mi.bfloat16,
@@ -1145,6 +1168,16 @@ if __name__ == "__main__":
                 ((all_generated_ids < 0)
                  | (all_generated_ids >= model.config.vocab_size)).sum().item()
             )
+            final_logits_topk = None
+            if args.capture_final_logits_topk:
+                k = min(args.capture_final_logits_topk, model.config.vocab_size)
+                values, indices = torch.topk(
+                    logits[0, -1, : model.config.vocab_size].float(), k
+                )
+                final_logits_topk = [
+                    {"token_id": int(index), "logit": float(value)}
+                    for value, index in zip(values.cpu(), indices.cpu())
+                ]
             out = {
                 "token_ids": token_ids,
                 "text": tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True),
@@ -1159,6 +1192,7 @@ if __name__ == "__main__":
                 "requested_generate_length": output_len,
                 "vocab_size": model.config.vocab_size,
                 "invalid_token_count": invalid_token_count,
+                "final_logits_topk": final_logits_topk,
                 "mode": "torch",
             }
             with open(save_path, "w") as f:
@@ -1314,6 +1348,16 @@ if __name__ == "__main__":
             token_ids = token_ids_by_request[0]
             invalid_token_count = sum(invalid_token_counts_by_request)
             response_text = tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True)
+            final_logits_topk = None
+            if args.capture_final_logits_topk:
+                k = min(args.capture_final_logits_topk, model.config.vocab_size)
+                values, indices = torch.topk(
+                    captured_mpk_logits[0, : model.config.vocab_size].float(), k
+                )
+                final_logits_topk = [
+                    {"token_id": int(index), "logit": float(value)}
+                    for value, index in zip(values.cpu(), indices.cpu())
+                ]
             out = {
                 "token_ids": token_ids,
                 "token_ids_by_request": token_ids_by_request,
@@ -1334,6 +1378,7 @@ if __name__ == "__main__":
                 "requested_generate_length": output_len,
                 "vocab_size": model.config.vocab_size,
                 "invalid_token_count": invalid_token_count,
+                "final_logits_topk": final_logits_topk,
                 "invalid_token_counts_by_request": (
                     invalid_token_counts_by_request
                 ),
