@@ -103,6 +103,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Record CUDA-event timing for embedding, layers, norm, and LM head.",
     )
+    parser.add_argument(
+        "--normal-prefill-attention",
+        choices=("sdpa", "flashinfer"),
+        default="sdpa",
+        help="Attention implementation used by the Torch prefill path.",
+    )
     # lookahead or promptlookup
     parser.add_argument(
         "--spec-decode",
@@ -349,6 +355,8 @@ if __name__ == "__main__":
     # Adopt whichever plan the model ended up holding, so exactly one is live.
     kv_plan = model.model.kv_plan
     kv_plan.max_num_pages = max_num_pages
+    model.set_prefill_attention_backend(args.normal_prefill_attention)
+    print(f"Normal prefill attention: {args.normal_prefill_attention.upper()}")
 
     total_num_requests = 1 if not args.use_mirage else args.max_num_batched_requests
     # get all model weight tensors
@@ -1252,6 +1260,7 @@ if __name__ == "__main__":
                 "total_time_ms": run_time,
                 "prefill_time_ms": prefill_time,
                 "prefill_stage_profile_ms": prefill_stage_profile,
+                "normal_prefill_attention": args.normal_prefill_attention,
                 "decode_time_ms": decode_time,
                 "decode_steps": decode_steps,
                 "decode_step_time_ms": decode_step_ms,

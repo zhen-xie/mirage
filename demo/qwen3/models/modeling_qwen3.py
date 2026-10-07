@@ -221,6 +221,7 @@ class Qwen3Attention(nn.Module):
         self.rope_theta = config.rope_theta
         self.is_causal = True
         self.attention_dropout = config.attention_dropout
+        self.prefill_attention_backend = "sdpa"
         self.q_proj = nn.Linear(
             self.hidden_size,
             (self.num_heads // world_size) * self.head_dim,
@@ -294,13 +295,32 @@ class Qwen3Attention(nn.Module):
             self.value_cache[
                 self.layer_idx, :bsz, :q_len
             ] = value_states
-            attn_output = nn.functional.scaled_dot_product_attention(
-                query_states.permute(0, 2, 1, 3),
-                key_states.permute(0, 2, 1, 3),
-                value_states.permute(0, 2, 1, 3),
-                is_causal=True,
-                enable_gqa=True,
-            ).permute(0, 2, 1, 3)
+            if self.prefill_attention_backend == "flashinfer":
+                try:
+                    import flashinfer
+                except ImportError as error:
+                    raise RuntimeError(
+                        "FlashInfer prefill attention was requested, but the "
+                        "flashinfer package is unavailable"
+                    ) from error
+                outputs = []
+                for request_id in range(bsz):
+                    outputs.append(flashinfer.single_prefill_with_kv_cache(
+                        query_states[request_id],
+                        key_states[request_id],
+                        value_states[request_id],
+                        causal=True,
+                        kv_layout="NHD",
+                    ))
+                attn_output = torch.stack(outputs)
+            else:
+                attn_output = nn.functional.scaled_dot_product_attention(
+                    query_states.permute(0, 2, 1, 3),
+                    key_states.permute(0, 2, 1, 3),
+                    value_states.permute(0, 2, 1, 3),
+                    is_causal=True,
+                    enable_gqa=True,
+                ).permute(0, 2, 1, 3)
         else:
             outputs = []
             for request_id in range(bsz):
@@ -476,6 +496,12 @@ class Qwen3Model(Qwen3PreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
+    def set_prefill_attention_backend(self, backend):
+        if backend not in ("sdpa", "flashinfer"):
+            raise ValueError(f"Unsupported prefill attention backend: {backend}")
+        for layer in self.layers:
+            layer.self_attn.prefill_attention_backend = backend
+
     def enable_prefill_profile(self):
         self._profile_prefill = True
         self._prefill_profile_events = []
@@ -573,6 +599,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
+
+    def set_prefill_attention_backend(self, backend):
+        self.model.set_prefill_attention_backend(backend)
 
     def enable_prefill_profile(self):
         self._profile_prefill = True
