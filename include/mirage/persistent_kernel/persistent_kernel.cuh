@@ -1047,6 +1047,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
   int queue_pos = 0, queue_len = 0;
 #ifdef MPK_ENABLE_PROFILING
   size_t task_counter = 0;
+  size_t dependency_wait_counter = 0;
   bool profile_current_task = false;
 #endif
   while (true) {
@@ -1123,9 +1124,21 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
       queue_len = num_loaded_tasks;
     }
     TaskDesc *task_desc = task_descs + queue_pos;
+#ifdef MPK_ENABLE_PROFILING
+    size_t task_iteration = get_task_iteration_num(task_ids[queue_pos]);
+    profile_current_task =
+        task_iteration >= MPK_PROFILE_START_ITERATION &&
+        task_iteration <
+            MPK_PROFILE_START_ITERATION + MPK_PROFILE_NUM_ITERATIONS;
+#endif
     // Make sure task is ready before start execution
     if (threadIdx.x == 0) {
       if (task_desc->dependent_event != EVENT_INVALID_ID) {
+#if defined(MPK_ENABLE_PROFILING) && defined(MPK_PROFILE_SCHEDULER_WAITS)
+        if (profile_current_task) {
+          PROFILER_EVENT_START(TASK_GET_EVENT, dependency_wait_counter);
+        }
+#endif
         // Wait until the event has been triggered enough times
         EventId event_id = task_desc->dependent_event;
         assert(get_event_gpu_id(event_id) == config.my_gpu_id);
@@ -1150,16 +1163,16 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
             __nanosleep(10);
           }
         }
+#if defined(MPK_ENABLE_PROFILING) && defined(MPK_PROFILE_SCHEDULER_WAITS)
+        if (profile_current_task) {
+          PROFILER_EVENT_END(TASK_GET_EVENT, dependency_wait_counter++);
+        }
+#endif
       }
     }
     __syncthreads();
 
 #ifdef MPK_ENABLE_PROFILING
-    size_t task_iteration = get_task_iteration_num(task_ids[queue_pos]);
-    profile_current_task =
-        task_iteration >= MPK_PROFILE_START_ITERATION &&
-        task_iteration <
-            MPK_PROFILE_START_ITERATION + MPK_PROFILE_NUM_ITERATIONS;
     if (profile_current_task && task_desc->task_type != TASK_TERMINATE) {
       PROFILER_EVENT_START(task_desc->task_type, task_counter);
     }

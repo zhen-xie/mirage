@@ -319,6 +319,8 @@ def get_compile_command(
     flags = flags + [f"-DMPK_TARGET_CC={target_cc}", "-DMIRAGE_BACKEND_USE_CUDA"]
     if mpk.scheduler_policy == "event-aligned":
         flags = flags + ["-DMPK_SCHEDULER_EVENT_ALIGNED=1"]
+    if mpk.profile_scheduler_waits:
+        flags = flags + ["-DMPK_PROFILE_SCHEDULER_WAITS=1"]
     if test_mode:
         flags = flags + ["-DMPK_TEST_MODE"]
     if mpk.mode == "offline":
@@ -455,6 +457,7 @@ class PersistentKernel:
         profiler_start_iteration: int = 1,
         profiler_num_iterations: Optional[int] = None,
         scheduler_policy: str = "round-robin",
+        profile_scheduler_waits: bool = False,
     ):
         self.__finalized__ = False
         self._is_compiled = False
@@ -531,6 +534,10 @@ class PersistentKernel:
                 "scheduler_policy must be 'round-robin' or 'event-aligned', "
                 f"got {scheduler_policy!r}")
         self.scheduler_policy = scheduler_policy
+        self.profile_scheduler_waits = profile_scheduler_waits
+        if self.profile_scheduler_waits and profiler_tensor is None:
+            raise ValueError(
+                "profile_scheduler_waits requires a profiler tensor")
         self.eos_token_id = eos_token_id
         self.kn_graph = KNGraph(CyKNGraph(disable_fingerprint=True))
         # Prevent GC of PyTorch tensors whose GPU pointers are baked into the
@@ -766,6 +773,7 @@ class PersistentKernel:
             "profiler_start_iteration": self.profiler_start_iteration,
             "profiler_num_iterations": self.profiler_num_iterations,
             "scheduler_policy": self.scheduler_policy,
+            "profile_scheduler_waits": self.profile_scheduler_waits,
             "max_num_pages": self.max_num_pages,
             "page_size": self.page_size,
             "world_size": self.world_size,
@@ -813,6 +821,7 @@ class PersistentKernel:
             ("profiler_start_iteration", self.profiler_start_iteration),
             ("profiler_num_iterations", self.profiler_num_iterations),
             ("scheduler_policy", self.scheduler_policy),
+            ("profile_scheduler_waits", self.profile_scheduler_waits),
             ("max_num_pages", self.max_num_pages),
             ("page_size", self.page_size),
             ("world_size", self.world_size),

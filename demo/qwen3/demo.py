@@ -133,6 +133,14 @@ if __name__ == "__main__":
         help="Record CUDA-event timing for embedding, layers, norm, and LM head.",
     )
     parser.add_argument(
+        "--profile-scheduler-waits",
+        action="store_true",
+        help=(
+            "Record worker dependency-wait intervals in the MPK profiler. "
+            "Requires --profiling."
+        ),
+    )
+    parser.add_argument(
         "--normal-prefill-attention",
         choices=("sdpa", "flashinfer"),
         default="sdpa",
@@ -286,6 +294,8 @@ if __name__ == "__main__":
         parser.error("--prefill-warmup-runs must be non-negative")
     if args.capture_final_logits_topk < 0:
         parser.error("--capture-final-logits-topk must be non-negative")
+    if args.profile_scheduler_waits and not args.profiling:
+        parser.error("--profile-scheduler-waits requires --profiling")
     if args.normal_prefill_cuda_graph:
         if not args.use_mirage or args.mpk_policy != "decode-only":
             parser.error(
@@ -625,8 +635,11 @@ if __name__ == "__main__":
             profiler_start_iteration=args.profiler_decode_start_step,
             profiler_num_iterations=args.profiler_decode_num_steps,
             scheduler_policy=args.mpk_scheduler_policy,
+            profile_scheduler_waits=args.profile_scheduler_waits,
         )
         print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
+        if args.profile_scheduler_waits:
+            print("MPK scheduler wait profiling: ENABLED")
         print(
             "MPK max tokens per request: "
             f"{mpk.max_tokens_per_request}"
@@ -1504,6 +1517,9 @@ if __name__ == "__main__":
                 ),
                 "mpk_scheduler_policy": (
                     args.mpk_scheduler_policy if args.use_mirage else None
+                ),
+                "mpk_profile_scheduler_waits": (
+                    args.profile_scheduler_waits if args.use_mirage else None
                 ),
                 "mode": (
                     "normal_prefill_mpk_decode"
