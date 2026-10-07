@@ -37,7 +37,7 @@ def main():
     parser.add_argument("profile_csv", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--minimum-categories", nargs="+", default=[
-        "attention", "linear", "norm", "activation", "sampling", "scheduler",
+        "attention", "linear", "norm", "activation", "sampling",
     ])
     args = parser.parse_args()
 
@@ -108,7 +108,9 @@ def main():
         "unknown_tasks": sorted(set(unknown)),
         "measurement_note": (
             "worker_time sums task durations across parallel CUDA blocks; it is an "
-            "activity measure and must not be compared directly with decode wall time"
+            "activity measure and must not be compared directly with decode wall time. "
+            "Scheduler events are excluded because worker and scheduler kernels require "
+            "separate profiler buffers."
         ),
         "categories": category_rows,
         "tasks": task_rows,

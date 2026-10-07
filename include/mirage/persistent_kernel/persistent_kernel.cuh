@@ -351,7 +351,7 @@ __device__ __forceinline__ bool
       config.step[request_id] = step + num_tokens;
       int step_advance = num_tokens;
 #endif
-#if defined(MPK_ENABLE_PROFILING) || defined(MPK_TEST_MODE)
+#if defined(MPK_TEST_MODE)
       if (true)
 #else
       if ((step + step_advance + 1 >= config.max_seq_length) ||
@@ -1210,7 +1210,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
 
         if ((count + 1) == static_cast<EventCounter>(num_triggers) *
                                get_task_iteration_num(task_ids[queue_pos])) {
-#ifdef MPK_ENABLE_PROFILING
+#ifdef MPK_ENABLE_SCHEDULER_PROFILING
           PROFILER_EVENT_START(TASK_SCHD_EVENTS, task_counter);
 #endif
           EventDesc event_desc = config.all_events[event_index];
@@ -1253,7 +1253,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
                   last_event_pos + 1);
             } while (old != last_event_pos);
           }
-#ifdef MPK_ENABLE_PROFILING
+#ifdef MPK_ENABLE_SCHEDULER_PROFILING
           PROFILER_EVENT_END(TASK_SCHD_EVENTS, task_counter++);
 #endif
         }
@@ -1302,7 +1302,7 @@ __device__ __forceinline__ void execute_scheduler(RuntimeConfig config,
     sched_queue_ids[0] = sched_id;
     unsigned long long int my_first_worker, my_last_worker;
 
-#ifdef MPK_ENABLE_PROFILING
+#ifdef MPK_ENABLE_SCHEDULER_PROFILING
     // Up to 4 scheduler warps share one block but the profiler has one
     // slot per block (num_groups=1).  Only warp 0 writes so events from
     // different warps don't interleave.
@@ -1405,7 +1405,7 @@ __device__ __forceinline__ void execute_scheduler(RuntimeConfig config,
 #ifdef MPK_ENABLE_VERBOSE
         printf("[SCHD] END_OF_TASK_GRAPH\n");
 #endif
-#ifdef MPK_ENABLE_PROFILING
+#ifdef MPK_ENABLE_SCHEDULER_PROFILING
         PROFILER_EVENT_START(TASK_SCHD_PREPARE_BATCH, sched_profiling_cnt);
 #endif
 #ifdef MODE_ONLINE_NOTOKEN
@@ -1414,12 +1414,12 @@ __device__ __forceinline__ void execute_scheduler(RuntimeConfig config,
         if (!prepare_next_batch(config))
 #endif
         {
-#ifdef MPK_ENABLE_PROFILING
+#ifdef MPK_ENABLE_SCHEDULER_PROFILING
           PROFILER_EVENT_END(TASK_SCHD_PREPARE_BATCH, sched_profiling_cnt++);
 #endif
           terminate_schedulers(config);
         } else {
-#ifdef MPK_ENABLE_PROFILING
+#ifdef MPK_ENABLE_SCHEDULER_PROFILING
           PROFILER_EVENT_END(TASK_SCHD_PREPARE_BATCH, sched_profiling_cnt++);
 #endif
           // Launch task 1 (begin_task_graph) for the next iteration
