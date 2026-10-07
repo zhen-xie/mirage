@@ -99,6 +99,14 @@ if __name__ == "__main__":
         "--profiling", action="store_true", help="Use Profiler to generate trace"
     )
     parser.add_argument(
+        "--nsys-decode-capture",
+        action="store_true",
+        help=(
+            "Bracket the MPK decode launch with cudaProfilerStart/Stop so "
+            "Nsight Systems --capture-range=cudaProfilerApi records decode only."
+        ),
+    )
+    parser.add_argument(
         "--profiler-buffer-entries-per-block",
         type=int,
         default=32768,
@@ -258,6 +266,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
+    if args.nsys_decode_capture and (
+        not args.use_mirage or args.mpk_policy != "decode-only"
+    ):
+        parser.error(
+            "--nsys-decode-capture requires --use-mirage "
+            "--mpk-policy decode-only"
+        )
     if args.prefill_warmup_runs < 0:
         parser.error("--prefill-warmup-runs must be non-negative")
     if args.capture_final_logits_topk < 0:
@@ -1323,12 +1338,19 @@ if __name__ == "__main__":
             tokens[:, prompt_len] = prefill_logits[:, -1].argmax(dim=-1)
             step.fill_(prompt_len)
             prefill_ender.record()
+            if args.nsys_decode_capture:
+                torch.cuda.synchronize()
+                torch.cuda.cudart().cudaProfilerStart()
+                print("Nsight decode capture: START")
             starter.record()
         else:
             starter.record()
         mpk(resume_after_prefill=args.mpk_policy == "decode-only")
         ender.record()
         torch.cuda.synchronize()
+        if args.nsys_decode_capture:
+            torch.cuda.cudart().cudaProfilerStop()
+            print("Nsight decode capture: STOP")
         mpk_time = starter.elapsed_time(ender)
         if args.mpk_policy == "decode-only":
             prefill_time = prefill_starter.elapsed_time(prefill_ender)
