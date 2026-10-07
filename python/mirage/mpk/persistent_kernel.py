@@ -321,8 +321,13 @@ def get_compile_command(
         flags = flags + ["-DMPK_SCHEDULER_EVENT_ALIGNED=1"]
     if mpk.profile_scheduler_waits:
         flags = flags + ["-DMPK_PROFILE_SCHEDULER_WAITS=1"]
-    if mpk.worker_policy == "ready-first":
+    if mpk.worker_policy in ("ready-first", "delayed-ready-first"):
         flags = flags + ["-DMPK_WORKER_READY_FIRST=1"]
+    if mpk.worker_policy == "delayed-ready-first":
+        flags = flags + [
+            "-DMPK_WORKER_DELAYED_READY_FIRST=1",
+            f"-DMPK_READY_FIRST_SPIN_ITERS={mpk.ready_first_spin_iters}",
+        ]
     if test_mode:
         flags = flags + ["-DMPK_TEST_MODE"]
     if mpk.mode == "offline":
@@ -461,6 +466,7 @@ class PersistentKernel:
         scheduler_policy: str = "round-robin",
         profile_scheduler_waits: bool = False,
         worker_policy: str = "fifo",
+        ready_first_spin_iters: int = 64,
     ):
         self.__finalized__ = False
         self._is_compiled = False
@@ -541,11 +547,15 @@ class PersistentKernel:
         if self.profile_scheduler_waits and profiler_tensor is None:
             raise ValueError(
                 "profile_scheduler_waits requires a profiler tensor")
-        if worker_policy not in ("fifo", "ready-first"):
+        if worker_policy not in ("fifo", "ready-first", "delayed-ready-first"):
             raise ValueError(
-                "worker_policy must be 'fifo' or 'ready-first', "
+                "worker_policy must be 'fifo', 'ready-first', or "
+                "'delayed-ready-first', "
                 f"got {worker_policy!r}")
         self.worker_policy = worker_policy
+        if ready_first_spin_iters < 0:
+            raise ValueError("ready_first_spin_iters must be non-negative")
+        self.ready_first_spin_iters = ready_first_spin_iters
         self.eos_token_id = eos_token_id
         self.kn_graph = KNGraph(CyKNGraph(disable_fingerprint=True))
         # Prevent GC of PyTorch tensors whose GPU pointers are baked into the
@@ -783,6 +793,7 @@ class PersistentKernel:
             "scheduler_policy": self.scheduler_policy,
             "profile_scheduler_waits": self.profile_scheduler_waits,
             "worker_policy": self.worker_policy,
+            "ready_first_spin_iters": self.ready_first_spin_iters,
             "max_num_pages": self.max_num_pages,
             "page_size": self.page_size,
             "world_size": self.world_size,
@@ -832,6 +843,7 @@ class PersistentKernel:
             ("scheduler_policy", self.scheduler_policy),
             ("profile_scheduler_waits", self.profile_scheduler_waits),
             ("worker_policy", self.worker_policy),
+            ("ready_first_spin_iters", self.ready_first_spin_iters),
             ("max_num_pages", self.max_num_pages),
             ("page_size", self.page_size),
             ("world_size", self.world_size),

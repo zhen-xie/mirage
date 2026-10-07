@@ -282,11 +282,20 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--mpk-worker-policy",
-        choices=("fifo", "ready-first"),
+        choices=("fifo", "ready-first", "delayed-ready-first"),
         default="fifo",
         help=(
             "Worker-local task selection. Ready-first executes another ready "
             "task from the prefetched queue instead of blocking immediately."
+        ),
+    )
+    parser.add_argument(
+        "--mpk-ready-first-spin-iters",
+        type=int,
+        default=64,
+        help=(
+            "Dependency polling iterations before delayed-ready-first scans "
+            "other prefetched tasks."
         ),
     )
     args = parser.parse_args()
@@ -343,6 +352,8 @@ if __name__ == "__main__":
         parser.error("--mpk-attention requires --use-mirage")
     if args.mpk_split_kv_chunk_size <= 0:
         parser.error("--mpk-split-kv-chunk-size must be positive")
+    if args.mpk_ready_first_spin_iters < 0:
+        parser.error("--mpk-ready-first-spin-iters must be non-negative")
     if args.profiler_decode_start_step < 1:
         parser.error("--profiler-decode-start-step must be at least 1")
     if (args.profiler_decode_num_steps is not None
@@ -646,9 +657,14 @@ if __name__ == "__main__":
             scheduler_policy=args.mpk_scheduler_policy,
             profile_scheduler_waits=args.profile_scheduler_waits,
             worker_policy=args.mpk_worker_policy,
+            ready_first_spin_iters=args.mpk_ready_first_spin_iters,
         )
         print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
         print(f"MPK worker policy: {mpk.worker_policy.upper()}")
+        if args.mpk_worker_policy == "delayed-ready-first":
+            print(
+                "MPK delayed ready-first spin iterations: "
+                f"{mpk.ready_first_spin_iters}")
         if args.profile_scheduler_waits:
             print("MPK scheduler wait profiling: ENABLED")
         print(
@@ -1534,6 +1550,9 @@ if __name__ == "__main__":
                 ),
                 "mpk_worker_policy": (
                     args.mpk_worker_policy if args.use_mirage else None
+                ),
+                "mpk_ready_first_spin_iters": (
+                    args.mpk_ready_first_spin_iters if args.use_mirage else None
                 ),
                 "mode": (
                     "normal_prefill_mpk_decode"

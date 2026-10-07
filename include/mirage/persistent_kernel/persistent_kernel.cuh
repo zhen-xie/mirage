@@ -1135,11 +1135,40 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
       selected_task_pos = -1;
       int first_unconsumed = -1;
       for (int candidate = 0; candidate < queue_len; candidate++) {
+        if (!(consumed_task_mask & (1u << candidate))) {
+          first_unconsumed = candidate;
+          break;
+        }
+      }
+#ifdef MPK_WORKER_DELAYED_READY_FIRST
+      if (first_unconsumed >= 0) {
+        TaskDesc const *fifo_desc = task_descs + first_unconsumed;
+        if (fifo_desc->dependent_event == EVENT_INVALID_ID) {
+          selected_task_pos = first_unconsumed;
+        } else if (!is_nvshmem_event(fifo_desc->dependent_event)) {
+          size_t event_index =
+              get_event_position_index(fifo_desc->dependent_event);
+          EventCounter needed_counts =
+              static_cast<EventCounter>(
+                  config.all_event_num_triggers[event_index]) *
+              get_task_iteration_num(task_ids[first_unconsumed]);
+          for (int spin = 0; spin < MPK_READY_FIRST_SPIN_ITERS; spin++) {
+            EventCounter actual_counts = ld_acquire_sys_u64(
+                &config.all_event_counters[event_index]);
+            if (actual_counts >= needed_counts) {
+              selected_task_pos = first_unconsumed;
+              break;
+            }
+            __nanosleep(10);
+          }
+        }
+      }
+#endif
+      for (int candidate = 0;
+           candidate < queue_len && selected_task_pos < 0;
+           candidate++) {
         if (consumed_task_mask & (1u << candidate)) {
           continue;
-        }
-        if (first_unconsumed < 0) {
-          first_unconsumed = candidate;
         }
         TaskDesc const *candidate_desc = task_descs + candidate;
         bool ready = candidate_desc->dependent_event == EVENT_INVALID_ID;
