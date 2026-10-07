@@ -52,11 +52,13 @@ def run(command, log, timeout):
     return code, ""
 
 
-def demo_command(args, batch, s_in, max_seq, output, cache=None, trace=None):
+def demo_command(
+    args, batch, s_in, max_seq, page_size, output, cache=None, trace=None
+):
     command = [
         sys.executable, str(DEMO), "--model", args.model,
         "--input-length", str(s_in), "--max-seq-length", str(max_seq),
-        "--max-new-tokens", str(COMPARE_TOKENS), "--page-size", str(max_seq),
+        "--max-new-tokens", str(COMPARE_TOKENS), "--page-size", str(page_size),
         "--max-num-pages", str(batch),
         "--max-num-batched-requests", str(batch),
         "--max-num-batched-tokens", str(max(8, batch)),
@@ -110,7 +112,8 @@ def main():
     rows = []
     failed = 0
     model_name = safe(args.model)
-    for index, (case_name, batch, s_in, max_seq) in enumerate(cases, 1):
+    for index, (case_name, batch, s_in, page_size) in enumerate(cases, 1):
+        max_seq = s_in + COMPARE_TOKENS
         reference_key = (s_in, max_seq)
         reference_output = args.output_dir / f"reference_in{s_in}.json"
         reference_log = args.output_dir / f"reference_in{s_in}.log"
@@ -118,7 +121,9 @@ def main():
             if not reference_output.is_file():
                 print(f"Running Torch reference S_IN={s_in}...", flush=True)
                 _, error = run(
-                    demo_command(args, 1, s_in, max_seq, reference_output),
+                    demo_command(
+                        args, 1, s_in, max_seq, page_size, reference_output
+                    ),
                     reference_log, args.timeout,
                 )
                 if error:
@@ -133,7 +138,9 @@ def main():
         output = case_dir / "tokens.json"
         log = case_dir / "run.log"
         trace = case_dir / "mpk_profile"
-        cache = args.output_dir / "cache" / f"{model_name}_b{batch}_seq{max_seq}"
+        cache = args.output_dir / "cache" / (
+            f"{model_name}_b{batch}_seq{max_seq}_page{page_size}"
+        )
         cache.mkdir(parents=True, exist_ok=True)
         print(
             f"[{index}/{len(cases)}] Profiling {case_name} B={batch} "
@@ -141,7 +148,9 @@ def main():
             flush=True,
         )
         _, error = run(
-            demo_command(args, batch, s_in, max_seq, output, cache, trace),
+            demo_command(
+                args, batch, s_in, max_seq, page_size, output, cache, trace
+            ),
             log, args.timeout,
         )
         reasons = [error] if error else []
