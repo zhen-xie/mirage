@@ -548,7 +548,17 @@ if __name__ == "__main__":
             profiler_tensor=profiler_tensor,
             trace_name=args.trace_name,
             spec_decode_config=spec_decode_config,
-            use_cutlass_kernel=args.use_cutlass_kernel
+            use_cutlass_kernel=args.use_cutlass_kernel,
+            # Decode-only contributes exactly one query token per request to
+            # each persistent-kernel step.  Size per-request attention CTA
+            # buffers from that fact rather than from the whole batch.
+            max_tokens_per_request=(
+                1 if args.mpk_policy == "decode-only" else None
+            ),
+        )
+        print(
+            "MPK max tokens per request: "
+            f"{mpk.max_tokens_per_request}"
         )
         
         if spec_decode_config and spec_decode_config.method == "promptlookup":
@@ -1385,6 +1395,9 @@ if __name__ == "__main__":
                 "batch_size": total_num_requests,
                 "mpk_kernel_cache_status": mpk_kernel_cache_status,
                 "mpk_kernel_prepare_time_ms": mpk_kernel_prepare_time_ms,
+                "mpk_max_tokens_per_request": (
+                    mpk.max_tokens_per_request if args.use_mirage else None
+                ),
                 "mpk_kernel_cache_dir": (
                     os.path.abspath(args.mpk_kernel_cache_dir)
                     if args.mpk_kernel_cache_dir else None

@@ -1455,8 +1455,11 @@ class PersistentKernel:
                 break
         params = [num_q_heads, num_kv_heads, qk_norm, rotary_embed,
                   self.max_seq_length, block_size] + tail[:n]
-        if self.target_cc == 100:
-            # params[14]: max_tokens_per_request (rows the CTA buffers hold).
+        if self.target_cc == 100 or self.target_cc == 90:
+            # params[14]: max_tokens_per_request (rows the per-request CTA
+            # buffers hold).  Hopper needs the same cap: using the entire
+            # batch token capacity can exceed its dynamic-smem limit even
+            # though decode contributes one token per request.
             params = [num_q_heads, num_kv_heads, qk_norm, rotary_embed,
                       self.max_seq_length, block_size] + tail
             assert q_len_override <= self.max_tokens_per_request, (

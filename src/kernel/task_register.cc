@@ -1332,11 +1332,13 @@ int TaskRegister::register_paged_attention_hopper_task(
   // params[10]: window_size   (optional; sm100-only, must be 0 here)
   // params[11]: has_sink      (optional; sm100-only, must be 0 here)
   // params[12]: group_id      (optional, default 0)
+  // params[13]: page_stride_rows (optional, 0 = packed pages)
+  // params[14]: max_tokens_per_request (optional; caps per-CTA buffers)
   // Positions match the sm100 variant: Python emits one packing for every
   // target_cc, so a field keeps its index even where it is unsupported.
   assert(params.size() == 6 || params.size() == 8 || params.size() == 10 ||
          params.size() == 11 || params.size() == 12 || params.size() == 13 ||
-         params.size() == 14);
+         params.size() == 14 || params.size() == 15);
   if (params.size() >= 8) {
     assert(params[6] == 0 && params[7] == 0 &&
            "q_len_override/tail_offset are not supported on Hopper");
@@ -1380,6 +1382,12 @@ int TaskRegister::register_paged_attention_hopper_task(
   int max_seq_len = params[4];
   int page_size = params[5];
   int max_tokens = input_ops[0]->dtensor.dim[0];
+  if (params.size() >= 15) {
+    int const max_tokens_per_request = params[14];
+    assert(max_tokens_per_request >= 1);
+    assert(max_tokens_per_request <= max_tokens);
+    max_tokens = max_tokens_per_request;
+  }
 
   assert(input_ops[1]->output_tensors[0].num_dims == 4);
   assert(head_dim == input_ops[1]->output_tensors[0].dim[3]);
