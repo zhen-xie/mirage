@@ -138,7 +138,16 @@ def _decode_events(profiler_buffer: torch.Tensor):
 
     yield ("__header__", num_blocks, num_groups)
 
-    populated = torch.nonzero(profiler_buffer_host[1:], as_tuple=False).flatten() + 1
+    # torch.nonzero is not implemented for CPU uint64 in the Torch version
+    # used by the benchmark environment.  Reinterpreting the same bits as
+    # int64 preserves zero versus nonzero while avoiding a copy.
+    populated = (
+        torch.nonzero(
+            profiler_buffer_host[1:].view(dtype=torch.int64),
+            as_tuple=False,
+        ).flatten()
+        + 1
+    )
     for index in populated.tolist():
         i = int(index)
         tag, timestamp = profiler_buffer_host[i : i + 1].view(dtype=torch.uint32)
