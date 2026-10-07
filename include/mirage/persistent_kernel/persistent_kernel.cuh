@@ -1014,6 +1014,10 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
   __shared__ int worker_queue_ids[2];
   __shared__ size_t next_task_pos[2];
   __shared__ size_t last_task_pos[2];
+#ifdef MPK_WORKER_READY_FIRST
+  __shared__ unsigned int consumed_task_mask;
+  __shared__ int selected_task_pos;
+#endif
 
 #ifdef MPK_ENABLE_PROFILING
   PROFILER_CLOSURE_PARAMS_DECL;
@@ -1103,6 +1107,9 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
         }
 #endif
         next_task_pos[queue_idx] += num_loaded_tasks;
+#ifdef MPK_WORKER_READY_FIRST
+        consumed_task_mask = 0;
+#endif
       }
       // Load task descs
       static_assert(sizeof(TaskDesc) % 16 == 0);
@@ -1123,9 +1130,49 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
       queue_pos = 0;
       queue_len = num_loaded_tasks;
     }
-    TaskDesc *task_desc = task_descs + queue_pos;
+#ifdef MPK_WORKER_READY_FIRST
+    if (threadIdx.x == 0) {
+      selected_task_pos = -1;
+      int first_unconsumed = -1;
+      for (int candidate = 0; candidate < queue_len; candidate++) {
+        if (consumed_task_mask & (1u << candidate)) {
+          continue;
+        }
+        if (first_unconsumed < 0) {
+          first_unconsumed = candidate;
+        }
+        TaskDesc const *candidate_desc = task_descs + candidate;
+        bool ready = candidate_desc->dependent_event == EVENT_INVALID_ID;
+        if (!ready && !is_nvshmem_event(candidate_desc->dependent_event)) {
+          size_t event_index =
+              get_event_position_index(candidate_desc->dependent_event);
+          EventCounter needed_counts =
+              static_cast<EventCounter>(
+                  config.all_event_num_triggers[event_index]) *
+              get_task_iteration_num(task_ids[candidate]);
+          EventCounter actual_counts = ld_acquire_sys_u64(
+              &config.all_event_counters[event_index]);
+          ready = actual_counts >= needed_counts;
+        }
+        if (ready) {
+          selected_task_pos = candidate;
+          break;
+        }
+      }
+      if (selected_task_pos < 0) {
+        selected_task_pos = first_unconsumed;
+      }
+      assert(selected_task_pos >= 0);
+      consumed_task_mask |= 1u << selected_task_pos;
+    }
+    __syncthreads();
+    int const current_task_pos = selected_task_pos;
+#else
+    int const current_task_pos = queue_pos;
+#endif
+    TaskDesc *task_desc = task_descs + current_task_pos;
 #ifdef MPK_ENABLE_PROFILING
-    size_t task_iteration = get_task_iteration_num(task_ids[queue_pos]);
+    size_t task_iteration = get_task_iteration_num(task_ids[current_task_pos]);
     profile_current_task =
         task_iteration >= MPK_PROFILE_START_ITERATION &&
         task_iteration <
@@ -1146,7 +1193,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
         EventCounter needed_counts =
             static_cast<EventCounter>(
                 config.all_event_num_triggers[event_index]) *
-            get_task_iteration_num(task_ids[queue_pos]);
+            get_task_iteration_num(task_ids[current_task_pos]);
         EventCounter actual_counts = 0;
         if (is_nvshmem_event(event_id)) {
 #if defined(USE_NVSHMEM)
@@ -1231,8 +1278,8 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
                "event_type(local) count(%llu)\n",
                config.my_gpu_id,
                worker_id,
-               get_task_iteration_num(task_ids[queue_pos]),
-               get_task_position_index(task_ids[queue_pos]),
+               get_task_iteration_num(task_ids[current_task_pos]),
+               get_task_position_index(task_ids[current_task_pos]),
                event_id,
                count);
 #endif
@@ -1244,7 +1291,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
         // }
 
         if ((count + 1) == static_cast<EventCounter>(num_triggers) *
-                               get_task_iteration_num(task_ids[queue_pos])) {
+                               get_task_iteration_num(task_ids[current_task_pos])) {
 #ifdef MPK_ENABLE_SCHEDULER_PROFILING
           PROFILER_EVENT_START(TASK_SCHD_EVENTS, task_counter);
 #endif
@@ -1303,7 +1350,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
                "event_type(remote)\n",
                config.my_gpu_id,
                worker_id,
-               get_task_position_index(task_ids[queue_pos]),
+                get_task_position_index(task_ids[current_task_pos]),
                event_id);
 #endif
       }

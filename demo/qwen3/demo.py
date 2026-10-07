@@ -280,6 +280,15 @@ if __name__ == "__main__":
             "group at the beginning of a scheduler's contiguous worker range."
         ),
     )
+    parser.add_argument(
+        "--mpk-worker-policy",
+        choices=("fifo", "ready-first"),
+        default="fifo",
+        help=(
+            "Worker-local task selection. Ready-first executes another ready "
+            "task from the prefetched queue instead of blocking immediately."
+        ),
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
@@ -636,8 +645,10 @@ if __name__ == "__main__":
             profiler_num_iterations=args.profiler_decode_num_steps,
             scheduler_policy=args.mpk_scheduler_policy,
             profile_scheduler_waits=args.profile_scheduler_waits,
+            worker_policy=args.mpk_worker_policy,
         )
         print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
+        print(f"MPK worker policy: {mpk.worker_policy.upper()}")
         if args.profile_scheduler_waits:
             print("MPK scheduler wait profiling: ENABLED")
         print(
@@ -1520,6 +1531,9 @@ if __name__ == "__main__":
                 ),
                 "mpk_profile_scheduler_waits": (
                     args.profile_scheduler_waits if args.use_mirage else None
+                ),
+                "mpk_worker_policy": (
+                    args.mpk_worker_policy if args.use_mirage else None
                 ),
                 "mode": (
                     "normal_prefill_mpk_decode"

@@ -321,6 +321,8 @@ def get_compile_command(
         flags = flags + ["-DMPK_SCHEDULER_EVENT_ALIGNED=1"]
     if mpk.profile_scheduler_waits:
         flags = flags + ["-DMPK_PROFILE_SCHEDULER_WAITS=1"]
+    if mpk.worker_policy == "ready-first":
+        flags = flags + ["-DMPK_WORKER_READY_FIRST=1"]
     if test_mode:
         flags = flags + ["-DMPK_TEST_MODE"]
     if mpk.mode == "offline":
@@ -458,6 +460,7 @@ class PersistentKernel:
         profiler_num_iterations: Optional[int] = None,
         scheduler_policy: str = "round-robin",
         profile_scheduler_waits: bool = False,
+        worker_policy: str = "fifo",
     ):
         self.__finalized__ = False
         self._is_compiled = False
@@ -538,6 +541,11 @@ class PersistentKernel:
         if self.profile_scheduler_waits and profiler_tensor is None:
             raise ValueError(
                 "profile_scheduler_waits requires a profiler tensor")
+        if worker_policy not in ("fifo", "ready-first"):
+            raise ValueError(
+                "worker_policy must be 'fifo' or 'ready-first', "
+                f"got {worker_policy!r}")
+        self.worker_policy = worker_policy
         self.eos_token_id = eos_token_id
         self.kn_graph = KNGraph(CyKNGraph(disable_fingerprint=True))
         # Prevent GC of PyTorch tensors whose GPU pointers are baked into the
@@ -774,6 +782,7 @@ class PersistentKernel:
             "profiler_num_iterations": self.profiler_num_iterations,
             "scheduler_policy": self.scheduler_policy,
             "profile_scheduler_waits": self.profile_scheduler_waits,
+            "worker_policy": self.worker_policy,
             "max_num_pages": self.max_num_pages,
             "page_size": self.page_size,
             "world_size": self.world_size,
@@ -822,6 +831,7 @@ class PersistentKernel:
             ("profiler_num_iterations", self.profiler_num_iterations),
             ("scheduler_policy", self.scheduler_policy),
             ("profile_scheduler_waits", self.profile_scheduler_waits),
+            ("worker_policy", self.worker_policy),
             ("max_num_pages", self.max_num_pages),
             ("page_size", self.page_size),
             ("world_size", self.world_size),
