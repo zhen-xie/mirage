@@ -65,6 +65,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("trace", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--maximum-other-share", type=float, default=0.20)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -103,13 +104,22 @@ def main():
 
     write_csv(args.output_dir / "profile_by_category.csv", category_rows)
     write_csv(args.output_dir / "profile_by_kernel.csv", kernel_rows)
+    other_share = next(
+        (row["time_share"] for row in category_rows if row["category"] == "other"),
+        0.0,
+    )
+    unclassified = [row for row in kernel_rows if row["category"] == "other"][:25]
+    status = "passed" if other_share <= args.maximum_other_share else "classification_incomplete"
     summary = {
-        "status": "passed",
+        "status": status,
         "source": str(args.trace),
         "cuda_kernel_events": sum(row["calls"] for row in kernel_rows),
         "cuda_kernel_time_ms": total_us / 1000.0,
         "categories": category_rows,
         "top_kernels": kernel_rows[:25],
+        "top_unclassified_kernels": unclassified,
+        "other_time_share": other_share,
+        "maximum_other_share": args.maximum_other_share,
         "classification_note": (
             "Categories are inferred from CUDA kernel names. CUDA kernel durations may "
             "overlap across streams and are not end-to-end wall time."
@@ -126,6 +136,15 @@ def main():
             f"kernel_time={row['duration_ms']:10.3f} ms "
             f"share={100 * row['time_share']:5.1f}%"
         )
+    if unclassified:
+        print("Top unclassified CUDA kernels:")
+        for row in unclassified[:15]:
+            print(
+                f"  {row['duration_ms']:10.3f} ms  calls={row['calls']:7d}  "
+                f"{row['kernel']}"
+            )
+    print(f"Classification status: {status}")
+    raise SystemExit(0 if status == "passed" else 2)
 
 
 if __name__ == "__main__":

@@ -151,7 +151,10 @@ def main():
                         "--output-dir", str(summary_dir),
                     ], cwd=ROOT).returncode
                     if code:
-                        reasons.append("profile summary failed")
+                        reasons.append("profile classification incomplete")
+                        summary_path = summary_dir / "profile_summary.json"
+                        if summary_path.is_file():
+                            profile = json.loads(summary_path.read_text(encoding="utf-8"))
                     else:
                         profile = json.loads(
                             (summary_dir / "profile_summary.json").read_text(encoding="utf-8")
