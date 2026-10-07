@@ -47,7 +47,9 @@ def terminate(process):
         process.wait()
 
 
-def execute(args, model, backend):
+def execute(args, model, backend, mpk=None):
+    if mpk is None:
+        mpk = backend == "mpk"
     model_name = safe_name(model)
     output = args.output_dir / f"{model_name}_{backend}.json"
     log = args.output_dir / f"{model_name}_{backend}.log"
@@ -64,7 +66,7 @@ def execute(args, model, backend):
         "--ignore-eos",
         "--save-tokens", str(output),
     ]
-    if backend == "mpk":
+    if mpk:
         cache = args.cache_dir / model_name
         command += [
             "--use-mirage", "--mpk-policy", "decode-only",
@@ -112,10 +114,13 @@ def main():
     parser.add_argument("--models", nargs="+", required=True)
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--threshold", type=int, default=256)
+    parser.add_argument("--warmup-runs", type=int, default=0)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     if len(set(args.models)) != len(args.models):
         parser.error("--models must not contain duplicates")
+    if args.warmup_runs < 0:
+        parser.error("--warmup-runs must be non-negative")
     args.output_dir = args.output_dir.resolve()
     args.cache_dir = args.output_dir / "cache"
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -126,6 +131,15 @@ def main():
     all_passed = True
     for model in args.models:
         torch_result = execute(args, model, "torch")
+        for warmup_index in range(args.warmup_runs):
+            warmup_result = execute(
+                args, model, f"mpk_warmup_{warmup_index + 1}", mpk=True
+            )
+            if warmup_result["status"] != "completed":
+                raise RuntimeError(
+                    f"MPK warmup failed for {model}: "
+                    f"{warmup_result.get('reason')}; see {warmup_result['log']}"
+                )
         mpk_result = execute(args, model, "mpk")
         errors = []
         torch_data = torch_result.get("data", {})
@@ -238,6 +252,8 @@ def main():
         "s_out": S_OUT,
         "max_seq_length": MAX_SEQ_LENGTH,
         "compare_tokens": COMPARE_TOKENS,
+        "warmup_runs": args.warmup_runs,
+        "measured_runs": 1,
         "rows": rows,
     }
     (args.output_dir / "summary.json").write_text(

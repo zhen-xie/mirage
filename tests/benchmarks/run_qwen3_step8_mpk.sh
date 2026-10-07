@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+
+set -uo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+OUTDIR=${OUTDIR:-"$ROOT/results/qwen3_step8_mpk"}
+MODELS=${MODELS:-"Qwen/Qwen3-4B Qwen/Qwen3-8B Qwen/Qwen3-14B"}
+TIMEOUT=${TIMEOUT:-3600}
+THRESHOLD=${THRESHOLD:-256}
+BUILD_LOG="$OUTDIR/build.log"
+
+cd "$ROOT" || exit 1
+mkdir -p "$OUTDIR"
+
+export TVM_FFI_DISABLE_TORCH_C_DLPACK=1
+export PYTHONUNBUFFERED=1
+export NVCC_PREPEND_FLAGS="--threads 8${NVCC_PREPEND_FLAGS:+ $NVCC_PREPEND_FLAGS}"
+
+CUDA_TOOLKIT=${MIRAGE_CUDA_HOME:-/opt/ohpc/pub/apps/cuda/13.3}
+if [[ -x "$CUDA_TOOLKIT/bin/nvcc" ]]; then
+    export CUDA_HOME="$CUDA_TOOLKIT"
+    export CUDA_PATH="$CUDA_TOOLKIT"
+    export CUDACXX="$CUDA_TOOLKIT/bin/nvcc"
+    export PATH="$CUDA_TOOLKIT/bin:$PATH"
+    export LD_LIBRARY_PATH="$CUDA_TOOLKIT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+printf 'CUDA compiler: %s\n' "$(command -v nvcc)"
+nvcc --version | tail -n 1
+
+printf 'Running syntax checks...\n'
+if ! python -m py_compile \
+    demo/qwen3/demo.py \
+    demo/qwen3/models/modeling_qwen3.py \
+    python/mirage/mpk/models/qwen3/builder.py \
+    tests/benchmarks/qwen3_step7_model_smoke.py \
+    tests/benchmarks/qwen3_step8_compare_sglang.py
+then
+    printf 'Syntax checks failed.\n'
+    exit 1
+fi
+
+printf 'Building and installing Mirage...\n'
+if timeout "$TIMEOUT" python -m pip install -e . -v --no-build-isolation \
+    > "$BUILD_LOG" 2>&1
+then
+    printf 'Build completed.\n'
+else
+    result=$?
+    printf 'Build failed with exit code %s. Last 100 lines:\n' "$result"
+    tail -n 100 "$BUILD_LOG"
+    exit "$result"
+fi
+
+read -r -a models <<< "$MODELS"
+printf 'Running Step 8 MPK measurements with warmup=1 and repeat=1...\n'
+python tests/benchmarks/qwen3_step7_model_smoke.py \
+    --models "${models[@]}" \
+    --warmup-runs 1 \
+    --timeout "$TIMEOUT" \
+    --threshold "$THRESHOLD" \
+    --output-dir "$OUTDIR"
+result=$?
+
+printf 'Step 8 MPK runner exited with code %s.\n' "$result"
+printf 'MPK summary JSON: %s\n' "$OUTDIR/summary.json"
+exit "$result"
