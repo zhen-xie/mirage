@@ -79,6 +79,13 @@ static_assert(MPK_MAX_TOKENS_PER_REQUEST >= 1 &&
 #define MPK_MAX_GENERATION_LENGTH MPK_MAX_SEQ_LENGTH
 #endif
 
+#ifndef MPK_PROFILE_START_ITERATION
+#define MPK_PROFILE_START_ITERATION 1
+#endif
+#ifndef MPK_PROFILE_NUM_ITERATIONS
+#define MPK_PROFILE_NUM_ITERATIONS MPK_MAX_GENERATION_LENGTH
+#endif
+
 #if defined(MIRAGE_GRACE_HOPPER)
 #define WORKER_NUM_THREADS 256
 #define SINGLE_KERNEL_NUM_THREADS 256
@@ -1040,6 +1047,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
   int queue_pos = 0, queue_len = 0;
 #ifdef MPK_ENABLE_PROFILING
   size_t task_counter = 0;
+  bool profile_current_task = false;
 #endif
   while (true) {
     // fetch next task from a task queue if task_descs is empty
@@ -1147,7 +1155,12 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
     __syncthreads();
 
 #ifdef MPK_ENABLE_PROFILING
-    if (task_desc->task_type != TASK_TERMINATE) {
+    size_t task_iteration = get_task_iteration_num(task_ids[queue_pos]);
+    profile_current_task =
+        task_iteration >= MPK_PROFILE_START_ITERATION &&
+        task_iteration <
+            MPK_PROFILE_START_ITERATION + MPK_PROFILE_NUM_ITERATIONS;
+    if (profile_current_task && task_desc->task_type != TASK_TERMINATE) {
       PROFILER_EVENT_START(task_desc->task_type, task_counter);
     }
 #endif
@@ -1182,7 +1195,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
     __syncthreads();
 
 #ifdef MPK_ENABLE_PROFILING
-    if (task_desc->task_type != TASK_TERMINATE) {
+    if (profile_current_task && task_desc->task_type != TASK_TERMINATE) {
       PROFILER_EVENT_END(task_desc->task_type, task_counter++);
     }
 #endif

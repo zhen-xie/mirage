@@ -348,6 +348,10 @@ def get_compile_command(
     flags = flags + [
         f"-DMPK_MAX_GENERATION_LENGTH={mpk.max_generation_length}"
     ]
+    flags = flags + [
+        f"-DMPK_PROFILE_START_ITERATION={mpk.profiler_start_iteration}",
+        f"-DMPK_PROFILE_NUM_ITERATIONS={mpk.profiler_num_iterations}",
+    ]
 
     if _spec_decode_enabled(mpk):
         flags = flags + ["-DMPK_SPEC_DECODE"]
@@ -446,6 +450,8 @@ class PersistentKernel:
         page_size: int = None,
         max_tokens_per_request: Optional[int] = None,
         max_generation_length: Optional[int] = None,
+        profiler_start_iteration: int = 1,
+        profiler_num_iterations: Optional[int] = None,
     ):
         self.__finalized__ = False
         self._is_compiled = False
@@ -509,6 +515,14 @@ class PersistentKernel:
             f"max_generation_length={max_generation_length} must be in "
             f"[1, max_seq_length={max_seq_length}]")
         self.max_generation_length = max_generation_length
+        if profiler_num_iterations is None:
+            profiler_num_iterations = max_generation_length
+        assert profiler_start_iteration >= 1, (
+            "profiler_start_iteration must be at least 1")
+        assert profiler_num_iterations >= 1, (
+            "profiler_num_iterations must be at least 1")
+        self.profiler_start_iteration = profiler_start_iteration
+        self.profiler_num_iterations = profiler_num_iterations
         self.eos_token_id = eos_token_id
         self.kn_graph = KNGraph(CyKNGraph(disable_fingerprint=True))
         # Prevent GC of PyTorch tensors whose GPU pointers are baked into the
@@ -741,6 +755,8 @@ class PersistentKernel:
             "max_num_batched_tokens": self.max_num_batched_tokens,
             "max_tokens_per_request": self.max_tokens_per_request,
             "max_generation_length": self.max_generation_length,
+            "profiler_start_iteration": self.profiler_start_iteration,
+            "profiler_num_iterations": self.profiler_num_iterations,
             "max_num_pages": self.max_num_pages,
             "page_size": self.page_size,
             "world_size": self.world_size,
@@ -785,6 +801,8 @@ class PersistentKernel:
             ("max_num_batched_tokens", self.max_num_batched_tokens),
             ("max_tokens_per_request", self.max_tokens_per_request),
             ("max_generation_length", self.max_generation_length),
+            ("profiler_start_iteration", self.profiler_start_iteration),
+            ("profiler_num_iterations", self.profiler_num_iterations),
             ("max_num_pages", self.max_num_pages),
             ("page_size", self.page_size),
             ("world_size", self.world_size),

@@ -31,7 +31,7 @@ mapping = {
 }
 
 DEFAULT_SAVE_DIR = os.path.join("outputs", "qwen3")
-MAX_SAVE_TOKENS = 100
+MAX_SAVE_TOKENS = 4096
 
 # print limitation
 # torch.set_printoptions(threshold=2000)
@@ -106,6 +106,18 @@ if __name__ == "__main__":
             "Profiler uint64 entries reserved per persistent worker block. "
             "Each paired task event consumes two entries."
         ),
+    )
+    parser.add_argument(
+        "--profiler-decode-start-step",
+        type=int,
+        default=1,
+        help="One-based first decode iteration recorded by the MPK profiler.",
+    )
+    parser.add_argument(
+        "--profiler-decode-num-steps",
+        type=int,
+        default=None,
+        help="Number of consecutive decode iterations recorded by the MPK profiler.",
     )
     parser.add_argument(
         "--profile-prefill-stages",
@@ -288,6 +300,11 @@ if __name__ == "__main__":
         parser.error("--mpk-attention requires --use-mirage")
     if args.mpk_split_kv_chunk_size <= 0:
         parser.error("--mpk-split-kv-chunk-size must be positive")
+    if args.profiler_decode_start_step < 1:
+        parser.error("--profiler-decode-start-step must be at least 1")
+    if (args.profiler_decode_num_steps is not None
+            and args.profiler_decode_num_steps < 1):
+        parser.error("--profiler-decode-num-steps must be at least 1")
     if args.split_kv_cache and (
         args.max_seq_length % args.mpk_split_kv_chunk_size != 0
     ):
@@ -581,12 +598,20 @@ if __name__ == "__main__":
                 if args.mpk_policy == "decode-only"
                 else args.max_seq_length
             ),
+            profiler_start_iteration=args.profiler_decode_start_step,
+            profiler_num_iterations=args.profiler_decode_num_steps,
         )
         print(
             "MPK max tokens per request: "
             f"{mpk.max_tokens_per_request}"
         )
         print(f"MPK max generation length: {mpk.max_generation_length}")
+        if args.profiling:
+            print(
+                "MPK profiler decode window: "
+                f"start={mpk.profiler_start_iteration}, "
+                f"steps={mpk.profiler_num_iterations}"
+            )
         
         if spec_decode_config and spec_decode_config.method == "promptlookup":
             all_tokens = mpk.attach_input(torch_tensor=tokens, name="all_tokens")
