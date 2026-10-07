@@ -25,6 +25,7 @@ CSV_FIELDS = (
     "decode_time_ms", "decode_step_time_ms", "decode_tokens_per_second",
     "cache_status", "kernel_prepare_time_ms", "torch_output_path",
     "mpk_output_path", "torch_log_path", "mpk_log_path", "reason",
+    "prefill_stage_profile_ms",
 )
 
 
@@ -75,6 +76,8 @@ def execute(args, model, backend, mpk=None):
             "--mpk-split-kv-chunk-size", "128",
             "--mpk-kernel-cache-dir", str(cache),
         ]
+        if args.profile_prefill_stages:
+            command.append("--profile-prefill-stages")
     print(
         f"Running model={model} backend={backend} B={BATCH_SIZE} "
         f"S_IN={S_IN} S_OUT={S_OUT}",
@@ -115,6 +118,7 @@ def main():
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--threshold", type=int, default=256)
     parser.add_argument("--warmup-runs", type=int, default=0)
+    parser.add_argument("--profile-prefill-stages", action="store_true")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     if len(set(args.models)) != len(args.models):
@@ -228,6 +232,9 @@ def main():
             "torch_log_path": str(torch_result["log"]),
             "mpk_log_path": str(mpk_result["log"]),
             "reason": "; ".join(errors),
+            "prefill_stage_profile_ms": json.dumps(
+                mpk_data.get("prefill_stage_profile_ms")
+            ),
         }
         rows.append(row)
         print(
@@ -254,6 +261,7 @@ def main():
         "compare_tokens": COMPARE_TOKENS,
         "warmup_runs": args.warmup_runs,
         "measured_runs": 1,
+        "profile_prefill_stages": args.profile_prefill_stages,
         "rows": rows,
     }
     (args.output_dir / "summary.json").write_text(

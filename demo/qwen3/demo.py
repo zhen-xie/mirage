@@ -98,6 +98,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--profiling", action="store_true", help="Use Profiler to generate trace"
     )
+    parser.add_argument(
+        "--profile-prefill-stages",
+        action="store_true",
+        help="Record CUDA-event timing for embedding, layers, norm, and LM head.",
+    )
     # lookahead or promptlookup
     parser.add_argument(
         "--spec-decode",
@@ -1127,6 +1132,7 @@ if __name__ == "__main__":
     else:
         prompt_len = prompt_lengths[0].item()
         prefill_time = None
+        prefill_stage_profile = None
         decode_time = None
         decode_steps = None
         if args.mpk_policy == "decode-only":
@@ -1136,6 +1142,8 @@ if __name__ == "__main__":
             step.fill_(prompt_len - 1)
             prefill_starter = torch.cuda.Event(enable_timing=True)
             prefill_ender = torch.cuda.Event(enable_timing=True)
+            if args.profile_prefill_stages:
+                model.enable_prefill_profile()
             prefill_starter.record()
             prefill_logits = model.forward(
                 input_ids=tokens[:, :prompt_len],
@@ -1159,6 +1167,12 @@ if __name__ == "__main__":
         mpk_time = starter.elapsed_time(ender)
         if args.mpk_policy == "decode-only":
             prefill_time = prefill_starter.elapsed_time(prefill_ender)
+            prefill_stage_profile = (
+                model.prefill_profile_ms()
+                if args.profile_prefill_stages else None
+            )
+            if args.profile_prefill_stages:
+                model.disable_prefill_profile()
             decode_time = mpk_time
             decode_steps = max(0, output_len - 1)
             run_time = prefill_time + decode_time
@@ -1237,6 +1251,7 @@ if __name__ == "__main__":
                 "text": response_text,
                 "total_time_ms": run_time,
                 "prefill_time_ms": prefill_time,
+                "prefill_stage_profile_ms": prefill_stage_profile,
                 "decode_time_ms": decode_time,
                 "decode_steps": decode_steps,
                 "decode_step_time_ms": decode_step_ms,

@@ -476,6 +476,19 @@ class Qwen3Model(Qwen3PreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
+    def enable_prefill_profile(self):
+        self._profile_prefill = True
+        self._prefill_profile_events = []
+
+    def disable_prefill_profile(self):
+        self._profile_prefill = False
+
+    def prefill_profile_ms(self):
+        result = {}
+        for name, start, end in getattr(self, "_prefill_profile_events", []):
+            result[name] = result.get(name, 0.0) + start.elapsed_time(end)
+        return result
+
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -485,7 +498,22 @@ class Qwen3Model(Qwen3PreTrainedModel):
         stream: torch.cuda.Stream = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
     ):
+        profile = getattr(self, "_profile_prefill", False)
+
+        def record_start():
+            event = torch.cuda.Event(enable_timing=True)
+            event.record()
+            return event
+
+        def record_end(name, start):
+            end = torch.cuda.Event(enable_timing=True)
+            end.record()
+            self._prefill_profile_events.append((name, start, end))
+
+        stage_start = record_start() if profile else None
         inputs_embeds = self.embed_tokens(input_ids)
+        if profile:
+            record_end("embedding", stage_start)
 
         causal_mask = None
 
@@ -495,7 +523,8 @@ class Qwen3Model(Qwen3PreTrainedModel):
         next_decoder_cache = None
         self.kv_last_page_len[: step.numel()].copy_(step + 1)
 
-        for decoder_layer in self.layers:
+        for layer_index, decoder_layer in enumerate(self.layers):
+            stage_start = record_start() if profile else None
             layer_outputs = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
@@ -505,8 +534,13 @@ class Qwen3Model(Qwen3PreTrainedModel):
             )
 
             hidden_states = layer_outputs[0]
+            if profile:
+                record_end(f"layer_{layer_index}", stage_start)
 
+        stage_start = record_start() if profile else None
         hidden_states = self.norm(hidden_states)
+        if profile:
+            record_end("final_norm", stage_start)
 
         return (hidden_states,)
 
@@ -540,6 +574,30 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model
 
+    def enable_prefill_profile(self):
+        self._profile_prefill = True
+        self._prefill_profile_events = []
+        self.model.enable_prefill_profile()
+
+    def disable_prefill_profile(self):
+        self._profile_prefill = False
+        self.model.disable_prefill_profile()
+
+    def prefill_profile_ms(self):
+        result = self.model.prefill_profile_ms()
+        for name, start, end in getattr(self, "_prefill_profile_events", []):
+            result[name] = result.get(name, 0.0) + start.elapsed_time(end)
+        layer_values = [
+            value for name, value in result.items() if name.startswith("layer_")
+        ]
+        result["transformer_layers"] = sum(layer_values)
+        result["total_instrumented"] = sum(
+            value for name, value in result.items()
+            if name in ("embedding", "final_norm", "lm_head")
+            or name.startswith("layer_")
+        )
+        return result
+
     def fuse_weights(self):
         self.model.fuse_weights()
 
@@ -570,6 +628,15 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
         hidden_states = outputs[0]
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        profile = getattr(self, "_profile_prefill", False)
+        start = None
+        if profile:
+            start = torch.cuda.Event(enable_timing=True)
+            start.record()
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
+        if profile:
+            end = torch.cuda.Event(enable_timing=True)
+            end.record()
+            self._prefill_profile_events.append(("lm_head", start, end))
 
         return logits
