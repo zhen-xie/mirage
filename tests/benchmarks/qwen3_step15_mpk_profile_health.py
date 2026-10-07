@@ -44,7 +44,7 @@ def run(command, log, timeout):
         raise RuntimeError(f"exit code {code}; see {log}")
 
 
-def command(args, output, use_mpk=False):
+def command(args, output, mpk_mode=None):
     result = [
         sys.executable, str(DEMO), "--model", args.model,
         "--input-length", "128", "--max-seq-length", "256",
@@ -53,14 +53,30 @@ def command(args, output, use_mpk=False):
         "--max-num-batched-tokens", "8", "--ignore-eos",
         "--save-tokens", str(output),
     ]
-    if use_mpk:
+    if mpk_mode is not None:
         result += [
             "--use-mirage", "--mpk-policy", "decode-only",
             "--mpk-attention", "default", "--normal-prefill-attention", "sdpa",
-            "--mpk-kernel-cache-dir", str(args.output_dir / "cache"),
-            "--profiling", "--trace-name", str(args.output_dir / "mpk_profile"),
+            "--mpk-kernel-cache-dir", str(args.output_dir / f"cache_{mpk_mode}"),
         ]
+        if mpk_mode == "profiled":
+            result += [
+                "--profiling", "--trace-name", str(args.output_dir / "mpk_profile"),
+            ]
     return result
+
+
+def compare(expected, actual):
+    expected = expected[:10]
+    actual = actual[:10]
+    matches = sum(a == b for a, b in zip(expected, actual))
+    first_mismatch = next(
+        (index for index, (left, right) in enumerate(zip(expected, actual)) if left != right),
+        None,
+    )
+    if len(expected) != len(actual):
+        first_mismatch = min(len(expected), len(actual))
+    return matches, first_mismatch
 
 
 def main():
@@ -73,19 +89,54 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     torch_output = args.output_dir / "torch.json"
+    plain_output = args.output_dir / "mpk_unprofiled.json"
     mpk_output = args.output_dir / "mpk.json"
     print("Running Torch correctness reference...", flush=True)
     run(command(args, torch_output), args.output_dir / "torch.log", args.timeout)
+    print("Running unprofiled MPK decode-only control...", flush=True)
+    run(
+        command(args, plain_output, "unprofiled"),
+        args.output_dir / "mpk_unprofiled.log", args.timeout,
+    )
     print("Running profiled MPK decode-only...", flush=True)
-    run(command(args, mpk_output, True), args.output_dir / "mpk.log", args.timeout)
+    run(
+        command(args, mpk_output, "profiled"),
+        args.output_dir / "mpk.log", args.timeout,
+    )
 
     torch_data = json.loads(torch_output.read_text(encoding="utf-8"))
+    plain_data = json.loads(plain_output.read_text(encoding="utf-8"))
     mpk_data = json.loads(mpk_output.read_text(encoding="utf-8"))
-    expected = torch_data["token_ids"][:10]
-    actual = mpk_data["token_ids"][:10]
-    matches = sum(a == b for a, b in zip(expected, actual))
-    if len(expected) != 10 or len(actual) != 10 or matches != 10:
-        raise ValueError(f"correctness failed: first-10={matches}/10")
+    expected = torch_data["token_ids"]
+    plain_tokens = plain_data["token_ids"]
+    actual = mpk_data["token_ids"]
+    plain_matches, plain_first_mismatch = compare(expected, plain_tokens)
+    matches, first_mismatch = compare(expected, actual)
+    profile_vs_plain, profile_plain_first_mismatch = compare(plain_tokens, actual)
+    print(f"Torch first 10:          {expected[:10]}")
+    print(f"Unprofiled MPK first 10: {plain_tokens[:10]}")
+    print(f"Profiled MPK first 10:   {actual[:10]}")
+    print(
+        f"Unprofiled MPK vs Torch: {plain_matches}/10; "
+        f"first mismatch={plain_first_mismatch}"
+    )
+    print(
+        f"Profiled MPK vs Torch: {matches}/10; first mismatch={first_mismatch}"
+    )
+    print(
+        f"Profiled vs unprofiled MPK: {profile_vs_plain}/10; "
+        f"first mismatch={profile_plain_first_mismatch}"
+    )
+    if plain_matches != 10:
+        raise ValueError(
+            f"unprofiled MPK control failed: first-10={plain_matches}/10"
+        )
+    if matches != 10:
+        raise ValueError(
+            "profiler changed MPK output: "
+            f"profiled-vs-Torch={matches}/10, "
+            f"profiled-vs-unprofiled={profile_vs_plain}/10"
+        )
 
     profile_csv = args.output_dir / "mpk_profile.csv"
     summary_dir = args.output_dir / "summary"

@@ -1004,7 +1004,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
   PROFILER_INIT(static_cast<uint64_t *>(config.profiler_buffer),
                 0,
                 1,
-                (threadIdx.x % WORKER_NUM_THREADS == 0));
+                (threadIdx.x == 0));
 
 #endif
   int const worker_id = blockIdx.x;
