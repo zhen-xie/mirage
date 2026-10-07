@@ -8,6 +8,7 @@ STEP14_SUMMARY=${STEP14_SUMMARY:-"$ROOT/results/qwen3_step14_mpk/summary.json"}
 TIMEOUT=${TIMEOUT:-3600}
 THRESHOLD=${THRESHOLD:-256}
 PROFILER_ENTRIES_PER_BLOCK=${PROFILER_ENTRIES_PER_BLOCK:-32768}
+CASES=${CASES:-"short_b1 short_b32 long_context_b32"}
 
 cd "$ROOT" || exit 1
 mkdir -p "$OUTDIR"
@@ -44,12 +45,14 @@ else
 fi
 
 printf 'Running Step 15 MPK operator profiles...\n'
+read -r -a cases <<< "$CASES"
 python tests/benchmarks/qwen3_step15_mpk_operator_profile.py \
     --model "$MODEL" \
     --step14-summary "$STEP14_SUMMARY" \
     --timeout "$TIMEOUT" \
     --threshold "$THRESHOLD" \
     --profiler-entries-per-block "$PROFILER_ENTRIES_PER_BLOCK" \
+    --cases "${cases[@]}" \
     --output-dir "$OUTDIR"
 result=$?
 printf 'Step 15 MPK operator profile runner exited with code %s.\n' "$result"

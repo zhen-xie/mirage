@@ -576,11 +576,17 @@ if __name__ == "__main__":
             max_tokens_per_request=(
                 1 if args.mpk_policy == "decode-only" else None
             ),
+            max_generation_length=(
+                args.max_new_tokens
+                if args.mpk_policy == "decode-only"
+                else args.max_seq_length
+            ),
         )
         print(
             "MPK max tokens per request: "
             f"{mpk.max_tokens_per_request}"
         )
+        print(f"MPK max generation length: {mpk.max_generation_length}")
         
         if spec_decode_config and spec_decode_config.method == "promptlookup":
             all_tokens = mpk.attach_input(torch_tensor=tokens, name="all_tokens")

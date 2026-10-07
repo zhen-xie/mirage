@@ -72,6 +72,13 @@ static_assert(MPK_MAX_TOKENS_PER_REQUEST >= 1 &&
 #define MPK_TOKEN_ROOM(num_tokens)                                             \
   min(MPK_MAX_TOKENS_PER_REQUEST, MPK_MAX_NUM_BATCHED_TOKENS - (num_tokens))
 
+// Offline generation may stop before the statically allocated sequence/KV
+// capacity.  Keeping these limits separate lets profiling and short requests
+// reuse the same attention layout as a longer production case.
+#ifndef MPK_MAX_GENERATION_LENGTH
+#define MPK_MAX_GENERATION_LENGTH MPK_MAX_SEQ_LENGTH
+#endif
+
 #if defined(MIRAGE_GRACE_HOPPER)
 #define WORKER_NUM_THREADS 256
 #define SINGLE_KERNEL_NUM_THREADS 256
@@ -354,7 +361,9 @@ __device__ __forceinline__ bool
 #if defined(MPK_TEST_MODE)
       if (true)
 #else
-      if ((step + step_advance + 1 >= config.max_seq_length) ||
+      int request_limit =
+          min(config.max_seq_length, prompt_len + MPK_MAX_GENERATION_LENGTH);
+      if ((step + step_advance + 1 >= request_limit) ||
           ((config.tokens[request_id * MPK_MAX_SEQ_LENGTH + step +
                           step_advance] == config.eos_token_id) &&
            (step + step_advance >= prompt_len)))

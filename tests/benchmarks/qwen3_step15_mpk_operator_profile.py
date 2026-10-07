@@ -96,24 +96,33 @@ def main():
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--threshold", type=int, default=256)
     parser.add_argument("--profiler-entries-per-block", type=int, default=32768)
+    parser.add_argument(
+        "--cases", nargs="+",
+        choices=("short_b1", "short_b32", "long_context_b32"),
+        default=("short_b1", "short_b32", "long_context_b32"),
+    )
     parser.add_argument("--step14-summary", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     step14 = load_step14(args.step14_summary)
-    cases = [
-        ("short", 1, 128, 256),
-        ("short", 32, 128, 256),
-        ("long_context", 32, 1024, 1152),
-    ]
+    all_cases = {
+        "short_b1": ("short", 1, 128, 256),
+        "short_b32": ("short", 32, 128, 256),
+        "long_context_b32": ("long_context", 32, 1024, 1152),
+    }
+    cases = [all_cases[name] for name in args.cases]
 
     references = {}
     rows = []
     failed = 0
     model_name = safe(args.model)
     for index, (case_name, batch, s_in, page_size) in enumerate(cases, 1):
-        max_seq = s_in + COMPARE_TOKENS
+        # Keep the Step 14 static sequence and attention layout.  The MPK
+        # max_generation_length compile parameter stops this profiling run
+        # after COMPARE_TOKENS outputs.
+        max_seq = page_size
         reference_key = (s_in, max_seq)
         reference_output = args.output_dir / f"reference_in{s_in}.json"
         reference_log = args.output_dir / f"reference_in{s_in}.log"

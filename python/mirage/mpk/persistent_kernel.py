@@ -345,6 +345,9 @@ def get_compile_command(
         flags = flags + [
             f"-DMPK_KV_EVENT_LOG={mpk.meta_tensors['kv_event_log'].numel()}"]
     flags = flags + [f"-DMPK_MAX_SEQ_LENGTH={mpk.max_seq_length}"]
+    flags = flags + [
+        f"-DMPK_MAX_GENERATION_LENGTH={mpk.max_generation_length}"
+    ]
 
     if _spec_decode_enabled(mpk):
         flags = flags + ["-DMPK_SPEC_DECODE"]
@@ -442,6 +445,7 @@ class PersistentKernel:
         kv_groups: list = None,
         page_size: int = None,
         max_tokens_per_request: Optional[int] = None,
+        max_generation_length: Optional[int] = None,
     ):
         self.__finalized__ = False
         self._is_compiled = False
@@ -499,6 +503,12 @@ class PersistentKernel:
             f"max_tokens_per_request={max_tokens_per_request} must be in "
             f"[1, max_num_batched_tokens={max_num_batched_tokens}]")
         self.max_tokens_per_request = max_tokens_per_request
+        if max_generation_length is None:
+            max_generation_length = max_seq_length
+        assert 1 <= max_generation_length <= max_seq_length, (
+            f"max_generation_length={max_generation_length} must be in "
+            f"[1, max_seq_length={max_seq_length}]")
+        self.max_generation_length = max_generation_length
         self.eos_token_id = eos_token_id
         self.kn_graph = KNGraph(CyKNGraph(disable_fingerprint=True))
         # Prevent GC of PyTorch tensors whose GPU pointers are baked into the
@@ -730,6 +740,7 @@ class PersistentKernel:
             "max_num_batched_requests": self.max_num_batched_requests,
             "max_num_batched_tokens": self.max_num_batched_tokens,
             "max_tokens_per_request": self.max_tokens_per_request,
+            "max_generation_length": self.max_generation_length,
             "max_num_pages": self.max_num_pages,
             "page_size": self.page_size,
             "world_size": self.world_size,
@@ -773,6 +784,7 @@ class PersistentKernel:
             ("max_num_batched_requests", self.max_num_batched_requests),
             ("max_num_batched_tokens", self.max_num_batched_tokens),
             ("max_tokens_per_request", self.max_tokens_per_request),
+            ("max_generation_length", self.max_generation_length),
             ("max_num_pages", self.max_num_pages),
             ("page_size", self.page_size),
             ("world_size", self.world_size),
