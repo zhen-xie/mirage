@@ -99,6 +99,15 @@ if __name__ == "__main__":
         "--profiling", action="store_true", help="Use Profiler to generate trace"
     )
     parser.add_argument(
+        "--profiler-buffer-entries-per-block",
+        type=int,
+        default=32768,
+        help=(
+            "Profiler uint64 entries reserved per persistent worker block. "
+            "Each paired task event consumes two entries."
+        ),
+    )
+    parser.add_argument(
         "--profile-prefill-stages",
         action="store_true",
         help="Record CUDA-event timing for embedding, layers, norm, and LM head.",
@@ -503,9 +512,21 @@ if __name__ == "__main__":
             )
 
         if args.profiling:
+            if args.profiler_buffer_entries_per_block < 2:
+                parser.error("--profiler-buffer-entries-per-block must be at least 2")
+            # runtime_header.h permits up to 160 workers (B200).  Allocate for
+            # that limit so the final worker cannot run past the tensor even
+            # when the current GPU uses more than the historical 128 blocks.
             profiler_tensor = torch.zeros(
-                3000 * 128, dtype=torch.uint64, device="cuda"
+                1 + args.profiler_buffer_entries_per_block * 160,
+                dtype=torch.uint64,
+                device="cuda",
             ).contiguous()
+            print(
+                "MPK profiler buffer: "
+                f"{args.profiler_buffer_entries_per_block} entries/block, "
+                f"{profiler_tensor.numel() * profiler_tensor.element_size() / (1024 ** 2):.2f} MiB"
+            )
         else:
             profiler_tensor = None
             

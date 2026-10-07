@@ -138,10 +138,9 @@ def _decode_events(profiler_buffer: torch.Tensor):
 
     yield ("__header__", num_blocks, num_groups)
 
-    for i in range(1, len(profiler_buffer_host)):
-        if profiler_buffer_host[i] == 0:
-            continue
-
+    populated = torch.nonzero(profiler_buffer_host[1:], as_tuple=False).flatten() + 1
+    for index in populated.tolist():
+        i = int(index)
         tag, timestamp = profiler_buffer_host[i : i + 1].view(dtype=torch.uint32)
         tag = int(tag)
         timestamp = int(timestamp)

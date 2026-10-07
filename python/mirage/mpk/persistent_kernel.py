@@ -3724,10 +3724,10 @@ class PersistentKernel:
             else:
                 stem = f"mirage_{self.mpi_rank}"
 
+            export_to_csv(self.profiler_tensor, stem + ".csv")
             export_to_perfetto_trace(
                 self.profiler_tensor, stem + ".perfetto-trace"
             )
-            export_to_csv(self.profiler_tensor, stem + ".csv")
 
     def __del__(self):
         if not self.__finalized__:
