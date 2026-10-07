@@ -3698,8 +3698,6 @@ class PersistentKernel:
         resume_after_prefill = kwargs.get("resume_after_prefill", False)
         if resume_after_prefill and self.mode != "offline":
             raise ValueError("resume_after_prefill requires offline mode")
-        if resume_after_prefill and self.profiler_tensor is not None:
-            raise ValueError("resume_after_prefill does not support profiling")
         stream = kwargs.get("default_stream", None)
         if stream is None:
            stream = torch.cuda.current_stream()
