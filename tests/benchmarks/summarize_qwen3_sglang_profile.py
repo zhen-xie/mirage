@@ -11,11 +11,12 @@ from pathlib import Path
 CATEGORY_PATTERNS = {
     "attention": (
         "attention", "flashinfer", "decode", "prefill", "paged", "fmha",
-        "flash_fwd", "split_k", "kv_cache", "kv_cache", "rope", "rotary",
+        "flash_fwd", "split_k", "kv_cache", "kvcache", "rope", "rotary",
+        "qknorm",
     ),
     "linear": (
         "gemm", "gemv", "matmul", "cutlass", "wgmma", "mma", "cublas",
-        "linear", "moe", "grouped_gemm",
+        "linear", "moe", "grouped_gemm", "nvjet_",
     ),
     "norm": ("rmsnorm", "rms_norm", "layernorm", "layer_norm"),
     "activation": ("silu", "gelu", "swiglu", "activation", "mul_and_silu"),
@@ -43,15 +44,18 @@ def is_cuda_kernel(event):
     if event.get("ph") != "X" or not isinstance(event.get("dur"), (int, float)):
         return False
     cat = str(event.get("cat", "")).lower()
+    name = str(event.get("name", ""))
+    # Torch traces contain CUDA runtime/API calls alongside device kernels.
+    # API calls can carry stream metadata, so stream presence alone is not a
+    # reliable kernel test.
+    if name.startswith("cuda") or name.startswith((
+        "cuLaunch", "cuMemcpy", "cuMemset", "cuGraph", "cuDevice",
+        "cuCtx", "cuEvent", "cuStream",
+    )):
+        return False
     args = event.get("args") or {}
     device = str(args.get("Device Type", args.get("device_type", ""))).lower()
-    return (
-        "kernel" in cat
-        or "gpu" in cat
-        or "cuda" in cat
-        or device in {"1", "cuda", "gpu"}
-        or "stream" in {str(key).lower() for key in args}
-    )
+    return "kernel" in cat or "gpu_kernel" in cat or device in {"1", "cuda", "gpu"}
 
 
 def write_csv(path, rows):
