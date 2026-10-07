@@ -115,6 +115,11 @@ if __name__ == "__main__":
         default=0,
         help="Run unmeasured Torch prefill forwards in the current process.",
     )
+    parser.add_argument(
+        "--normal-prefill-cuda-graph",
+        action="store_true",
+        help="Capture and replay the fixed-shape Torch prefill forward.",
+    )
     # lookahead or promptlookup
     parser.add_argument(
         "--spec-decode",
@@ -225,6 +230,21 @@ if __name__ == "__main__":
         parser.error("--mpk-policy requires --use-mirage")
     if args.prefill_warmup_runs < 0:
         parser.error("--prefill-warmup-runs must be non-negative")
+    if args.normal_prefill_cuda_graph:
+        if not args.use_mirage or args.mpk_policy != "decode-only":
+            parser.error(
+                "--normal-prefill-cuda-graph requires MPK decode-only"
+            )
+        if args.prefill_warmup_runs < 1:
+            parser.error(
+                "--normal-prefill-cuda-graph requires at least one "
+                "--prefill-warmup-runs"
+            )
+        if args.profile_prefill_stages:
+            parser.error(
+                "--normal-prefill-cuda-graph cannot be combined with "
+                "--profile-prefill-stages"
+            )
     if args.split_kv_cache and args.mpk_attention != "default":
         parser.error(
             "--split-kv-cache cannot be combined with a non-default "
@@ -1169,21 +1189,41 @@ if __name__ == "__main__":
                 )
             if args.prefill_warmup_runs:
                 torch.cuda.synchronize()
+            prefill_graph = None
+            prefill_logits = None
+            if args.normal_prefill_cuda_graph:
+                static_prefill_input = tokens[:, :prompt_len].clone()
+                prefill_graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(prefill_graph):
+                    prefill_logits = model.forward(
+                        input_ids=static_prefill_input,
+                        position_embeddings=(
+                            position_embeddings[0][:, :prompt_len],
+                            position_embeddings[1][:, :prompt_len],
+                        ),
+                        step=step,
+                        stream=stream,
+                        num_logits_to_keep=1,
+                    )
+                torch.cuda.synchronize()
             prefill_starter = torch.cuda.Event(enable_timing=True)
             prefill_ender = torch.cuda.Event(enable_timing=True)
             if args.profile_prefill_stages:
                 model.enable_prefill_profile()
             prefill_starter.record()
-            prefill_logits = model.forward(
-                input_ids=tokens[:, :prompt_len],
-                position_embeddings=(
-                    position_embeddings[0][:, :prompt_len],
-                    position_embeddings[1][:, :prompt_len],
-                ),
-                step=step,
-                stream=stream,
-                num_logits_to_keep=1,
-            )
+            if prefill_graph is not None:
+                prefill_graph.replay()
+            else:
+                prefill_logits = model.forward(
+                    input_ids=tokens[:, :prompt_len],
+                    position_embeddings=(
+                        position_embeddings[0][:, :prompt_len],
+                        position_embeddings[1][:, :prompt_len],
+                    ),
+                    step=step,
+                    stream=stream,
+                    num_logits_to_keep=1,
+                )
             tokens[:, prompt_len] = prefill_logits[:, -1].argmax(dim=-1)
             step.fill_(prompt_len)
             prefill_ender.record()
@@ -1283,6 +1323,7 @@ if __name__ == "__main__":
                 "prefill_stage_profile_ms": prefill_stage_profile,
                 "normal_prefill_attention": args.normal_prefill_attention,
                 "prefill_warmup_runs": args.prefill_warmup_runs,
+                "normal_prefill_cuda_graph": args.normal_prefill_cuda_graph,
                 "decode_time_ms": decode_time,
                 "decode_steps": decode_steps,
                 "decode_step_time_ms": decode_step_ms,
