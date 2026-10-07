@@ -109,6 +109,12 @@ if __name__ == "__main__":
         default="sdpa",
         help="Attention implementation used by the Torch prefill path.",
     )
+    parser.add_argument(
+        "--prefill-warmup-runs",
+        type=int,
+        default=0,
+        help="Run unmeasured Torch prefill forwards in the current process.",
+    )
     # lookahead or promptlookup
     parser.add_argument(
         "--spec-decode",
@@ -217,6 +223,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
+    if args.prefill_warmup_runs < 0:
+        parser.error("--prefill-warmup-runs must be non-negative")
     if args.split_kv_cache and args.mpk_attention != "default":
         parser.error(
             "--split-kv-cache cannot be combined with a non-default "
@@ -1148,6 +1156,19 @@ if __name__ == "__main__":
             # K/V entries and produces the first generated token. Seeding step
             # at prompt_len lets the offline MPK scheduler resume from there.
             step.fill_(prompt_len - 1)
+            for _ in range(args.prefill_warmup_runs):
+                model.forward(
+                    input_ids=tokens[:, :prompt_len],
+                    position_embeddings=(
+                        position_embeddings[0][:, :prompt_len],
+                        position_embeddings[1][:, :prompt_len],
+                    ),
+                    step=step,
+                    stream=stream,
+                    num_logits_to_keep=1,
+                )
+            if args.prefill_warmup_runs:
+                torch.cuda.synchronize()
             prefill_starter = torch.cuda.Event(enable_timing=True)
             prefill_ender = torch.cuda.Event(enable_timing=True)
             if args.profile_prefill_stages:
@@ -1261,6 +1282,7 @@ if __name__ == "__main__":
                 "prefill_time_ms": prefill_time,
                 "prefill_stage_profile_ms": prefill_stage_profile,
                 "normal_prefill_attention": args.normal_prefill_attention,
+                "prefill_warmup_runs": args.prefill_warmup_runs,
                 "decode_time_ms": decode_time,
                 "decode_steps": decode_steps,
                 "decode_step_time_ms": decode_step_ms,

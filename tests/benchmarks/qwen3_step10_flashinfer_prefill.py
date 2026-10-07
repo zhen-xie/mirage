@@ -60,6 +60,7 @@ def run(args, model, name, backend=None):
             "--mpk-auto-split-kv-threshold", str(args.threshold),
             "--mpk-kernel-cache-dir", str(args.cache_dir / model_name),
             "--normal-prefill-attention", backend,
+            "--prefill-warmup-runs", "1",
         ]
     print(f"Running model={model} run={name}", flush=True)
     with log.open("w", encoding="utf-8") as destination:
@@ -99,10 +100,6 @@ def main():
             raise RuntimeError(reference_error)
         measured = {}
         for backend in BACKENDS:
-            warmup, error = run(args, model, f"{backend}_warmup", backend)
-            if warmup is None:
-                measured[backend] = (None, error)
-                continue
             measured[backend] = run(args, model, backend, backend)
 
         backend_rows = []
@@ -127,6 +124,8 @@ def main():
                     errors.append(f"incomplete requests={incomplete}")
                 if data.get("normal_prefill_attention") != backend:
                     errors.append("wrong recorded prefill backend")
+                if data.get("prefill_warmup_runs") != 1:
+                    errors.append("in-process prefill warmup did not run")
             row = {
                 "model": model,
                 "status": "failed" if errors else "completed",
