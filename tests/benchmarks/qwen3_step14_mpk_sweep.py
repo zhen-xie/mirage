@@ -189,12 +189,14 @@ def main():
                     warm_output, warm_log, args.timeout,
                 )
                 data = None
+                failure_log = warm_log
                 if warm is not None:
                     print(f"[{index}/{total}] Measuring {stem}", flush=True)
                     data, error = run(
                         command(args, model, batch, s_in, s_out, output, cache),
                         output, log, args.timeout,
                     )
+                    failure_log = log
                 errors = [error] if error else []
                 matches = []
                 invalid = incomplete = None
@@ -235,7 +237,8 @@ def main():
                     "decode_tokens_per_second": throughput,
                     "kernel_cache_status": data.get("mpk_kernel_cache_status") if data else None,
                     "kernel_prepare_ms": data.get("mpk_kernel_prepare_time_ms") if data else None,
-                    "output_path": str(output), "log_path": str(log),
+                    "output_path": str(output),
+                    "log_path": str(failure_log if errors else log),
                     "reason": "; ".join(errors),
                 }
                 rows = [item for item in rows if (item["model"], item["case"], int(item["batch_size"])) != key]
