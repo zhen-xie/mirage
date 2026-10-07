@@ -42,7 +42,7 @@ common=(
     --input-length 512
     --max-seq-length 519
     --max-new-tokens 7
-    --page-size 519
+    --page-size 576
     --max-num-pages 1
     --max-num-batched-requests 1
     --max-num-batched-tokens 8
