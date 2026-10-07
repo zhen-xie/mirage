@@ -317,6 +317,8 @@ def get_compile_command(
         py_so_path,
     ]
     flags = flags + [f"-DMPK_TARGET_CC={target_cc}", "-DMIRAGE_BACKEND_USE_CUDA"]
+    if mpk.scheduler_policy == "event-aligned":
+        flags = flags + ["-DMPK_SCHEDULER_EVENT_ALIGNED=1"]
     if test_mode:
         flags = flags + ["-DMPK_TEST_MODE"]
     if mpk.mode == "offline":
@@ -452,6 +454,7 @@ class PersistentKernel:
         max_generation_length: Optional[int] = None,
         profiler_start_iteration: int = 1,
         profiler_num_iterations: Optional[int] = None,
+        scheduler_policy: str = "round-robin",
     ):
         self.__finalized__ = False
         self._is_compiled = False
@@ -523,6 +526,11 @@ class PersistentKernel:
             "profiler_num_iterations must be at least 1")
         self.profiler_start_iteration = profiler_start_iteration
         self.profiler_num_iterations = profiler_num_iterations
+        if scheduler_policy not in ("round-robin", "event-aligned"):
+            raise ValueError(
+                "scheduler_policy must be 'round-robin' or 'event-aligned', "
+                f"got {scheduler_policy!r}")
+        self.scheduler_policy = scheduler_policy
         self.eos_token_id = eos_token_id
         self.kn_graph = KNGraph(CyKNGraph(disable_fingerprint=True))
         # Prevent GC of PyTorch tensors whose GPU pointers are baked into the
@@ -757,6 +765,7 @@ class PersistentKernel:
             "max_generation_length": self.max_generation_length,
             "profiler_start_iteration": self.profiler_start_iteration,
             "profiler_num_iterations": self.profiler_num_iterations,
+            "scheduler_policy": self.scheduler_policy,
             "max_num_pages": self.max_num_pages,
             "page_size": self.page_size,
             "world_size": self.world_size,
@@ -803,6 +812,7 @@ class PersistentKernel:
             ("max_generation_length", self.max_generation_length),
             ("profiler_start_iteration", self.profiler_start_iteration),
             ("profiler_num_iterations", self.profiler_num_iterations),
+            ("scheduler_policy", self.scheduler_policy),
             ("max_num_pages", self.max_num_pages),
             ("page_size", self.page_size),
             ("world_size", self.world_size),

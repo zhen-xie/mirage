@@ -1471,6 +1471,13 @@ __device__ __forceinline__ void execute_scheduler(RuntimeConfig config,
         }
       } else if (e.event_type == EVENT_LAUNCH_DEPENDENT_TASKS) {
         iteration_num = iteration_num + 1;
+#ifdef MPK_SCHEDULER_EVENT_ALIGNED
+        // Start every dependency-released task group at the beginning of the
+        // scheduler's contiguous worker range.  This keeps neighboring tasks
+        // from one operator on neighboring worker CTAs instead of inheriting
+        // the previous event's arbitrary round-robin cursor.
+        next_worker = my_first_worker;
+#endif
         // assign event in a round-robin fashion
         // Split event across local schedulers
         assert(sched_id < config.num_local_schedulers);
@@ -1521,6 +1528,12 @@ __device__ __forceinline__ void execute_scheduler(RuntimeConfig config,
           }
         }
       } else {
+#ifdef MPK_SCHEDULER_EVENT_ALIGNED
+        // Align each event-sized wave to a stable, contiguous worker range.
+        // The event dependency already guarantees that the group is ready;
+        // this changes placement only and preserves task ordering/counts.
+        next_worker = my_first_worker;
+#endif
         TaskId my_first_task = e.first_task_id, my_last_task = e.last_task_id;
         if (e.event_type == EVENT_LAUNCH_MASSIVE_TASKS) {
           // Split event across local schedulers

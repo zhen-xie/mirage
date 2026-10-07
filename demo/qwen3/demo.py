@@ -263,6 +263,15 @@ if __name__ == "__main__":
         default=128,
         help="Number of KV tokens processed by each MPK split-KV task.",
     )
+    parser.add_argument(
+        "--mpk-scheduler-policy",
+        choices=("round-robin", "event-aligned"),
+        default="round-robin",
+        help=(
+            "Worker placement policy. Event-aligned starts each ready task "
+            "group at the beginning of a scheduler's contiguous worker range."
+        ),
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
@@ -615,7 +624,9 @@ if __name__ == "__main__":
             ),
             profiler_start_iteration=args.profiler_decode_start_step,
             profiler_num_iterations=args.profiler_decode_num_steps,
+            scheduler_policy=args.mpk_scheduler_policy,
         )
+        print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
         print(
             "MPK max tokens per request: "
             f"{mpk.max_tokens_per_request}"
@@ -1490,6 +1501,9 @@ if __name__ == "__main__":
                 ),
                 "mpk_split_kv_num_chunks": (
                     num_kv_cache_chunks if args.split_kv_cache else None
+                ),
+                "mpk_scheduler_policy": (
+                    args.mpk_scheduler_policy if args.use_mirage else None
                 ),
                 "mode": (
                     "normal_prefill_mpk_decode"
