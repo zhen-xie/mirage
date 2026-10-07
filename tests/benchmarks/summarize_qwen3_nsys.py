@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import io
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -45,10 +46,21 @@ def number(value):
 
 
 def load_report(path):
-    with path.open(newline="", encoding="utf-8-sig") as source:
-        reader = csv.DictReader(source)
-        rows = list(reader)
-        fields = reader.fieldnames
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    header_index = next(
+        (
+            index for index, line in enumerate(lines)
+            if "Total Time" in line and "Name" in line
+        ),
+        None,
+    )
+    if header_index is None:
+        raise ValueError(
+            f"Nsight CSV header not found in {path}; first lines={lines[:5]}"
+        )
+    reader = csv.DictReader(io.StringIO("\n".join(lines[header_index:])))
+    rows = list(reader)
+    fields = reader.fieldnames
     if not rows:
         raise ValueError(f"Empty Nsight report: {path}")
     name_col = find_column(fields, "name")

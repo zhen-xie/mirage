@@ -37,8 +37,6 @@ timeout "$TIMEOUT" python -m pip install -e . -v --no-build-isolation \
         exit "$code"
     }
 
-prompt_file=tests/benchmarks/baselines/new_server_prompt_1024.txt
-prompt=$(cat "$prompt_file")
 cache="$OUTDIR/cache/qwen3_8b_b32_seq1152"
 mpk_output="$OUTDIR/mpk/tokens.json"
 mpk_prefix="$OUTDIR/mpk/decode"
@@ -50,7 +48,7 @@ mpk_args=(
     --prefill-warmup-runs 1 --normal-prefill-cuda-graph
     --input-length 1024 --max-seq-length 1152 --max-new-tokens 128
     --page-size 1152 --max-num-pages 32 --max-num-batched-requests 32
-    --max-num-batched-tokens 32 --ignore-eos --prompt "$prompt"
+    --max-num-batched-tokens 32 --ignore-eos
     --mpk-kernel-cache-dir "$cache"
 )
 
@@ -80,10 +78,10 @@ timeout "$TIMEOUT" nsys profile \
     }
 
 printf 'Extracting MPK Nsight reports...\n'
-nsys stats --report cuda_gpu_kern_sum --format csv "$mpk_prefix.nsys-rep" \
-    > "$OUTDIR/mpk/kernels.csv"
-nsys stats --report cuda_api_sum --format csv "$mpk_prefix.nsys-rep" \
-    > "$OUTDIR/mpk/apis.csv"
+nsys stats --force-export=true --report cuda_gpu_kern_sum --format csv \
+    "$mpk_prefix.nsys-rep" > "$OUTDIR/mpk/kernels.csv" || exit 1
+nsys stats --force-export=true --report cuda_api_sum --format csv \
+    "$mpk_prefix.nsys-rep" > "$OUTDIR/mpk/apis.csv" || exit 1
 python tests/benchmarks/summarize_qwen3_nsys.py \
     --backend mpk --kernel-csv "$OUTDIR/mpk/kernels.csv" \
     --api-csv "$OUTDIR/mpk/apis.csv" --output "$OUTDIR/mpk/summary.json"
@@ -120,10 +118,10 @@ timeout "$TIMEOUT" nsys profile \
     }
 
 printf 'Extracting SGLang Nsight reports...\n'
-nsys stats --report cuda_gpu_kern_sum --format csv "$sg_prefix.nsys-rep" \
-    > "$OUTDIR/sglang/kernels.csv"
-nsys stats --report cuda_api_sum --format csv "$sg_prefix.nsys-rep" \
-    > "$OUTDIR/sglang/apis.csv"
+nsys stats --force-export=true --report cuda_gpu_kern_sum --format csv \
+    "$sg_prefix.nsys-rep" > "$OUTDIR/sglang/kernels.csv" || exit 1
+nsys stats --force-export=true --report cuda_api_sum --format csv \
+    "$sg_prefix.nsys-rep" > "$OUTDIR/sglang/apis.csv" || exit 1
 python tests/benchmarks/summarize_qwen3_nsys.py \
     --backend sglang --kernel-csv "$OUTDIR/sglang/kernels.csv" \
     --api-csv "$OUTDIR/sglang/apis.csv" --output "$OUTDIR/sglang/summary.json"
