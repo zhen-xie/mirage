@@ -266,6 +266,16 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--mpk-auto-attention-target-tasks",
+        type=int,
+        default=128,
+        help=(
+            "With --mpk-attention auto, create only enough attention tasks "
+            "to cover this target. The base task count is batch size times "
+            "the number of local KV heads."
+        ),
+    )
+    parser.add_argument(
         "--mpk-split-kv-chunk-size",
         type=int,
         default=128,
@@ -336,18 +346,11 @@ if __name__ == "__main__":
         )
     if args.mpk_auto_split_kv_threshold <= 0:
         parser.error("--mpk-auto-split-kv-threshold must be positive")
+    if args.mpk_auto_attention_target_tasks <= 0:
+        parser.error("--mpk-auto-attention-target-tasks must be positive")
     requested_mpk_attention = (
         "split-kv" if args.split_kv_cache else args.mpk_attention
     )
-    if requested_mpk_attention == "auto":
-        resolved_mpk_attention = (
-            "split-kv"
-            if args.max_seq_length > args.mpk_auto_split_kv_threshold
-            else "default"
-        )
-    else:
-        resolved_mpk_attention = requested_mpk_attention
-    args.split_kv_cache = resolved_mpk_attention == "split-kv"
     if requested_mpk_attention != "default" and not args.use_mirage:
         parser.error("--mpk-attention requires --use-mirage")
     if args.mpk_split_kv_chunk_size <= 0:
@@ -359,13 +362,6 @@ if __name__ == "__main__":
     if (args.profiler_decode_num_steps is not None
             and args.profiler_decode_num_steps < 1):
         parser.error("--profiler-decode-num-steps must be at least 1")
-    if args.split_kv_cache and (
-        args.max_seq_length % args.mpk_split_kv_chunk_size != 0
-    ):
-        parser.error(
-            "Split-KV currently requires --max-seq-length to be divisible "
-            "by --mpk-split-kv-chunk-size"
-        )
     if args.mpk_policy == "decode-only":
         if args.spec_decode is not None:
             parser.error("decode-only does not support speculative decoding")
@@ -424,9 +420,58 @@ if __name__ == "__main__":
 
     torch.cuda.set_device(rank)
 
+    model_config = AutoConfig.from_pretrained(args.model_path or model_name)
+    num_local_kv_heads_for_policy = (
+        model_config.num_key_value_heads // world_size
+    )
+    auto_attention_base_tasks = (
+        args.max_num_batched_requests * num_local_kv_heads_for_policy
+    )
+    auto_attention_target_splits = 1
+    if requested_mpk_attention == "auto":
+        if (
+            args.max_seq_length <= args.mpk_auto_split_kv_threshold
+            or auto_attention_base_tasks
+            >= args.mpk_auto_attention_target_tasks
+        ):
+            resolved_mpk_attention = "default"
+        else:
+            required_splits = (
+                args.mpk_auto_attention_target_tasks
+                + auto_attention_base_tasks - 1
+            ) // auto_attention_base_tasks
+            valid_splits = [
+                splits
+                for splits in range(2, args.max_seq_length + 1)
+                if args.max_seq_length % splits == 0
+                and args.max_seq_length // splits
+                >= args.mpk_split_kv_chunk_size
+            ]
+            if valid_splits:
+                auto_attention_target_splits = next(
+                    (splits for splits in valid_splits
+                     if splits >= required_splits),
+                    valid_splits[-1],
+                )
+                args.mpk_split_kv_chunk_size = (
+                    args.max_seq_length // auto_attention_target_splits
+                )
+                resolved_mpk_attention = "split-kv"
+            else:
+                resolved_mpk_attention = "default"
+    else:
+        resolved_mpk_attention = requested_mpk_attention
+    args.split_kv_cache = resolved_mpk_attention == "split-kv"
+    if args.split_kv_cache and (
+        args.max_seq_length % args.mpk_split_kv_chunk_size != 0
+    ):
+        parser.error(
+            "Split-KV currently requires --max-seq-length to be divisible "
+            "by --mpk-split-kv-chunk-size"
+        )
+
     kv_plan = plan_qwen3_kv_cache(
-        AutoConfig.from_pretrained(args.model_path or model_name),
-        world_size, args.page_size)
+        model_config, world_size, args.page_size)
     try:
         max_num_pages = resolve_pool_size(
             kv_plan, kv_budget=args.kv_budget,
@@ -579,6 +624,9 @@ if __name__ == "__main__":
             print(
                 "MPK attention policy: AUTO "
                 f"(resolved: {resolved_mpk_attention.upper()}, "
+                f"base_tasks={auto_attention_base_tasks}, "
+                f"target_tasks={args.mpk_auto_attention_target_tasks}, "
+                f"splits={auto_attention_target_splits}, "
                 f"threshold={args.mpk_auto_split_kv_threshold})"
             )
 
@@ -1533,6 +1581,18 @@ if __name__ == "__main__":
                 "mpk_attention_requested": requested_mpk_attention,
                 "mpk_auto_split_kv_threshold": (
                     args.mpk_auto_split_kv_threshold
+                    if requested_mpk_attention == "auto" else None
+                ),
+                "mpk_auto_attention_base_tasks": (
+                    auto_attention_base_tasks
+                    if requested_mpk_attention == "auto" else None
+                ),
+                "mpk_auto_attention_target_tasks": (
+                    args.mpk_auto_attention_target_tasks
+                    if requested_mpk_attention == "auto" else None
+                ),
+                "mpk_auto_attention_target_splits": (
+                    auto_attention_target_splits
                     if requested_mpk_attention == "auto" else None
                 ),
                 "mpk_split_kv_chunk_size": (
