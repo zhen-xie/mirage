@@ -40,9 +40,9 @@ fi
 common=(
     --model "$MODEL"
     --input-length 512
-    --max-seq-length 640
+    --max-seq-length 519
     --max-new-tokens 7
-    --page-size 640
+    --page-size 519
     --max-num-pages 1
     --max-num-batched-requests 1
     --max-num-batched-tokens 8

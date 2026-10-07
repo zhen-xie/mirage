@@ -22,7 +22,12 @@ __device__ __forceinline__ void warp_reduce_max_idx(T &val, long long &idx) {
     float tmp = __shfl_down_sync(0xffffffff, (float)val, offset);
     T other_val = (T)tmp;
     long long other_idx = __shfl_down_sync(0xffffffff, idx, offset);
-    if (other_val > val) {
+    // Match torch.argmax: equal maxima select the lowest flattened index.
+    // The validity check prevents an inactive lane's -1 sentinel from
+    // winning when both values are -inf.
+    if (other_val > val ||
+        (other_val == val && other_idx >= 0 &&
+         (idx < 0 || other_idx < idx))) {
       val = other_val;
       idx = other_idx;
     }
@@ -96,7 +101,8 @@ __device__ __forceinline__ void
 #pragma unroll
     for (int i = tidx; i < valid_len; i += NUM_THREADS) {
       T val = input[i + batch_idx * CHUNK_SIZE * NUM_PARTIAL_TASKS];
-      if (val > local_max) {
+      if (val > local_max ||
+          (val == local_max && (local_idx < 0 || i < local_idx))) {
         local_max = val;
         local_idx = i;
       }
@@ -136,11 +142,18 @@ __device__ __forceinline__ void
 #pragma unroll
     for (int i = tidx; i < NUM_PARTIAL_TASKS; i += blockDim.x) {
       T current_val = partial_vals[i + batch_idx * NUM_PARTIAL_TASKS];
-      if (current_val > local_max) {
+      // Higher 32 bits store the chunk index and lower 32 bits the relative
+      // index, so numeric packed order is also global vocabulary order.
+      long long current_relative_idx =
+          partial_idxs[i + batch_idx * NUM_PARTIAL_TASKS];
+      long long current_packed_idx =
+          ((long long)i << 32) | current_relative_idx;
+      if (current_val > local_max ||
+          (current_val == local_max && current_relative_idx >= 0 &&
+           (local_packed_idx < 0 ||
+            current_packed_idx < local_packed_idx))) {
         local_max = current_val;
-        // Higher 32 bits for chunk_index (i), lower 32 for relative_index
-        local_packed_idx = ((long long)i << 32) |
-                           partial_idxs[i + batch_idx * NUM_PARTIAL_TASKS];
+        local_packed_idx = current_packed_idx;
       }
     }
 
