@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--mpk-summary", type=Path, required=True)
     parser.add_argument("--step8-comparison", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--step", type=int, default=9)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -99,7 +100,7 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
     summary = {
-        "step": 9,
+        "step": args.step,
         "status": "passed" if all_passed else "failed",
         "correctness_gate": "MPK first 10 generated tokens equal Torch",
         "timing_method": "CUDA events recorded on the inference stream",
@@ -109,7 +110,10 @@ def main():
     json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"Wrote {csv_path}")
     print(f"Wrote {json_path}")
-    print(f"Step 9 prefill profile: {'PASS' if all_passed else 'FAIL'}")
+    print(
+        f"Step {args.step} prefill profile: "
+        f"{'PASS' if all_passed else 'FAIL'}"
+    )
     raise SystemExit(0 if all_passed else 1)
 
 

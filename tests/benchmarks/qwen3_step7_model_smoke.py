@@ -78,6 +78,10 @@ def execute(args, model, backend, mpk=None):
         ]
         if args.profile_prefill_stages:
             command.append("--profile-prefill-stages")
+        if args.prefill_warmup_runs:
+            command += [
+                "--prefill-warmup-runs", str(args.prefill_warmup_runs)
+            ]
     print(
         f"Running model={model} backend={backend} B={BATCH_SIZE} "
         f"S_IN={S_IN} S_OUT={S_OUT}",
@@ -119,12 +123,15 @@ def main():
     parser.add_argument("--threshold", type=int, default=256)
     parser.add_argument("--warmup-runs", type=int, default=0)
     parser.add_argument("--profile-prefill-stages", action="store_true")
+    parser.add_argument("--prefill-warmup-runs", type=int, default=0)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     if len(set(args.models)) != len(args.models):
         parser.error("--models must not contain duplicates")
     if args.warmup_runs < 0:
         parser.error("--warmup-runs must be non-negative")
+    if args.prefill_warmup_runs < 0:
+        parser.error("--prefill-warmup-runs must be non-negative")
     args.output_dir = args.output_dir.resolve()
     args.cache_dir = args.output_dir / "cache"
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -262,6 +269,7 @@ def main():
         "warmup_runs": args.warmup_runs,
         "measured_runs": 1,
         "profile_prefill_stages": args.profile_prefill_stages,
+        "prefill_warmup_runs": args.prefill_warmup_runs,
         "rows": rows,
     }
     (args.output_dir / "summary.json").write_text(
