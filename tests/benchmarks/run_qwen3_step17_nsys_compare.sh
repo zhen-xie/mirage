@@ -102,6 +102,7 @@ printf 'Capturing SGLang decode with Nsight Systems...\n'
 rm -f "$sg_prefix.nsys-rep" "$sg_result"
 timeout "$TIMEOUT" nsys profile \
     --force-overwrite=true --trace=cuda,nvtx --sample=none \
+    --cuda-graph-trace=node \
     --capture-range=cudaProfilerApi --capture-range-end=stop \
     --output "$sg_prefix" \
     python -m sglang.benchmark.one_batch \

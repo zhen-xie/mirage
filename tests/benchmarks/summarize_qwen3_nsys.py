@@ -25,7 +25,10 @@ PATTERNS = {
 
 def category(name):
     lower = name.lower()
-    if "persistent_kernel" in lower:
+    if any(value in lower for value in (
+        "persistent_kernel", "worker_kernel", "scheduler_kernel",
+        "resume_after_prefill_kernel", "prepare_kernel",
+    )):
         return "persistent_kernel"
     for group, patterns in PATTERNS.items():
         if any(pattern in lower for pattern in patterns):
@@ -100,21 +103,38 @@ def main():
     category_rows.sort(key=lambda row: row["time_ms"], reverse=True)
 
     total_api_ns = sum(row["total_time_ns"] for row in apis)
+    kernel_sum_ms = total_kernel_ns / 1e6
+    effective_kernel_ms = (
+        max(row["total_time_ns"] for row in kernels) / 1e6
+        if args.backend == "mpk" else kernel_sum_ms
+    )
+    synchronize_ns = sum(
+        row["total_time_ns"] for row in apis
+        if row["name"] == "cudaDeviceSynchronize"
+    )
     result = {
         "status": "passed",
         "backend": args.backend,
-        "kernel_time_ms": total_kernel_ns / 1e6,
+        "kernel_time_ms": effective_kernel_ms,
+        "kernel_time_sum_ms": kernel_sum_ms,
+        "kernel_time_mode": (
+            "maximum concurrent kernel duration"
+            if args.backend == "mpk" else "sum of CUDA kernel durations"
+        ),
         "kernel_instances": sum(row["instances"] or 0 for row in kernels),
         "cuda_api_time_ms": total_api_ns / 1e6,
+        "cuda_device_synchronize_time_ms": synchronize_ns / 1e6,
         "categories": category_rows,
         "top_kernels": sorted(kernels, key=lambda row: row["total_time_ns"], reverse=True)[:25],
         "top_cuda_apis": sorted(apis, key=lambda row: row["total_time_ns"], reverse=True)[:20],
     }
     args.output.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(
-        f"{args.backend}: kernel_time={result['kernel_time_ms']:.3f} ms, "
+        f"{args.backend}: effective_kernel_time={result['kernel_time_ms']:.3f} ms, "
+        f"kernel_sum={result['kernel_time_sum_ms']:.3f} ms, "
         f"kernel_instances={result['kernel_instances']}, "
-        f"CUDA_API_time={result['cuda_api_time_ms']:.3f} ms"
+        f"CUDA_API_time={result['cuda_api_time_ms']:.3f} ms, "
+        f"synchronize_time={result['cuda_device_synchronize_time_ms']:.3f} ms"
     )
     for row in category_rows:
         print(

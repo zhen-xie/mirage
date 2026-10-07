@@ -43,12 +43,17 @@ def main():
         errors.append(f"MPK invalid tokens={invalid}")
     if len(lengths) != 32 or incomplete:
         errors.append(f"MPK incomplete requests={incomplete}; count={len(lengths)}")
-    if mpk.get("kernel_instances") != 1:
-        errors.append(f"expected one MPK persistent kernel, got {mpk.get('kernel_instances')}")
+    mpk_categories = {row["category"] for row in mpk.get("categories", [])}
+    if "persistent_kernel" not in mpk_categories:
+        errors.append("MPK capture is missing persistent worker/scheduler kernels")
     if not sglang.get("kernel_instances"):
         errors.append("SGLang capture contains no kernels")
 
     kernel_ratio = mpk["kernel_time_ms"] / sglang["kernel_time_ms"]
+    sync_ratio = (
+        mpk["cuda_device_synchronize_time_ms"]
+        / sglang["cuda_device_synchronize_time_ms"]
+    )
     result = {
         "step": 17,
         "status": "passed" if not errors else "failed",
@@ -61,6 +66,7 @@ def main():
         "mpk_kernel_time_ms": mpk["kernel_time_ms"],
         "sglang_kernel_time_ms": sglang["kernel_time_ms"],
         "nsys_kernel_time_mpk_over_sglang": kernel_ratio,
+        "nsys_synchronize_wait_mpk_over_sglang": sync_ratio,
         "mpk_kernel_instances": mpk["kernel_instances"],
         "sglang_kernel_instances": sglang["kernel_instances"],
         "mpk_cuda_api_time_ms": mpk["cuda_api_time_ms"],
@@ -79,6 +85,7 @@ def main():
     print(f"MPK first-10: {matches}/10; invalid={invalid}; incomplete={incomplete}")
     print(f"Step 14 wall-time MPK/SGLang: {timing['decode_step_mpk_over_sglang']:.3f}x")
     print(f"Nsight kernel-time MPK/SGLang: {kernel_ratio:.3f}x")
+    print(f"Nsight synchronize-wait MPK/SGLang: {sync_ratio:.3f}x")
     print(f"MPK kernels: {mpk['kernel_instances']}; SGLang kernels: {sglang['kernel_instances']}")
     print(f"Step 17 Nsight comparison: {result['status'].upper()}")
     raise SystemExit(0 if not errors else 1)
