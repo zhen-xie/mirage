@@ -320,6 +320,8 @@ def get_compile_command(
     flags = flags + [
         f"-DMPK_ATTENTION_KV_PIPELINE_STAGES={mpk.attention_kv_pipeline_stages}"
     ]
+    if mpk.attention_consumer_completion == "warp-arrive":
+        flags = flags + ["-DMPK_ATTENTION_WARP_COMPLETION=1"]
     if mpk.scheduler_policy == "event-aligned":
         flags = flags + ["-DMPK_SCHEDULER_EVENT_ALIGNED=1"]
     if mpk.profile_scheduler_waits:
@@ -471,6 +473,7 @@ class PersistentKernel:
         worker_policy: str = "fifo",
         ready_first_spin_iters: int = 64,
         attention_kv_pipeline_stages: int = 2,
+        attention_consumer_completion: str = "warpgroup-sync",
     ):
         self.__finalized__ = False
         self._is_compiled = False
@@ -565,6 +568,12 @@ class PersistentKernel:
                 "attention_kv_pipeline_stages must be 2 or 3, "
                 f"got {attention_kv_pipeline_stages}")
         self.attention_kv_pipeline_stages = attention_kv_pipeline_stages
+        if attention_consumer_completion not in (
+                "warpgroup-sync", "warp-arrive"):
+            raise ValueError(
+                "attention_consumer_completion must be 'warpgroup-sync' or "
+                f"'warp-arrive', got {attention_consumer_completion!r}")
+        self.attention_consumer_completion = attention_consumer_completion
         self.eos_token_id = eos_token_id
         self.kn_graph = KNGraph(CyKNGraph(disable_fingerprint=True))
         # Prevent GC of PyTorch tensors whose GPU pointers are baked into the
@@ -804,6 +813,7 @@ class PersistentKernel:
             "worker_policy": self.worker_policy,
             "ready_first_spin_iters": self.ready_first_spin_iters,
             "attention_kv_pipeline_stages": self.attention_kv_pipeline_stages,
+            "attention_consumer_completion": self.attention_consumer_completion,
             "max_num_pages": self.max_num_pages,
             "page_size": self.page_size,
             "world_size": self.world_size,
@@ -855,6 +865,7 @@ class PersistentKernel:
             ("worker_policy", self.worker_policy),
             ("ready_first_spin_iters", self.ready_first_spin_iters),
             ("attention_kv_pipeline_stages", self.attention_kv_pipeline_stages),
+            ("attention_consumer_completion", self.attention_consumer_completion),
             ("max_num_pages", self.max_num_pages),
             ("page_size", self.page_size),
             ("world_size", self.world_size),

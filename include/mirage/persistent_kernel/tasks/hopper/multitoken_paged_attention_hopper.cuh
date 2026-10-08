@@ -266,7 +266,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       initialize_barrier(q_barrier[i], 1);
       initialize_barrier(k_barrier[i], 1);
       initialize_barrier(v_barrier[i], 1);
+#ifdef MPK_ATTENTION_WARP_COMPLETION
+      initialize_barrier(compute_done[i], WARPGROUP_WARPS);
+#else
       initialize_barrier(compute_done[i], 1);
+#endif
     }
   }
   __syncthreads();
@@ -671,12 +675,20 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         }
       }
 
+#ifdef MPK_ATTENTION_WARP_COMPLETION
+      // Each warp reports completion independently. The producer can reuse
+      // this slot after all consumer warps have finished reading it, without
+      // forcing the faster consumer warps to wait at a warpgroup barrier.
+      if (lane_idx == 0) {
+        arrive(compute_done[slot], 1);
+      }
+#else
       wg_sync<THREADS_PER_WARPGROUP * CONSUMER_WARPGROUPS>(
           CONSUMER_WARPGROUP_SYNC_BARRIER_ID);
-
       if (warp_idx == 0 && lane_idx == 0) {
         arrive(compute_done[slot], 1);
       }
+#endif
     }
 
     // write intermediate results to buffer in shared memory

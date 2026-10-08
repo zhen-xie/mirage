@@ -315,6 +315,15 @@ if __name__ == "__main__":
         default=2,
         help="Number of shared-memory stages in Hopper MPK attention.",
     )
+    parser.add_argument(
+        "--mpk-attention-consumer-completion",
+        choices=("warpgroup-sync", "warp-arrive"),
+        default="warpgroup-sync",
+        help=(
+            "How Hopper attention consumer warps notify the KV producer that "
+            "a pipeline slot can be reused."
+        ),
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
@@ -716,12 +725,18 @@ if __name__ == "__main__":
             attention_kv_pipeline_stages=(
                 args.mpk_attention_kv_pipeline_stages
             ),
+            attention_consumer_completion=(
+                args.mpk_attention_consumer_completion
+            ),
         )
         print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
         print(f"MPK worker policy: {mpk.worker_policy.upper()}")
         print(
             "MPK attention KV pipeline stages: "
             f"{mpk.attention_kv_pipeline_stages}")
+        print(
+            "MPK attention consumer completion: "
+            f"{mpk.attention_consumer_completion.upper()}")
         if args.mpk_worker_policy == "delayed-ready-first":
             print(
                 "MPK delayed ready-first spin iterations: "
@@ -1629,6 +1644,10 @@ if __name__ == "__main__":
                 ),
                 "mpk_attention_kv_pipeline_stages": (
                     args.mpk_attention_kv_pipeline_stages
+                    if args.use_mirage else None
+                ),
+                "mpk_attention_consumer_completion": (
+                    args.mpk_attention_consumer_completion
                     if args.use_mirage else None
                 ),
                 "mode": (
