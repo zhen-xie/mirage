@@ -885,6 +885,14 @@ __device__ __forceinline__ bool
 #ifdef MODE_ONLINE_NOTOKEN
 __device__ __forceinline__ bool prepare_next_batch(RuntimeConfig const &config,
                                                    size_t iteration_num = 0) {
+#ifdef MPK_TEST_MODE
+  // A test-mode graph is a finite host-controlled segment.  Returning true
+  // here used to enqueue a second graph iteration and made standalone Hybrid
+  // segments depend on request metadata that they intentionally do not own.
+  // Terminating at the first END_OF_TASK_GRAPH gives the host a well-defined
+  // MPK -> external CUDA -> MPK handoff point.
+  return false;
+#else
   // TODO: iteration_num is a current workaround
   // We may consider split EVENT_END_OF_TASK_GRAPH into
   // EVENT_END_OF_TASK_GRAPH and EVENT_START_OF_TASK_GRAPH
@@ -893,6 +901,7 @@ __device__ __forceinline__ bool prepare_next_batch(RuntimeConfig const &config,
   } else { // iteration_num == 0
     return true;
   }
+#endif
 }
 #endif
 

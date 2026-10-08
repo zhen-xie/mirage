@@ -30,6 +30,13 @@ def make_linear_kernel(x, weight, output, cache_dir, name, tasks):
     workers, schedulers = mirage.get_configurations_from_gpu(0)
     params = PersistentKernel.get_default_init_parameters()
     params.update(
+        # This prototype launches one finite MPK segment at a time.  Offline
+        # mode expects a complete request lifecycle and keeps asking the
+        # scheduler to prepare decode iterations, which makes a standalone
+        # linear-only graph wait forever.  online_notoken executes exactly
+        # one task graph and terminates, so the host can hand the tensors to
+        # FlashInfer and launch the next MPK segment.
+        mode="online_notoken",
         test_mode=True,
         num_workers=workers,
         num_local_schedulers=schedulers,
@@ -120,6 +127,9 @@ def main():
     prefix = make_linear_kernel(
         hidden, qkv_weight, qkv,
         args.output_dir / "cache_prefix", "qkv", 96)
+    suffix = make_linear_kernel(
+        attention_output.reshape(BATCH, HIDDEN), o_weight, projected,
+        args.output_dir / "cache_suffix", "o_proj", 64)
 
     pages_per_request = math.ceil(KV_LENGTH / PAGE_SIZE)
     total_pages = BATCH * pages_per_request
@@ -158,13 +168,14 @@ def main():
 
     def hybrid_once():
         prefix()
-        # The current MPK runtime has no layer boundary event. Full device
-        # synchronization is the real synchronization required by this first
-        # prototype before FlashInfer can safely consume qkv.
+        # online_notoken makes this a finite MPK segment.  Synchronization is
+        # the first real boundary implementation; a later step can replace it
+        # with stream events once the state-machine semantics are validated.
         torch.cuda.synchronize()
         output = preprocess_and_attention(qkv)
         attention_output.copy_(output)
-        projected.copy_(F.linear(output.reshape(BATCH, HIDDEN), o_weight))
+        suffix()
+        torch.cuda.synchronize()
 
     def external_once():
         qkv_ref = F.linear(hidden, qkv_weight)
@@ -219,12 +230,11 @@ def main():
         "implementation": {
             "prefix": "real MPK QKV linear persistent kernel",
             "attention": "Torch QK norm/KV store plus FlashInfer decode",
-            "suffix": "Torch output projection",
-            "synchronization": "cudaDeviceSynchronize at the MPK/FlashInfer boundary",
+            "suffix": "real MPK output-projection persistent kernel",
+            "mpk_segment_mode": "online_notoken (one finite task graph)",
+            "synchronization": "cudaDeviceSynchronize at both MPK/FlashInfer boundaries",
             "missing_for_full_model": [
                 "MPK boundary events without device-wide synchronization",
-                "multiple independent MPK runtime instances in one process",
-                "real MPK output-projection suffix",
                 "RoPE in the exported pre-attention stage",
                 "36-layer decode loop and token-level correctness",
             ],
@@ -243,6 +253,7 @@ def main():
     print(f"MPK prefix/boundary penalty: {transition_penalty_ms:.4f} ms")
     print(f"Step 33 single-boundary Hybrid: {status.upper()}")
     prefix.finalize()
+    suffix.finalize()
     raise SystemExit(0 if status == "passed" else 1)
 
 
