@@ -15,6 +15,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+import shutil
 import sys
 
 import torch
@@ -55,7 +56,14 @@ def grid_for_projection(size):
     raise ValueError(f"unsupported projection size: {size}")
 
 
-def make_segment(inputs, operations, cache_dir, batch):
+def clone_kernel_cache(source, destination):
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in source.iterdir():
+        if path.is_file():
+            shutil.copy2(path, destination / path.name)
+
+
+def make_segment(inputs, operations, cache_dir, batch, template_cache=None):
     workers, schedulers = mirage.get_configurations_from_gpu(0)
     params = PersistentKernel.get_default_init_parameters()
     params.update(
@@ -80,7 +88,10 @@ def make_segment(inputs, operations, cache_dir, batch):
     launcher = cache_dir / (
         f"mpk_launcher_rank0.cpython-{sys.version_info.major}"
         f"{sys.version_info.minor}-x86_64-linux-gnu.so")
+    if not launcher.is_file() and template_cache is not None:
+        clone_kernel_cache(template_cache, cache_dir)
     if launcher.is_file():
+        print(f"Loading isolated MPK segment: {cache_dir}")
         kernel.load_mpk_kernel(output_dir=str(cache_dir))
     else:
         kernel.compile(output_dir=str(cache_dir))
@@ -132,16 +143,20 @@ def main():
     prompt = encoded.repeat(repeats)[:args.input_length]
     input_ids = prompt.unsqueeze(0).repeat(args.batch_size, 1).cuda()
 
+    attention_mask = torch.ones_like(input_ids)
     with torch.inference_mode():
         reference_ids = model.generate(
             input_ids,
+            attention_mask=attention_mask,
             max_new_tokens=args.output_length,
             min_new_tokens=args.output_length,
             do_sample=False,
             use_cache=True,
             pad_token_id=tokenizer.eos_token_id,
         )[:, args.input_length:]
-        prefill = model(input_ids, use_cache=True, return_dict=True)
+        prefill = model(
+            input_ids, attention_mask=attention_mask,
+            use_cache=True, return_dict=True)
 
     config = model.config
     batch = args.batch_size
@@ -171,8 +186,8 @@ def main():
 
     prefixes = []
     suffixes = []
-    prefix_cache = args.output_dir / "cache_prefix"
-    suffix_cache = args.output_dir / "cache_suffix"
+    prefix_template = args.output_dir / "cache_prefix_layer_0_v2"
+    suffix_template = args.output_dir / "cache_suffix_layer_0_v2"
     for layer_idx, layer in enumerate(model.model.layers):
         qkv_weight = torch.cat((
             layer.self_attn.q_proj.weight,
@@ -185,11 +200,13 @@ def main():
                 grid_dim=(grid_for_projection(qkv_size), 1, 1),
                 block_dim=(128, 1, 1))
 
+        prefix_cache = args.output_dir / f"cache_prefix_layer_{layer_idx}_v2"
         prefixes.append(make_segment({
             "normed": normed_buffers[layer_idx],
             "qkv_weight": qkv_weight,
             "qkv": qkv_buffers[layer_idx],
-        }, build_prefix, prefix_cache, batch))
+        }, build_prefix, prefix_cache, batch,
+           None if layer_idx == 0 else prefix_template))
 
         attn_residual = torch.empty_like(hidden_buffers[0])
 
@@ -200,12 +217,14 @@ def main():
                 grid_dim=(hidden_size // 64, 1, 1),
                 block_dim=(128, 1, 1))
 
+        suffix_cache = args.output_dir / f"cache_suffix_layer_{layer_idx}_v2"
         suffixes.append(make_segment({
             "attention": attention_buffers[layer_idx].reshape(batch, hidden_size),
             "o_weight": layer.self_attn.o_proj.weight,
             "hidden": hidden_buffers[layer_idx],
             "attn_residual": attn_residual,
-        }, build_suffix, suffix_cache, batch))
+        }, build_suffix, suffix_cache, batch,
+           None if layer_idx == 0 else suffix_template))
         # Keep this tensor alive with the kernel-attached output and use it as
         # the host MLP residual after the finite MPK segment returns.
         suffixes[-1].step35_attn_residual = attn_residual
