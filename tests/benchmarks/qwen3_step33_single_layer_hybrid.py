@@ -12,7 +12,10 @@ import mirage
 from mirage.mpk.persistent_kernel import PersistentKernel
 
 
-BATCH = 32
+# Keep the first scheduler-boundary prototype within one Hopper linear batch
+# tile. B=32 creates two grid.y tiles in an otherwise single-operator test-mode
+# graph and currently prevents that minimal scheduler graph from terminating.
+BATCH = 8
 HIDDEN = 4096
 Q_HEADS = 32
 KV_HEADS = 8
