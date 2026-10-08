@@ -338,6 +338,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Accumulate Hopper attention producer/consumer phase cycles.",
     )
+    parser.add_argument(
+        "--mpk-attention-tma-kv",
+        action="store_true",
+        help="Use Hopper TMA for full cached K/V tiles.",
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
@@ -751,6 +756,7 @@ if __name__ == "__main__":
             attention_combined_kv_barrier=(
                 args.mpk_attention_combined_kv_barrier
             ),
+            attention_tma_kv=args.mpk_attention_tma_kv,
         )
         print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
         print(f"MPK worker policy: {mpk.worker_policy.upper()}")
@@ -765,6 +771,9 @@ if __name__ == "__main__":
             f"{'ENABLED' if mpk.attention_combined_kv_barrier else 'DISABLED'}")
         if attention_phase_profile is not None:
             print("MPK attention phase profiling: ENABLED")
+        print(
+            "MPK attention TMA KV: "
+            f"{'ENABLED' if mpk.attention_tma_kv else 'DISABLED'}")
         if args.mpk_worker_policy == "delayed-ready-first":
             print(
                 "MPK delayed ready-first spin iterations: "

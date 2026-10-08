@@ -74,7 +74,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     void *output_ptr,
     void *lse = nullptr,
     int kv_idx = 0,
-    unsigned long long *phase_profile = nullptr) {
+    unsigned long long *phase_profile = nullptr,
+    CUtensorMap *paged_k_tma_desc = nullptr,
+    CUtensorMap *paged_v_tma_desc = nullptr) {
   // Stride between consecutive pages of K or V.
   constexpr int PAGE_STRIDE =
       PAGE_STRIDE_ROWS > 0 ? PAGE_STRIDE_ROWS : PAGE_SIZE;
@@ -91,6 +93,34 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
   static_assert(Kstages == 2 || Kstages == 3,
                 "MPK attention supports two or three KV pipeline stages");
   constexpr int CP_CHUNK_SIZE = 16 / sizeof(T);
+#ifdef MPK_ATTENTION_TMA_KV
+  constexpr int TMA_CP_ASYNC_SIZE = 64;
+  constexpr int TMA_REPEAT_COL =
+      (HEAD_DIM + TMA_CP_ASYNC_SIZE - 1) / TMA_CP_ASYNC_SIZE;
+  constexpr int TMA_SMEM_STRIDE = KV_TILE_SIZE * TMA_CP_ASYNC_SIZE;
+  using PagedKVTma = tma::tma_4d<T,
+                                  3,
+                                  3,
+                                  3,
+                                  1,
+                                  PAGE_SIZE,
+                                  NUM_QO_GROUPS,
+                                  HEAD_DIM,
+                                  1,
+                                  KV_TILE_SIZE,
+                                  1,
+                                  TMA_CP_ASYNC_SIZE,
+                                  PAGE_SIZE * NUM_QO_GROUPS * HEAD_DIM,
+                                  NUM_QO_GROUPS * HEAD_DIM,
+                                  HEAD_DIM,
+                                  1,
+                                  1,
+                                  TMA_REPEAT_COL,
+                                  TMA_SMEM_STRIDE,
+                                  true>;
+  PagedKVTma tma_paged_k(paged_k_tma_desc);
+  PagedKVTma tma_paged_v(paged_v_tma_desc);
+#endif
   constexpr int PRODUCER_WARPGROUP_SYNC_BARRIER_ID = 8;
   constexpr int CONSUMER_WARPGROUP_SYNC_BARRIER_ID = 9;
   // NOTE(Yu): we use m64n64k16 mma atom to compute matrix multiplication
@@ -266,7 +296,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     for (int i = 0; i < Kstages; i++) {
       initialize_barrier(q_barrier[i], 1);
       initialize_barrier(k_barrier[i], 1);
-#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
+#if !defined(MPK_ATTENTION_COMBINED_KV_BARRIER) &&                          \
+    !defined(MPK_ATTENTION_TMA_KV)
       initialize_barrier(v_barrier[i], 1);
 #endif
 #ifdef MPK_ATTENTION_WARP_COMPLETION
@@ -308,6 +339,20 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
     // load k and v
     int page_idx_0 = page_indices[kv_cache_offset / PAGE_SIZE];
+#ifdef MPK_ATTENTION_TMA_KV
+    bool initial_uses_tma =
+        paged_k_tma_desc != nullptr && paged_v_tma_desc != nullptr &&
+        kv_cache_offset + KV_TILE_SIZE <= finished_seq_len;
+    if (initial_uses_tma) {
+      if (lane_idx == 0 && warp_idx % 4 == 0) {
+        set_barrier_transaction_bytes(
+            k_barrier[0], 2 * KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+        int const coords[4] = {0, 0, kv_cache_offset % PAGE_SIZE, page_idx_0};
+        tma_paged_k.tma_cp_async(k_barrier[0], k_smem(0, 0), coords);
+        tma_paged_v.tma_cp_async(k_barrier[0], v_smem(0, 0), coords);
+      }
+    } else {
+#endif
 #pragma unroll
     for (int chunk_idx = threadIdx.x - NUM_THREADS * CONSUMER_WARPGROUPS;
          chunk_idx < KV_TILE_SIZE * HEAD_DIM / CP_CHUNK_SIZE;
@@ -342,15 +387,23 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     // Each producer must finish its copies before warp 4 publishes the tile.
     wg_sync<THREADS_PER_WARPGROUP * PRODUCER_WARPGROUPS>(
         PRODUCER_WARPGROUP_SYNC_BARRIER_ID);
+#ifdef MPK_ATTENTION_TMA_KV
+    }
+#endif
 #ifdef MPK_PROFILE_ATTENTION_PHASES
-    if (lane_idx == 0 && warp_idx % 4 == 0) {
+    if (lane_idx == 0 && warp_idx % 4 == 0
+#ifdef MPK_ATTENTION_TMA_KV
+        && !initial_uses_tma
+#endif
+    ) {
       producer_load_cycles += clock64() - initial_load_begin;
     }
 #endif
 
     if (lane_idx == 0 && warp_idx % 4 == 0) {
       arrive(k_barrier[0], 1);
-#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
+#if !defined(MPK_ATTENTION_COMBINED_KV_BARRIER) &&                          \
+    !defined(MPK_ATTENTION_TMA_KV)
       arrive(v_barrier[0], 1);
 #endif
     }
@@ -380,6 +433,26 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       if (next_iter_len > 0) {
         int page_idx = page_indices[
             ((iter + 1) * KV_TILE_SIZE + kv_cache_offset) / PAGE_SIZE];
+#ifdef MPK_ATTENTION_TMA_KV
+        bool tile_uses_tma =
+            paged_k_tma_desc != nullptr && paged_v_tma_desc != nullptr &&
+            (iter + 2) * KV_TILE_SIZE + kv_cache_offset <= finished_seq_len;
+        if (tile_uses_tma) {
+          if (lane_idx == 0 && warp_idx % 4 == 0) {
+            set_barrier_transaction_bytes(
+                k_barrier[slot], 2 * KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+            int const coords[4] = {
+                0,
+                0,
+                ((iter + 1) * KV_TILE_SIZE + kv_cache_offset) % PAGE_SIZE,
+                page_idx};
+            tma_paged_k.tma_cp_async(
+                k_barrier[slot], k_smem(0, 0), coords);
+            tma_paged_v.tma_cp_async(
+                k_barrier[slot], v_smem(0, 0), coords);
+          }
+        } else {
+#endif
 #pragma unroll
         for (int chunk_idx = threadIdx.x - NUM_THREADS * CONSUMER_WARPGROUPS;
              chunk_idx < KV_TILE_SIZE * HEAD_DIM / CP_CHUNK_SIZE;
@@ -413,15 +486,23 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
         wg_sync<THREADS_PER_WARPGROUP * PRODUCER_WARPGROUPS>(
             PRODUCER_WARPGROUP_SYNC_BARRIER_ID);
+#ifdef MPK_ATTENTION_TMA_KV
+        }
+#endif
 #ifdef MPK_PROFILE_ATTENTION_PHASES
-        if (lane_idx == 0 && warp_idx % 4 == 0) {
+        if (lane_idx == 0 && warp_idx % 4 == 0
+#ifdef MPK_ATTENTION_TMA_KV
+            && !tile_uses_tma
+#endif
+        ) {
           producer_load_cycles += clock64() - load_begin;
         }
 #endif
 
         if (lane_idx == 0 && warp_idx % 4 == 0) {
           arrive(k_barrier[slot], 1);
-#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
+#if !defined(MPK_ATTENTION_COMBINED_KV_BARRIER) &&                          \
+    !defined(MPK_ATTENTION_TMA_KV)
           arrive(v_barrier[slot], 1);
 #endif
         }
@@ -478,7 +559,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       unsigned long long ready_begin = clock64();
 #endif
       wait(k_barrier[slot], phase);
-#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
+#if !defined(MPK_ATTENTION_COMBINED_KV_BARRIER) &&                          \
+    !defined(MPK_ATTENTION_TMA_KV)
       wait(v_barrier[slot], phase);
 #endif
 #ifdef MPK_PROFILE_ATTENTION_PHASES

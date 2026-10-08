@@ -385,7 +385,8 @@ __host__ inline void fill_tma_desc_by_task(CUtensorMap *tma_desc,
       }
       break;
     }
-    case TASK_PAGED_ATTENTION_HOPPER: {
+    case TASK_PAGED_ATTENTION_HOPPER:
+    case TASK_PAGED_ATTENTION_SPLIT_KV_HOPPER: {
       using T = bfloat16;
       constexpr int B = 3, M = 3, S = 3;
       constexpr int TMA_CP_ASYNC_SIZE = 64;
@@ -1504,7 +1505,8 @@ __host__ inline void create_tma_desc_by_task(FullTaskDesc &task_desc) {
           task_desc, task_desc.outputs[0], task_desc.num_inputs, 0); // CD
       break;
     }
-    case TASK_PAGED_ATTENTION_HOPPER: {
+    case TASK_PAGED_ATTENTION_HOPPER:
+    case TASK_PAGED_ATTENTION_SPLIT_KV_HOPPER: {
       constexpr int TMA_TENSOR_NUM =
           4; // 3 input tensors and 1 output tensor that need TMA
       for (size_t param_id = 0; param_id < TMA_TENSOR_NUM; param_id++) {
