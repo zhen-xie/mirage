@@ -1540,7 +1540,6 @@ int TaskRegister::register_paged_attention_hopper_task(
   code.e("    runtime_config.paged_kv_indices_buffer[$],", group_id);
   code.e("    runtime_config.paged_kv_last_page_len_buffer[$],", group_id);
   code.e("    task_desc->task_metadata.request_id,");
-  code.e("    task_desc->task_metadata.merge_task_offset,"); // KV head
   code.e("    $,", params[2] > 0); // qk_norm
   code.e("    $,", params[3] > 0); // rope
   code.e("    task_desc->input_ptrs[3],");
@@ -4616,7 +4615,6 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
   code.e("    runtime_config.paged_kv_indices_buffer[$],", group_id);
   code.e("    runtime_config.paged_kv_last_page_len_buffer[$],", group_id);
   code.e("    task_desc->task_metadata.request_id,");
-  code.e("    task_desc->task_metadata.merge_task_offset,"); // KV head
   code.e("    $,", params[2] > 0);
   code.e("    $,", params[3] > 0);
   code.e("    task_desc->input_ptrs[3],");

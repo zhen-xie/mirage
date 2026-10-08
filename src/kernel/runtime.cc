@@ -364,12 +364,6 @@ void register_mugraph(
               task.task_metadata.kv_idx = bid.z;
               task.task_metadata.merge_task_offset = bid.y;
             }
-            // Hopper paged attention uses grid.y for the KV-head dimension.
-            // Preserve it for TMA coordinates; the regular pointer path gets
-            // the same offset through the threadblock input map.
-            if (task_type == TASK_PAGED_ATTENTION_HOPPER) {
-              task.task_metadata.merge_task_offset = bid.y;
-            }
             // Set MLA decode metadata: request_id=batch (bid.y), kv_idx=split
             // (bid.x)
             if (task_type == TASK_MLA_DECODE_SM100) {
