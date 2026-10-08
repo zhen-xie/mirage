@@ -34,7 +34,12 @@ def main():
              "task_speedup":speedup,"reason":"; ".join(reasons)}
         rows.append(row); failures += bool(reasons)
         speedup_text = f"{speedup:.3f}x" if speedup is not None else "n/a"
-        print(f"B={key[0]} KV={key[1]}: {row['status'].upper()}; task speedup={speedup_text}")
+        reason_text = row["reason"] or "none"
+        print(
+            f"B={key[0]} KV={key[1]}: {row['status'].upper()}; "
+            f"first-10={row['minimum_first10_matches']}/10; "
+            f"task speedup={speedup_text}; reason={reason_text}"
+        )
     summary={"step":40,"phase":"hopper_tma_kv","status":"failed" if failures else "passed","rows":rows}
     (a.output_dir/"summary.json").write_text(json.dumps(summary,indent=2)+"\n")
     with (a.output_dir/"summary.csv").open("w",newline="") as f:
