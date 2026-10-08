@@ -296,8 +296,7 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     for (int i = 0; i < Kstages; i++) {
       initialize_barrier(q_barrier[i], 1);
       initialize_barrier(k_barrier[i], 1);
-#if !defined(MPK_ATTENTION_COMBINED_KV_BARRIER) &&                          \
-    !defined(MPK_ATTENTION_TMA_KV)
+#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
       initialize_barrier(v_barrier[i], 1);
 #endif
 #ifdef MPK_ATTENTION_WARP_COMPLETION
@@ -346,10 +345,12 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     if (initial_uses_tma) {
       if (lane_idx == 0 && warp_idx % 4 == 0) {
         set_barrier_transaction_bytes(
-            k_barrier[0], 2 * KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+            k_barrier[0], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+        set_barrier_transaction_bytes(
+            v_barrier[0], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
         int const coords[4] = {0, 0, kv_cache_offset % PAGE_SIZE, page_idx_0};
         tma_paged_k.tma_cp_async(k_barrier[0], k_smem(0, 0), coords);
-        tma_paged_v.tma_cp_async(k_barrier[0], v_smem(0, 0), coords);
+        tma_paged_v.tma_cp_async(v_barrier[0], v_smem(0, 0), coords);
       }
     } else {
 #endif
@@ -400,10 +401,17 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     }
 #endif
 
-    if (lane_idx == 0 && warp_idx % 4 == 0) {
+    if (lane_idx == 0 && warp_idx % 4 == 0
+#ifdef MPK_ATTENTION_TMA_KV
+        && !initial_uses_tma
+#endif
+    ) {
+      // cp.async does not complete an mbarrier transaction, so publish the
+      // tile explicitly.  The TMA path already called arrive.expect_tx in
+      // set_barrier_transaction_bytes(); the TMA engine completes that
+      // transaction after the bytes reach shared memory.
       arrive(k_barrier[0], 1);
-#if !defined(MPK_ATTENTION_COMBINED_KV_BARRIER) &&                          \
-    !defined(MPK_ATTENTION_TMA_KV)
+#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
       arrive(v_barrier[0], 1);
 #endif
     }
@@ -440,7 +448,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         if (tile_uses_tma) {
           if (lane_idx == 0 && warp_idx % 4 == 0) {
             set_barrier_transaction_bytes(
-                k_barrier[slot], 2 * KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+                k_barrier[slot], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+            set_barrier_transaction_bytes(
+                v_barrier[slot], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
             int const coords[4] = {
                 0,
                 0,
@@ -449,7 +459,7 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
             tma_paged_k.tma_cp_async(
                 k_barrier[slot], k_smem(0, 0), coords);
             tma_paged_v.tma_cp_async(
-                k_barrier[slot], v_smem(0, 0), coords);
+                v_barrier[slot], v_smem(0, 0), coords);
           }
         } else {
 #endif
@@ -499,10 +509,15 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         }
 #endif
 
-        if (lane_idx == 0 && warp_idx % 4 == 0) {
+        if (lane_idx == 0 && warp_idx % 4 == 0
+#ifdef MPK_ATTENTION_TMA_KV
+            && !tile_uses_tma
+#endif
+        ) {
+          // See the initial-tile path above: only cp.async needs a manual
+          // arrival.  TMA completion satisfies the expect_tx barrier.
           arrive(k_barrier[slot], 1);
-#if !defined(MPK_ATTENTION_COMBINED_KV_BARRIER) &&                          \
-    !defined(MPK_ATTENTION_TMA_KV)
+#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
           arrive(v_barrier[slot], 1);
 #endif
         }
@@ -559,8 +574,7 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       unsigned long long ready_begin = clock64();
 #endif
       wait(k_barrier[slot], phase);
-#if !defined(MPK_ATTENTION_COMBINED_KV_BARRIER) &&                          \
-    !defined(MPK_ATTENTION_TMA_KV)
+#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
       wait(v_barrier[slot], phase);
 #endif
 #ifdef MPK_PROFILE_ATTENTION_PHASES
