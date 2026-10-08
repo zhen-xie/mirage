@@ -35,6 +35,9 @@ def make_linear_kernel(x, weight, output, cache_dir, name, tasks):
         num_local_schedulers=schedulers,
         max_num_batched_tokens=BATCH,
         max_num_batched_requests=1,
+        max_seq_length=BATCH,
+        max_num_pages=BATCH,
+        page_size=1,
         use_cutlass_kernel=True,
     )
     kernel = PersistentKernel(**params)
