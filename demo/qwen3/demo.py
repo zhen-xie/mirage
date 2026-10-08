@@ -324,6 +324,15 @@ if __name__ == "__main__":
             "a pipeline slot can be reused."
         ),
     )
+    parser.add_argument(
+        "--mpk-attention-combined-kv-barrier",
+        action="store_true",
+        help=(
+            "Publish each copied K/V tile with one shared readiness barrier. "
+            "K and V use the same producer copy group and become visible "
+            "together."
+        ),
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
@@ -728,6 +737,9 @@ if __name__ == "__main__":
             attention_consumer_completion=(
                 args.mpk_attention_consumer_completion
             ),
+            attention_combined_kv_barrier=(
+                args.mpk_attention_combined_kv_barrier
+            ),
         )
         print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
         print(f"MPK worker policy: {mpk.worker_policy.upper()}")
@@ -737,6 +749,9 @@ if __name__ == "__main__":
         print(
             "MPK attention consumer completion: "
             f"{mpk.attention_consumer_completion.upper()}")
+        print(
+            "MPK attention combined KV barrier: "
+            f"{'ENABLED' if mpk.attention_combined_kv_barrier else 'DISABLED'}")
         if args.mpk_worker_policy == "delayed-ready-first":
             print(
                 "MPK delayed ready-first spin iterations: "

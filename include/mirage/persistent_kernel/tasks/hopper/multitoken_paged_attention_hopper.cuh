@@ -265,7 +265,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     for (int i = 0; i < Kstages; i++) {
       initialize_barrier(q_barrier[i], 1);
       initialize_barrier(k_barrier[i], 1);
+#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
       initialize_barrier(v_barrier[i], 1);
+#endif
 #ifdef MPK_ATTENTION_WARP_COMPLETION
       initialize_barrier(compute_done[i], WARPGROUP_WARPS);
 #else
@@ -337,7 +339,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
     if (lane_idx == 0 && warp_idx % 4 == 0) {
       arrive(k_barrier[0], 1);
+#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
       arrive(v_barrier[0], 1);
+#endif
     }
 
     // start loading next tile in kv smem
@@ -392,7 +396,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
         if (lane_idx == 0 && warp_idx % 4 == 0) {
           arrive(k_barrier[slot], 1);
+#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
           arrive(v_barrier[slot], 1);
+#endif
         }
       }
     }
@@ -432,7 +438,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       int phase = (iter / Kstages) % 2;
       int slot = iter % Kstages;
       wait(k_barrier[slot], phase);
+#ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
       wait(v_barrier[slot], phase);
+#endif
       k_smem.set_ptr(s_k + slot * KV_TILE_SIZE * HEAD_DIM);
       v_smem.set_ptr(s_v + slot * KV_TILE_SIZE * HEAD_DIM);
 

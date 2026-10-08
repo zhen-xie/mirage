@@ -68,7 +68,7 @@ def torch_command(args, s_in, output):
 
 def mpk_command(args, batch, s_in, case_dir):
     max_seq = math.ceil((s_in + S_OUT) / 128) * 128
-    return [
+    command = [
         sys.executable, str(DEMO), "--model", args.model,
         "--input-length", str(s_in), "--max-seq-length", str(max_seq),
         "--max-new-tokens", str(S_OUT), "--page-size", str(max_seq),
@@ -91,6 +91,9 @@ def mpk_command(args, batch, s_in, case_dir):
         "--profiler-decode-start-step", "1",
         "--profiler-decode-num-steps", str(PROFILE_STEPS),
     ]
+    if args.combined_kv_barrier:
+        command.append("--mpk-attention-combined-kv-barrier")
+    return command
 
 
 def plan_wrapper(wrapper, indptr, indices, last_page_len):
@@ -153,6 +156,7 @@ def main():
     parser.add_argument("--threshold", type=int, default=256)
     parser.add_argument("--target-tasks", type=int, default=128)
     parser.add_argument("--profiler-entries-per-block", type=int, default=32768)
+    parser.add_argument("--combined-kv-barrier", action="store_true")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     batches = [int(value) for value in args.batch_sizes.split()]
@@ -279,6 +283,7 @@ def main():
         "profile_steps": PROFILE_STEPS,
         "warmup": args.warmup,
         "repeat": args.repeat,
+        "combined_kv_barrier": args.combined_kv_barrier,
         "rows": rows,
     }
     (args.output_dir / "summary.json").write_text(
