@@ -191,10 +191,26 @@ def main():
     attention_error = (
         attention_output.float() - reference_attention.float()).abs()
     output_error = (projected.float() - reference.float()).abs()
+    # The MPK Hopper GEMM and torch.matmul use different BF16 accumulation
+    # orders.  The raw QKV projection therefore has a wider absolute error on
+    # this intentionally unnormalised random matrix, while Q/K RMSNorm removes
+    # that scale difference.  Gate the boundary on the tensor consumed by the
+    # next layer and retain QKV as a diagnostic with a realistic BF16 bound.
+    correctness_gates = {
+        "qkv_mean_error_max": 0.06,
+        "attention_mean_error_max": 0.005,
+        "output_max_error_max": 0.02,
+        "output_mean_error_max": 0.005,
+    }
     correct = (
-        qkv_error.mean().item() <= 0.01
-        and attention_error.mean().item() <= 0.005
-        and output_error.mean().item() <= 0.05
+        qkv_error.mean().item()
+        <= correctness_gates["qkv_mean_error_max"]
+        and attention_error.mean().item()
+        <= correctness_gates["attention_mean_error_max"]
+        and output_error.max().item()
+        <= correctness_gates["output_max_error_max"]
+        and output_error.mean().item()
+        <= correctness_gates["output_mean_error_max"]
     )
 
     external_ms = measure(external_once, args.warmup, args.repeat)
@@ -215,6 +231,7 @@ def main():
         },
         "correctness": {
             "status": "passed" if correct else "failed",
+            "gates": correctness_gates,
             "qkv_max_error": qkv_error.max().item(),
             "qkv_mean_error": qkv_error.mean().item(),
             "attention_max_error": attention_error.max().item(),
