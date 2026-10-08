@@ -19,15 +19,22 @@ def main():
         reasons=[]
         if n["status"] != "passed" or n["minimum_first10_matches"] != 10:
             reasons.append(n.get("reason") or "correctness failed")
-        speedup=b["mpk_attention_mean_task_us"]/n["mpk_attention_mean_task_us"]
+        baseline_us = b.get("mpk_attention_mean_task_us")
+        candidate_us = n.get("mpk_attention_mean_task_us")
+        speedup = (
+            baseline_us / candidate_us
+            if baseline_us is not None and candidate_us not in (None, 0)
+            else None
+        )
         row={"batch_size":key[0],"kv_length":key[1],
              "status":"failed" if reasons else "passed",
              "minimum_first10_matches":n["minimum_first10_matches"],
-             "baseline_task_us":b["mpk_attention_mean_task_us"],
-             "tma_task_us":n["mpk_attention_mean_task_us"],
+             "baseline_task_us":baseline_us,
+             "tma_task_us":candidate_us,
              "task_speedup":speedup,"reason":"; ".join(reasons)}
         rows.append(row); failures += bool(reasons)
-        print(f"B={key[0]} KV={key[1]}: {row['status'].upper()}; task speedup={speedup:.3f}x")
+        speedup_text = f"{speedup:.3f}x" if speedup is not None else "n/a"
+        print(f"B={key[0]} KV={key[1]}: {row['status'].upper()}; task speedup={speedup_text}")
     summary={"step":40,"phase":"hopper_tma_kv","status":"failed" if failures else "passed","rows":rows}
     (a.output_dir/"summary.json").write_text(json.dumps(summary,indent=2)+"\n")
     with (a.output_dir/"summary.csv").open("w",newline="") as f:
