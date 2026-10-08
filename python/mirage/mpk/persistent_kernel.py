@@ -7,6 +7,7 @@ import sys
 import sysconfig
 import json
 import hashlib
+import shlex
 
 from ..core import *
 from ..kernel import get_key_paths, KNGraph, TBGraph
@@ -231,9 +232,10 @@ valid_persistent_kernel_modes = {"offline", "online", "online_notoken", "onepass
 
 def _detect_cxx_standard():
     """Use c++20 if the host compiler supports it, otherwise fall back to c++17."""
+    host_cxx = os.environ.get("CUDAHOSTCXX") or os.environ.get("CXX") or "g++"
     try:
         result = subprocess.run(
-            ["g++", "-std=c++20", "-x", "c++", "-E", "-"],
+            [host_cxx, "-std=c++20", "-x", "c++", "-E", "-"],
             input="", capture_output=True, text=True,
         )
         if result.returncode == 0:
@@ -279,8 +281,13 @@ def get_compile_command(
         # advance by 1 for the scheduler who are handling the not divisiable num_worker.
         max_worker_per_scheduler = (num_workers // min_schedulers) + 1
 
+    nvcc_prepend_flags = shlex.split(
+        os.environ.get("NVCC_PREPEND_FLAGS", ""))
+    nvcc_append_flags = shlex.split(
+        os.environ.get("NVCC_APPEND_FLAGS", ""))
     common_cmd = [
         cc,
+        *nvcc_prepend_flags,
         # "--default-stream per-thread" is used to create new stream for 
         # each host thread as default stream instead of using the same 
         # legacy stream for all host threads
@@ -414,7 +421,7 @@ def get_compile_command(
     if profiling:
         flags = flags + ["-DMPK_ENABLE_PROFILING"]
 
-    return common_cmd + specific_cmd + flags
+    return common_cmd + specific_cmd + flags + nvcc_append_flags
 
 
 def _page_stride_rows(*caches):
@@ -3458,11 +3465,14 @@ class PersistentKernel:
                 os.replace(temporary_path, destination)
             so_output_path = os.path.join(output_dir, f"mpk_launcher_rank{self.mpi_rank}.cpython-{sys.version_info.major}{sys.version_info.minor}-x86_64-linux-gnu.so")
 
-        cc = shutil.which("nvcc")
+        requested_cc = os.environ.get("CUDACXX")
+        cc = requested_cc if requested_cc else shutil.which("nvcc")
         if cc is None:
             raise RuntimeError(
                 "nvcc not found. Please make sure you have installed CUDA."
             )
+        if not os.path.isfile(cc):
+            raise RuntimeError(f"CUDA compiler does not exist: {cc}")
         # This function was renamed and made public in Python 3.10
         if hasattr(sysconfig, "get_default_scheme"):
             scheme = sysconfig.get_default_scheme()
