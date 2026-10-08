@@ -163,13 +163,25 @@ def main():
     parser.add_argument("--combined-kv-barrier", action="store_true")
     parser.add_argument("--profile-attention-phases", action="store_true")
     parser.add_argument("--attention-tma-kv", action="store_true")
+    parser.add_argument(
+        "--skip-flashinfer",
+        action="store_true",
+        help="Skip the FlashInfer microbenchmark for MPK-only diagnostics.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     batches = [int(value) for value in args.batch_sizes.split()]
     lengths = [int(value) for value in args.kv_lengths.split()]
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    import flashinfer
+    flashinfer = None
+    workspace = None
+    if not args.skip_flashinfer:
+        import flashinfer as flashinfer_module
+
+        flashinfer = flashinfer_module
+        workspace = torch.empty(
+            128 * 1024 * 1024, dtype=torch.uint8, device="cuda")
 
     references = {}
     for length in lengths:
@@ -182,8 +194,6 @@ def main():
         references[length] = json.loads(
             output.read_text(encoding="utf-8"))["token_ids"]
 
-    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8,
-                            device="cuda")
     rows = []
     failures = 0
     for batch in batches:
@@ -220,12 +230,19 @@ def main():
                     profile = json.loads((
                         case_dir / "summary/profile_summary.json").read_text())
 
-            fi = flashinfer_case(
-                flashinfer, workspace, batch, length,
-                args.warmup, args.repeat)
-            if fi["flashinfer_max_error"] > 0.05 or fi[
-                    "flashinfer_mean_error"] > 0.005:
-                reasons.append("FlashInfer correctness failed")
+            if args.skip_flashinfer:
+                fi = {
+                    "flashinfer_ms_per_layer": None,
+                    "flashinfer_max_error": None,
+                    "flashinfer_mean_error": None,
+                }
+            else:
+                fi = flashinfer_case(
+                    flashinfer, workspace, batch, length,
+                    args.warmup, args.repeat)
+                if fi["flashinfer_max_error"] > 0.05 or fi[
+                        "flashinfer_mean_error"] > 0.005:
+                    reasons.append("FlashInfer correctness failed")
 
             attention = None
             if profile:
@@ -261,17 +278,21 @@ def main():
                     kv_bytes_step / (lower_bound_ms * 1e6)
                     if lower_bound_ms else None),
                 **fi,
-                "flashinfer_36_layer_ms": fi["flashinfer_ms_per_layer"] * LAYERS,
+                "flashinfer_36_layer_ms": (
+                    fi["flashinfer_ms_per_layer"] * LAYERS
+                    if fi["flashinfer_ms_per_layer"] is not None else None),
                 "reason": "; ".join(reasons),
             }
             rows.append(row)
             failures += bool(reasons)
+            fi_label = (
+                f"{fi['flashinfer_ms_per_layer']:.4f} ms/layer"
+                if fi["flashinfer_ms_per_layer"] is not None else "skipped")
             print(
                 f"B={batch} KV={length}: "
                 f"{'PASS' if not reasons else 'FAIL'}; "
                 f"MPK={row['mpk_attention']}, tasks/layer="
-                f"{tasks_per_layer_step}; FI={fi['flashinfer_ms_per_layer']:.4f} "
-                "ms/layer", flush=True)
+                f"{tasks_per_layer_step}; FI={fi_label}", flush=True)
 
     fields = list(rows[0])
     with (args.output_dir / "summary.csv").open(
@@ -290,6 +311,7 @@ def main():
         "warmup": args.warmup,
         "repeat": args.repeat,
         "combined_kv_barrier": args.combined_kv_barrier,
+        "flashinfer_skipped": args.skip_flashinfer,
         "rows": rows,
     }
     (args.output_dir / "summary.json").write_text(
