@@ -9,6 +9,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+import sys
 
 import torch
 import torch.nn.functional as F
@@ -61,7 +62,14 @@ def make_segment(inputs, operations, cache_dir):
     }
     operations(kernel, tensors)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    kernel.compile(output_dir=str(cache_dir))
+    launcher = cache_dir / (
+        f"mpk_launcher_rank0.cpython-{sys.version_info.major}"
+        f"{sys.version_info.minor}-x86_64-linux-gnu.so")
+    if launcher.is_file():
+        print(f"Loading cached MPK segment: {cache_dir}")
+        kernel.load_mpk_kernel(output_dir=str(cache_dir))
+    else:
+        kernel.compile(output_dir=str(cache_dir))
     return kernel
 
 
@@ -231,6 +239,14 @@ def main():
             k_seq.permute(0, 2, 1, 3),
             v_seq.permute(0, 2, 1, 3),
             is_causal=False, enable_gqa=True).squeeze(2)
+        # Isolate FlashInfer itself from the MPK-produced QKV.  This uses the
+        # Torch QKV projection and an independent cache with the exact same
+        # page table as the Hybrid path.
+        fi_ref_k = initial_k.clone()
+        fi_ref_v = initial_v.clone()
+        q_fi_ref, _, _ = preprocess(qkv_ref, fi_ref_k, fi_ref_v)
+        flashinfer_reference_attention = wrapper.run(
+            q_fi_ref, (fi_ref_k, fi_ref_v)).clone()
         reference = F.linear(
             reference_attention.reshape(BATCH, hidden_size),
             attention.o_proj.weight)
@@ -239,7 +255,21 @@ def main():
         qkv_error = (qkv.float() - qkv_ref.float()).abs()
         attention_error = (
             attention_output.float() - reference_attention.float()).abs()
+        flashinfer_vs_sdpa_error = (
+            flashinfer_reference_attention.float()
+            - reference_attention.float()).abs()
+        hybrid_vs_flashinfer_error = (
+            attention_output.float()
+            - flashinfer_reference_attention.float()).abs()
         output_error = (projected.float() - reference.float()).abs()
+        finite = {
+            "sdpa": int(torch.isfinite(reference_attention).sum().item()),
+            "flashinfer_reference": int(torch.isfinite(
+                flashinfer_reference_attention).sum().item()),
+            "hybrid_flashinfer": int(torch.isfinite(
+                attention_output).sum().item()),
+        }
+        total_attention_elements = reference_attention.numel()
         first10_matches = int(torch.isclose(
             projected[0, :10].float(), reference[0, :10].float(),
             atol=0.02, rtol=0.02).sum().item())
@@ -266,6 +296,16 @@ def main():
             "qkv_mean_error": qkv_error.mean().item(),
             "attention_max_error": attention_error.max().item(),
             "attention_mean_error": attention_error.mean().item(),
+            "flashinfer_vs_sdpa_max_error":
+                flashinfer_vs_sdpa_error.max().item(),
+            "flashinfer_vs_sdpa_mean_error":
+                flashinfer_vs_sdpa_error.mean().item(),
+            "hybrid_vs_flashinfer_max_error":
+                hybrid_vs_flashinfer_error.max().item(),
+            "hybrid_vs_flashinfer_mean_error":
+                hybrid_vs_flashinfer_error.mean().item(),
+            "finite_attention_elements": finite,
+            "total_attention_elements": total_attention_elements,
             "output_max_error": output_error.max().item(),
             "output_mean_error": output_error.mean().item(),
         },
@@ -285,6 +325,17 @@ def main():
           f"{qkv_error.mean().item():.6f}")
     print(f"Attention max/mean error: {attention_error.max().item():.6f}/"
           f"{attention_error.mean().item():.6f}")
+    print("Finite attention elements: "
+          f"SDPA={finite['sdpa']}/{total_attention_elements}, "
+          f"FlashInfer reference={finite['flashinfer_reference']}/"
+          f"{total_attention_elements}, Hybrid={finite['hybrid_flashinfer']}/"
+          f"{total_attention_elements}")
+    print("FlashInfer reference vs SDPA max/mean: "
+          f"{flashinfer_vs_sdpa_error.max().item():.6f}/"
+          f"{flashinfer_vs_sdpa_error.mean().item():.6f}")
+    print("Hybrid vs FlashInfer reference max/mean: "
+          f"{hybrid_vs_flashinfer_error.max().item():.6f}/"
+          f"{hybrid_vs_flashinfer_error.mean().item():.6f}")
     print(f"Output max/mean error: {output_error.max().item():.6f}/"
           f"{output_error.mean().item():.6f}")
     print(f"Real Qwen3 Hybrid layer: {hybrid_ms:.4f} ms")
