@@ -17,6 +17,7 @@ import math
 from pathlib import Path
 import shutil
 import sys
+import time
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -124,6 +125,12 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--input-length", type=int, default=128)
     parser.add_argument("--output-length", type=int, default=10)
+    parser.add_argument(
+        "--sync-policy", choices=("global", "segment-wait"),
+        default="global",
+        help=("global uses cudaDeviceSynchronize at every boundary; "
+              "segment-wait waits only for the producing MPK segment or "
+              "current Torch stream."))
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -259,13 +266,9 @@ def main():
     timing = {"prefix_ms": 0.0, "flashinfer_ms": 0.0,
               "suffix_ms": 0.0, "host_mlp_ms": 0.0,
               "decode_ms": 0.0}
-    start_total = torch.cuda.Event(enable_timing=True)
-    end_total = torch.cuda.Event(enable_timing=True)
-    stage_start = torch.cuda.Event(enable_timing=True)
-    stage_end = torch.cuda.Event(enable_timing=True)
-
     with torch.inference_mode():
-        start_total.record()
+        torch.cuda.synchronize()
+        wall_start = time.perf_counter()
         for decode_idx in range(1, args.output_length):
             token = generated[-1]
             hidden_buffers[0].copy_(model.model.embed_tokens(token))
@@ -286,11 +289,14 @@ def main():
                 normed_buffers[layer_idx].copy_(rms_norm(
                     hidden_buffers[layer_idx],
                     layer.input_layernorm.weight))
-                stage_start.record()
+                stage_start = time.perf_counter()
                 prefixes[layer_idx]()
-                stage_end.record()
-                stage_end.synchronize()
-                timing["prefix_ms"] += stage_start.elapsed_time(stage_end)
+                if args.sync_policy == "global":
+                    torch.cuda.synchronize()
+                else:
+                    prefixes[layer_idx].wait()
+                timing["prefix_ms"] += (
+                    time.perf_counter() - stage_start) * 1000.0
 
                 qkv = qkv_buffers[layer_idx]
                 q = qkv[:, :q_size].view(batch, q_heads, head_dim)
@@ -308,24 +314,30 @@ def main():
                 page_k[:, kv_length - 1].copy_(k)
                 page_v[:, kv_length - 1].copy_(v)
 
-                stage_start.record()
+                stage_start = time.perf_counter()
                 attention_buffers[layer_idx].copy_(wrapper.run(
                     q, (k_cache[layer_idx], v_cache[layer_idx])))
-                stage_end.record()
-                stage_end.synchronize()
-                timing["flashinfer_ms"] += stage_start.elapsed_time(stage_end)
+                if args.sync_policy == "global":
+                    torch.cuda.synchronize()
+                else:
+                    torch.cuda.current_stream().synchronize()
+                timing["flashinfer_ms"] += (
+                    time.perf_counter() - stage_start) * 1000.0
 
-                stage_start.record()
+                stage_start = time.perf_counter()
                 suffixes[layer_idx]()
-                stage_end.record()
-                stage_end.synchronize()
-                timing["suffix_ms"] += stage_start.elapsed_time(stage_end)
+                if args.sync_policy == "global":
+                    torch.cuda.synchronize()
+                else:
+                    suffixes[layer_idx].wait()
+                timing["suffix_ms"] += (
+                    time.perf_counter() - stage_start) * 1000.0
 
                 # The current batched Hopper MPK RMSNorm has a known numeric
                 # discrepancy.  Keep norm/MLP on Torch in this first full
                 # executor validation; a later step can move them across the
                 # boundary independently after its correctness gate passes.
-                stage_start.record()
+                stage_start = time.perf_counter()
                 attn_residual = suffixes[layer_idx].step35_attn_residual
                 mlp_input = rms_norm(
                     attn_residual,
@@ -335,17 +347,19 @@ def main():
                     * layer.mlp.up_proj(mlp_input))
                 hidden_buffers[layer_idx + 1].copy_(
                     attn_residual + mlp_output)
-                stage_end.record()
-                stage_end.synchronize()
-                timing["host_mlp_ms"] += stage_start.elapsed_time(stage_end)
+                if args.sync_policy == "global":
+                    torch.cuda.synchronize()
+                else:
+                    torch.cuda.current_stream().synchronize()
+                timing["host_mlp_ms"] += (
+                    time.perf_counter() - stage_start) * 1000.0
 
             final_hidden = rms_norm(
                 hidden_buffers[-1], model.model.norm.weight)
             logits = model.lm_head(final_hidden)
             generated.append(logits.argmax(dim=-1))
-        end_total.record()
-        end_total.synchronize()
-    timing["decode_ms"] = start_total.elapsed_time(end_total)
+        torch.cuda.synchronize()
+        timing["decode_ms"] = (time.perf_counter() - wall_start) * 1000.0
 
     generated_ids = torch.stack(generated, dim=1)
     positional_matches = (generated_ids == reference_ids).sum(dim=1)
@@ -364,6 +378,7 @@ def main():
         "batch_size": batch,
         "s_in": args.input_length,
         "s_out": args.output_length,
+        "sync_policy": args.sync_policy,
         "minimum_first10_matches": minimum_first10,
         "minimum_full_matches": full_matches,
         "reference_tokens_request0": reference_ids[0].tolist(),
