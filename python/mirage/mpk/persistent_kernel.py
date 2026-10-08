@@ -3391,8 +3391,18 @@ class PersistentKernel:
 
         MIRAGE_ROOT, INCLUDE_PATH, DEPS_PATH = get_key_paths()
         if self.mode == "online_notoken" or self.mode == "online" or self.mode == "multi_turn" or self.mode=="online_pinned":
-            # We will init for multiple times so the output directory should be permanent
-            tempdir = "./permanent_output_dir/"
+            # Keep the loaded shared object alive, but never compile multiple
+            # PersistentKernel instances to the same path.  dlopen caches a
+            # library by pathname; overwriting test.so and loading it again
+            # can return the first instance's generated graph.  Its tensor
+            # names then differ from the second instance and init aborts in
+            # model_tensors.at(...).  A unique persistent directory gives
+            # every independently stoppable Hybrid segment its own module.
+            permanent_root = "./permanent_output_dir"
+            os.makedirs(permanent_root, exist_ok=True)
+            tempdir = tempfile.mkdtemp(
+                prefix=f"mpk_rank{self.mpi_rank}_", dir=permanent_root)
+            self._compile_tempdir = tempdir
         else:
             tempdir_obj = tempfile.TemporaryDirectory()
             tempdir = tempdir_obj.name
