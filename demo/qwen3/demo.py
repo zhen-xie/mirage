@@ -343,6 +343,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Use Hopper TMA for full cached K/V tiles.",
     )
+    parser.add_argument(
+        "--mpk-attention-tma-kv-auto",
+        action="store_true",
+        help=(
+            "Select Hopper TMA KV loads from workload shape. TMA is used "
+            "for long KV or when the base attention task count is below "
+            "the target task count."
+        ),
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
@@ -462,6 +471,19 @@ if __name__ == "__main__":
     auto_attention_base_tasks = (
         args.max_num_batched_requests * num_local_kv_heads_for_policy
     )
+    if args.mpk_attention_tma_kv and args.mpk_attention_tma_kv_auto:
+        parser.error(
+            "--mpk-attention-tma-kv and --mpk-attention-tma-kv-auto "
+            "are mutually exclusive")
+    requested_tma_kv_policy = (
+        "on" if args.mpk_attention_tma_kv else
+        "auto" if args.mpk_attention_tma_kv_auto else "off")
+    resolved_attention_tma_kv = (
+        args.mpk_attention_tma_kv or (
+            args.mpk_attention_tma_kv_auto and (
+                args.max_seq_length > args.mpk_auto_split_kv_threshold or
+                auto_attention_base_tasks <
+                args.mpk_auto_attention_target_tasks)))
     auto_attention_target_splits = 1
     if requested_mpk_attention == "auto":
         if (
@@ -756,7 +778,7 @@ if __name__ == "__main__":
             attention_combined_kv_barrier=(
                 args.mpk_attention_combined_kv_barrier
             ),
-            attention_tma_kv=args.mpk_attention_tma_kv,
+            attention_tma_kv=resolved_attention_tma_kv,
         )
         print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
         print(f"MPK worker policy: {mpk.worker_policy.upper()}")
@@ -773,7 +795,8 @@ if __name__ == "__main__":
             print("MPK attention phase profiling: ENABLED")
         print(
             "MPK attention TMA KV: "
-            f"{'ENABLED' if mpk.attention_tma_kv else 'DISABLED'}")
+            f"{requested_tma_kv_policy.upper()} "
+            f"(resolved: {'ENABLED' if mpk.attention_tma_kv else 'DISABLED'})")
         if args.mpk_worker_policy == "delayed-ready-first":
             print(
                 "MPK delayed ready-first spin iterations: "
@@ -1692,6 +1715,12 @@ if __name__ == "__main__":
                 "mpk_attention_consumer_completion": (
                     args.mpk_attention_consumer_completion
                     if args.use_mirage else None
+                ),
+                "mpk_attention_tma_kv_policy": (
+                    requested_tma_kv_policy if args.use_mirage else None
+                ),
+                "mpk_attention_tma_kv": (
+                    resolved_attention_tma_kv if args.use_mirage else None
                 ),
                 "mpk_attention_phase_counters": attention_phase_counters,
                 "mode": (
