@@ -25,9 +25,10 @@ PAGE_SIZE = 128
 DTYPE = torch.bfloat16
 
 
-def rms_norm(x, weight):
+def rms_norm(x, weight, eps=1e-6):
     value = x.float()
-    return (value * torch.rsqrt(value.square().mean(-1, keepdim=True))
+    return (value * torch.rsqrt(
+                value.square().mean(-1, keepdim=True) + eps)
             * weight.float()).to(DTYPE)
 
 
@@ -201,6 +202,8 @@ def main():
     rope = torch.cat((freqs, freqs), dim=-1)
     cos = rope.cos().to(DTYPE).view(1, 1, head_dim)
     sin = rope.sin().to(DTYPE).view(1, 1, head_dim)
+    hybrid_q = torch.empty(
+        BATCH, q_heads, head_dim, dtype=DTYPE, device="cuda")
 
     def preprocess(qkv_value, cache_k, cache_v):
         q = qkv_value[:, :q_size].view(BATCH, q_heads, head_dim)
@@ -222,6 +225,7 @@ def main():
         prefix()
         torch.cuda.synchronize()
         q, _, _ = preprocess(qkv, k_cache, v_cache)
+        hybrid_q.copy_(q)
         attention_output.copy_(wrapper.run(q, (k_cache, v_cache)))
         suffix()
         torch.cuda.synchronize()
@@ -263,6 +267,7 @@ def main():
             - flashinfer_reference_attention.float()).abs()
         output_error = (projected.float() - reference.float()).abs()
         finite = {
+            "hybrid_q": int(torch.isfinite(hybrid_q).sum().item()),
             "sdpa": int(torch.isfinite(reference_attention).sum().item()),
             "flashinfer_reference": int(torch.isfinite(
                 flashinfer_reference_attention).sum().item()),
@@ -330,6 +335,8 @@ def main():
           f"FlashInfer reference={finite['flashinfer_reference']}/"
           f"{total_attention_elements}, Hybrid={finite['hybrid_flashinfer']}/"
           f"{total_attention_elements}")
+    print("Finite Hybrid Q elements: "
+          f"{finite['hybrid_q']}/{hybrid_q.numel()}")
     print("FlashInfer reference vs SDPA max/mean: "
           f"{flashinfer_vs_sdpa_error.max().item():.6f}/"
           f"{flashinfer_vs_sdpa_error.mean().item():.6f}")
