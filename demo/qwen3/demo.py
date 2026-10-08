@@ -308,6 +308,13 @@ if __name__ == "__main__":
             "other prefetched tasks."
         ),
     )
+    parser.add_argument(
+        "--mpk-attention-kv-pipeline-stages",
+        type=int,
+        choices=(2, 3),
+        default=2,
+        help="Number of shared-memory stages in Hopper MPK attention.",
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
@@ -706,9 +713,15 @@ if __name__ == "__main__":
             profile_scheduler_waits=args.profile_scheduler_waits,
             worker_policy=args.mpk_worker_policy,
             ready_first_spin_iters=args.mpk_ready_first_spin_iters,
+            attention_kv_pipeline_stages=(
+                args.mpk_attention_kv_pipeline_stages
+            ),
         )
         print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
         print(f"MPK worker policy: {mpk.worker_policy.upper()}")
+        print(
+            "MPK attention KV pipeline stages: "
+            f"{mpk.attention_kv_pipeline_stages}")
         if args.mpk_worker_policy == "delayed-ready-first":
             print(
                 "MPK delayed ready-first spin iterations: "
@@ -1613,6 +1626,10 @@ if __name__ == "__main__":
                 ),
                 "mpk_ready_first_spin_iters": (
                     args.mpk_ready_first_spin_iters if args.use_mirage else None
+                ),
+                "mpk_attention_kv_pipeline_stages": (
+                    args.mpk_attention_kv_pipeline_stages
+                    if args.use_mirage else None
                 ),
                 "mode": (
                     "normal_prefill_mpk_decode"

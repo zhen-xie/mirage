@@ -29,6 +29,9 @@
 #include "utils.cuh"
 #include "wgmma.cuh"
 #define USE_TMA_Q 0
+#ifndef MPK_ATTENTION_KV_PIPELINE_STAGES
+#define MPK_ATTENTION_KV_PIPELINE_STAGES 2
+#endif
 namespace kernel {
 
 template <typename T,
@@ -83,7 +86,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
   constexpr int CONSUMER_WARPGROUPS = 1;
   constexpr int PRODUCER_WARPGROUPS = 1;
   constexpr int NUM_WARPGROUPS = CONSUMER_WARPGROUPS + PRODUCER_WARPGROUPS;
-  constexpr int Kstages = 2;
+  constexpr int Kstages = MPK_ATTENTION_KV_PIPELINE_STAGES;
+  static_assert(Kstages == 2 || Kstages == 3,
+                "MPK attention supports two or three KV pipeline stages");
   constexpr int CP_CHUNK_SIZE = 16 / sizeof(T);
   constexpr int PRODUCER_WARPGROUP_SYNC_BARRIER_ID = 8;
   constexpr int CONSUMER_WARPGROUP_SYNC_BARRIER_ID = 9;
@@ -162,20 +167,12 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
   constexpr size_t S_K_OFFSET = (S_Q_OFFSET + S_Q_SIZE + 1023) / 1024 * 1024;
   constexpr size_t S_K_SIZE = sizeof(T) * KV_TILE_SIZE * HEAD_DIM;
 
-  constexpr size_t S_K_BUFFER_OFFSET =
-      (S_K_OFFSET + S_K_SIZE + 1023) / 1024 * 1024;
-  constexpr size_t S_K_BUFFER_SIZE = S_K_SIZE;
-
   constexpr size_t S_V_OFFSET =
-      (S_K_BUFFER_OFFSET + S_K_BUFFER_SIZE + 1023) / 1024 * 1024;
+      (S_K_OFFSET + Kstages * S_K_SIZE + 1023) / 1024 * 1024;
   constexpr size_t S_V_SIZE = S_K_SIZE;
-
-  constexpr size_t S_V_BUFFER_OFFSET =
-      (S_V_OFFSET + S_V_SIZE + 1023) / 1024 * 1024;
-  constexpr size_t S_V_BUFFER_SIZE = S_K_SIZE;
   // align to size of float
   constexpr size_t S_Q_NORM_SUM_OFFSET =
-      ((S_V_BUFFER_OFFSET + S_V_BUFFER_SIZE + sizeof(float) - 1) &
+      ((S_V_OFFSET + Kstages * S_V_SIZE + sizeof(float) - 1) &
        ~size_t(sizeof(float) - 1));
   constexpr size_t S_Q_NORM_SUM_SIZE =
       sizeof(float) * 4; // 4 floats for 4 warps
@@ -225,9 +222,7 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
   T *s_q = reinterpret_cast<T *>(smem + S_Q_OFFSET);
   T *s_k = reinterpret_cast<T *>(smem + S_K_OFFSET);
-  T *s_k_buffer = reinterpret_cast<T *>(smem + S_K_BUFFER_OFFSET);
   T *s_v = reinterpret_cast<T *>(smem + S_V_OFFSET);
-  T *s_v_buffer = reinterpret_cast<T *>(smem + S_V_BUFFER_OFFSET);
   T *s_o = reinterpret_cast<T *>(smem + S_O_OFFSET);
   float *s_q_norm_sum = reinterpret_cast<float *>(smem + S_Q_NORM_SUM_OFFSET);
   float *s_k_norm_sum = reinterpret_cast<float *>(smem + S_K_NORM_SUM_OFFSET);
@@ -250,7 +245,6 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
   QOSmem q_smem(s_q), o_smem(s_o);
   KVSmem k_smem(s_k), v_smem(s_v);
-  KVSmem k_buffer_smem(s_k_buffer), v_buffer_smem(s_v_buffer);
 
   int const num_iters = (seq_len + KV_TILE_SIZE - 1) / KV_TILE_SIZE;
   int curr_iter_len = min(seq_len, KV_TILE_SIZE);
@@ -311,23 +305,23 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       if (dst_row >= curr_iter_len) {
         // P @ V still reads the entire tile after masking P. Zero the tail:
         // a masked probability of zero does not suppress a stale NaN in V.
-        load_smem_with_predict(k_buffer_smem(dst_row, col), k_dmem(0, 0), false);
-        load_smem_with_predict(v_buffer_smem(dst_row, col), v_dmem(0, 0), false);
+        load_smem_with_predict(k_smem(dst_row, col), k_dmem(0, 0), false);
+        load_smem_with_predict(v_smem(dst_row, col), v_dmem(0, 0), false);
       } else if (dst_row + kv_cache_offset < global_seq_len - num_tokens) {
         // load from KV Cache
         // int page_idx = page_indices[(dst_row + cp_finished_seq_len) /
         // PAGE_SIZE];
         int page_offset = (dst_row + kv_cache_offset) % PAGE_SIZE;
         int src_row = page_idx_0 * PAGE_STRIDE + page_offset;
-        load_smem(k_buffer_smem(dst_row, col),
+        load_smem(k_smem(dst_row, col),
                   paged_k_cache_dmem(src_row, col));
-        load_smem(v_buffer_smem(dst_row, col),
+        load_smem(v_smem(dst_row, col),
                   paged_v_cache_dmem(src_row, col));
       } else {
         // load from QKV
         int src_row = dst_row + kv_cache_offset - (global_seq_len - num_tokens);
-        load_smem(k_buffer_smem(dst_row, col), k_dmem(src_row, col));
-        load_smem(v_buffer_smem(dst_row, col), v_dmem(src_row, col));
+        load_smem(k_smem(dst_row, col), k_dmem(src_row, col));
+        load_smem(v_smem(dst_row, col), v_dmem(src_row, col));
       }
     }
     cp_async_fence();
@@ -348,6 +342,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       int slot = (iter + 1) % Kstages;
 
       wait(compute_done[slot], phase ^ 1);
+
+      k_smem.set_ptr(s_k + slot * KV_TILE_SIZE * HEAD_DIM);
+      v_smem.set_ptr(s_v + slot * KV_TILE_SIZE * HEAD_DIM);
 
       int next_iter_len =
           min(seq_len - (iter + 1) * KV_TILE_SIZE, KV_TILE_SIZE);
@@ -394,19 +391,6 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
           arrive(v_barrier[slot], 1);
         }
       }
-
-      // rotate the buffers
-      if ((iter & 0x1) == 0) {
-        k_smem.set_ptr(s_k_buffer);
-        k_buffer_smem.set_ptr(s_k);
-        v_smem.set_ptr(s_v_buffer);
-        v_buffer_smem.set_ptr(s_v);
-      } else {
-        k_smem.set_ptr(s_k);
-        k_buffer_smem.set_ptr(s_k_buffer);
-        v_smem.set_ptr(s_v);
-        v_buffer_smem.set_ptr(s_v_buffer);
-      }
     }
 
   } else {
@@ -445,18 +429,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       int slot = iter % Kstages;
       wait(k_barrier[slot], phase);
       wait(v_barrier[slot], phase);
-      // rotate the buffers
-      if ((iter & 0x1) == 0) {
-        k_smem.set_ptr(s_k_buffer);
-        k_buffer_smem.set_ptr(s_k);
-        v_smem.set_ptr(s_v_buffer);
-        v_buffer_smem.set_ptr(s_v);
-      } else {
-        k_smem.set_ptr(s_k);
-        k_buffer_smem.set_ptr(s_k_buffer);
-        v_smem.set_ptr(s_v);
-        v_buffer_smem.set_ptr(s_v_buffer);
-      }
+      k_smem.set_ptr(s_k + slot * KV_TILE_SIZE * HEAD_DIM);
+      v_smem.set_ptr(s_v + slot * KV_TILE_SIZE * HEAD_DIM);
 
       int curr_iter_len = min(seq_len - iter * KV_TILE_SIZE, KV_TILE_SIZE);
       int kv_tokens_to_process = min(curr_iter_len,
