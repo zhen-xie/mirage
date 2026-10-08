@@ -256,7 +256,11 @@ def main():
             attention.o_proj.weight)
 
         hybrid_once()
+        norm_error = (normed.float() - norm_ref.float()).abs()
         qkv_error = (qkv.float() - qkv_ref.float()).abs()
+        q_error = qkv_error[:, :q_size]
+        k_error = qkv_error[:, q_size:q_size + kv_size]
+        v_error = qkv_error[:, q_size + kv_size:]
         attention_error = (
             attention_output.float() - reference_attention.float()).abs()
         flashinfer_vs_sdpa_error = (
@@ -297,8 +301,13 @@ def main():
                   "kv_heads": kv_heads, "head_dim": head_dim},
         "correctness": {
             "first10_output_elements": first10_matches,
+            "input_norm_max_error": norm_error.max().item(),
+            "input_norm_mean_error": norm_error.mean().item(),
             "qkv_max_error": qkv_error.max().item(),
             "qkv_mean_error": qkv_error.mean().item(),
+            "q_mean_error": q_error.mean().item(),
+            "k_mean_error": k_error.mean().item(),
+            "v_mean_error": v_error.mean().item(),
             "attention_max_error": attention_error.max().item(),
             "attention_mean_error": attention_error.mean().item(),
             "flashinfer_vs_sdpa_max_error":
@@ -326,8 +335,14 @@ def main():
     (args.output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8")
     print(f"First-10 output elements: {first10_matches}/10")
+    print(f"Input RMSNorm max/mean error: {norm_error.max().item():.6f}/"
+          f"{norm_error.mean().item():.6f}")
     print(f"QKV max/mean error: {qkv_error.max().item():.6f}/"
           f"{qkv_error.mean().item():.6f}")
+    print("Q/K/V mean errors: "
+          f"{q_error.mean().item():.6f}/"
+          f"{k_error.mean().item():.6f}/"
+          f"{v_error.mean().item():.6f}")
     print(f"Attention max/mean error: {attention_error.max().item():.6f}/"
           f"{attention_error.mean().item():.6f}")
     print("Finite attention elements: "
