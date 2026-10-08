@@ -1,4 +1,4 @@
-"""Single-layer Hybrid prototype with real MPK linear segments and FlashInfer."""
+"""Single-boundary Hybrid prototype with a real MPK QKV segment."""
 
 import argparse
 import json
@@ -114,9 +114,6 @@ def main():
     prefix = make_linear_kernel(
         hidden, qkv_weight, qkv,
         args.output_dir / "cache_prefix", "qkv", 96)
-    suffix = make_linear_kernel(
-        attention_output.view(BATCH, HIDDEN), o_weight, projected,
-        args.output_dir / "cache_suffix", "o_proj", 64)
 
     pages_per_request = math.ceil(KV_LENGTH / PAGE_SIZE)
     total_pages = BATCH * pages_per_request
@@ -161,9 +158,7 @@ def main():
         torch.cuda.synchronize()
         output = preprocess_and_attention(qkv)
         attention_output.copy_(output)
-        torch.cuda.synchronize()
-        suffix()
-        torch.cuda.synchronize()
+        projected.copy_(F.linear(output.reshape(BATCH, HIDDEN), o_weight))
 
     def external_once():
         qkv_ref = F.linear(hidden, qkv_weight)
@@ -191,7 +186,7 @@ def main():
     status = "passed" if correct else "failed"
     summary = {
         "step": 33,
-        "phase": "single_layer_real_mpk_flashinfer_hybrid",
+        "phase": "single_boundary_real_mpk_flashinfer_hybrid",
         "status": status,
         "shape": {
             "batch_size": BATCH,
@@ -218,10 +213,12 @@ def main():
         "implementation": {
             "prefix": "real MPK QKV linear persistent kernel",
             "attention": "Torch QK norm/KV store plus FlashInfer decode",
-            "suffix": "real MPK output projection persistent kernel",
-            "synchronization": "cudaDeviceSynchronize at both MPK boundaries",
+            "suffix": "Torch output projection",
+            "synchronization": "cudaDeviceSynchronize at the MPK/FlashInfer boundary",
             "missing_for_full_model": [
                 "MPK boundary events without device-wide synchronization",
+                "multiple independent MPK runtime instances in one process",
+                "real MPK output-projection suffix",
                 "RoPE in the exported pre-attention stage",
                 "36-layer decode loop and token-level correctness",
             ],
@@ -236,11 +233,10 @@ def main():
     print(f"Output max/mean error: {output_error.max().item():.6f}/"
           f"{output_error.mean().item():.6f}")
     print(f"External Torch+FlashInfer layer: {external_ms:.4f} ms")
-    print(f"Real MPK+FlashInfer+MPK layer: {hybrid_ms:.4f} ms")
-    print(f"MPK segment/synchronization penalty: {transition_penalty_ms:.4f} ms")
-    print(f"Step 33 single-layer Hybrid: {status.upper()}")
+    print(f"Real MPK+FlashInfer single-boundary layer: {hybrid_ms:.4f} ms")
+    print(f"MPK prefix/boundary penalty: {transition_penalty_ms:.4f} ms")
+    print(f"Step 33 single-boundary Hybrid: {status.upper()}")
     prefix.finalize()
-    suffix.finalize()
     raise SystemExit(0 if status == "passed" else 1)
 
 

@@ -43,7 +43,7 @@ timeout "$TIMEOUT" python -m pip install -e . -v --no-build-isolation \
         exit "$result"
     }
 
-printf 'Running Step 33 real single-layer Hybrid prototype...\n'
+printf 'Running Step 33 real single-boundary Hybrid prototype...\n'
 timeout "$TIMEOUT" python \
     tests/benchmarks/qwen3_step33_single_layer_hybrid.py \
     --warmup "$WARMUP" \
@@ -51,6 +51,6 @@ timeout "$TIMEOUT" python \
     --step32-summary "$STEP32_SUMMARY" \
     --output-dir "$OUTDIR"
 result=$?
-printf 'Step 33 single-layer Hybrid exited with code %s.\n' "$result"
+printf 'Step 33 single-boundary Hybrid exited with code %s.\n' "$result"
 printf 'Summary: %s\n' "$OUTDIR/summary.json"
 exit "$result"
