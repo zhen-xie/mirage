@@ -138,26 +138,19 @@ def main():
          attention.v_proj.weight), dim=0).contiguous()
 
     def build_prefix(kernel, t):
-        kernel.rmsnorm_layer(
-            t["hidden"], t["input_norm"], t["normed"],
-            grid_dim=(BATCH, 1, 1), block_dim=(128, 1, 1))
         kernel.linear_layer(
             t["normed"], t["qkv_weight"], t["qkv"],
             grid_dim=(96, 1, 1), block_dim=(128, 1, 1))
 
     prefix = make_segment({
-        "step34_hidden": hidden,
-        "step34_input_norm": layer.input_layernorm.weight,
         "step34_normed": normed,
         "step34_qkv_weight": qkv_weight,
         "step34_qkv": qkv,
     }, lambda kernel, t: build_prefix(kernel, {
-        "hidden": t["step34_hidden"],
-        "input_norm": t["step34_input_norm"],
         "normed": t["step34_normed"],
         "qkv_weight": t["step34_qkv_weight"],
         "qkv": t["step34_qkv"],
-    }), args.output_dir / "cache_prefix")
+    }), args.output_dir / "cache_prefix_qkv_only")
 
     def build_suffix(kernel, t):
         kernel.linear_layer(
@@ -222,6 +215,10 @@ def main():
     def hybrid_once():
         k_cache.copy_(initial_k)
         v_cache.copy_(initial_v)
+        # Keep the attention handoff experiment independent of the existing
+        # batched Hopper RMSNorm discrepancy.  The real normalized activation
+        # is materialized before the finite MPK QKV segment.
+        normed.copy_(rms_norm(hidden, layer.input_layernorm.weight))
         prefix()
         torch.cuda.synchronize()
         q, _, _ = preprocess(qkv, k_cache, v_cache)
@@ -326,7 +323,8 @@ def main():
         "hybrid_layer_ms": hybrid_ms,
         "implementation": [
             "real Qwen3 layer-0 weights",
-            "finite MPK RMSNorm and QKV segment",
+            "Torch input RMSNorm (isolates existing batched MPK RMSNorm issue)",
+            "finite MPK QKV segment",
             "Q/K RMSNorm and real-position NeoX RoPE",
             "paged KV update and FlashInfer decode attention",
             "finite MPK output-projection segment",
