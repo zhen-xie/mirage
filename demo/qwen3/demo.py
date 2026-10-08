@@ -333,6 +333,11 @@ if __name__ == "__main__":
             "together."
         ),
     )
+    parser.add_argument(
+        "--profile-attention-phases",
+        action="store_true",
+        help="Accumulate Hopper attention producer/consumer phase cycles.",
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
@@ -687,6 +692,10 @@ if __name__ == "__main__":
         kv_meta_tensors = kv_plan.build_meta_tensors(
             max_num_batched_requests=args.max_num_batched_requests,
             max_seq_length=args.max_seq_length)
+        attention_phase_profile = (
+            torch.zeros(8, dtype=torch.uint64, device="cuda")
+            if args.profile_attention_phases else None
+        )
         mpk = mi.PersistentKernel(
             mode="offline",
             world_size=world_size,
@@ -709,6 +718,8 @@ if __name__ == "__main__":
                 "prompt_lengths": prompt_lengths,
                 "qo_indptr_buffer": qo_indptr_buffer,
                 **kv_meta_tensors,
+                **({"attention_phase_profile": attention_phase_profile}
+                   if attention_phase_profile is not None else {}),
             },
             profiler_tensor=profiler_tensor,
             trace_name=args.trace_name,
@@ -752,6 +763,8 @@ if __name__ == "__main__":
         print(
             "MPK attention combined KV barrier: "
             f"{'ENABLED' if mpk.attention_combined_kv_barrier else 'DISABLED'}")
+        if attention_phase_profile is not None:
+            print("MPK attention phase profiling: ENABLED")
         if args.mpk_worker_policy == "delayed-ready-first":
             print(
                 "MPK delayed ready-first spin iterations: "
@@ -1584,6 +1597,12 @@ if __name__ == "__main__":
                     {"token_id": int(index), "logit": float(value)}
                     for value, index in zip(values.cpu(), indices.cpu())
                 ]
+            attention_phase_counters = None
+            if attention_phase_profile is not None:
+                torch.cuda.synchronize()
+                attention_phase_counters = [
+                    int(value) for value in attention_phase_profile.cpu().tolist()
+                ]
             out = {
                 "token_ids": token_ids,
                 "token_ids_by_request": token_ids_by_request,
@@ -1665,6 +1684,7 @@ if __name__ == "__main__":
                     args.mpk_attention_consumer_completion
                     if args.use_mirage else None
                 ),
+                "mpk_attention_phase_counters": attention_phase_counters,
                 "mode": (
                     "normal_prefill_mpk_decode"
                     if args.mpk_policy == "decode-only" else "mpk_always"

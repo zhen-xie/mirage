@@ -73,7 +73,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     void *qkv_ptr,
     void *output_ptr,
     void *lse = nullptr,
-    int kv_idx = 0) {
+    int kv_idx = 0,
+    unsigned long long *phase_profile = nullptr) {
   // Stride between consecutive pages of K or V.
   constexpr int PAGE_STRIDE =
       PAGE_STRIDE_ROWS > 0 ? PAGE_STRIDE_ROWS : PAGE_SIZE;
@@ -278,6 +279,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
   __syncthreads();
 
   if (warpgroup_id == NUM_WARPGROUPS - 1) {
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+    unsigned long long producer_wait_cycles = 0;
+    unsigned long long producer_load_cycles = 0;
+    unsigned long long initial_load_begin = clock64();
+#endif
     // prefetch
     // load q
 #if USE_TMA_Q
@@ -336,6 +342,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     // Each producer must finish its copies before warp 4 publishes the tile.
     wg_sync<THREADS_PER_WARPGROUP * PRODUCER_WARPGROUPS>(
         PRODUCER_WARPGROUP_SYNC_BARRIER_ID);
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+    if (lane_idx == 0 && warp_idx % 4 == 0) {
+      producer_load_cycles += clock64() - initial_load_begin;
+    }
+#endif
 
     if (lane_idx == 0 && warp_idx % 4 == 0) {
       arrive(k_barrier[0], 1);
@@ -349,7 +360,16 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       int phase = ((iter + 1) / Kstages) % 2;
       int slot = (iter + 1) % Kstages;
 
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+      unsigned long long wait_begin = clock64();
+#endif
       wait(compute_done[slot], phase ^ 1);
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+      if (lane_idx == 0 && warp_idx % 4 == 0) {
+        producer_wait_cycles += clock64() - wait_begin;
+      }
+      unsigned long long load_begin = clock64();
+#endif
 
       k_smem.set_ptr(s_k + slot * KV_TILE_SIZE * HEAD_DIM);
       v_smem.set_ptr(s_v + slot * KV_TILE_SIZE * HEAD_DIM);
@@ -393,6 +413,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
         wg_sync<THREADS_PER_WARPGROUP * PRODUCER_WARPGROUPS>(
             PRODUCER_WARPGROUP_SYNC_BARRIER_ID);
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+        if (lane_idx == 0 && warp_idx % 4 == 0) {
+          producer_load_cycles += clock64() - load_begin;
+        }
+#endif
 
         if (lane_idx == 0 && warp_idx % 4 == 0) {
           arrive(k_barrier[slot], 1);
@@ -402,8 +427,20 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         }
       }
     }
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+    if (lane_idx == 0 && warp_idx % 4 == 0 && phase_profile != nullptr) {
+      atomicAdd(&phase_profile[0], producer_wait_cycles);
+      atomicAdd(&phase_profile[1], producer_load_cycles);
+      atomicAdd(&phase_profile[4], 1ULL);
+      atomicAdd(&phase_profile[5], static_cast<unsigned long long>(num_iters));
+    }
+#endif
 
   } else {
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+    unsigned long long consumer_wait_cycles = 0;
+    unsigned long long consumer_compute_cycles = 0;
+#endif
 
     float m_local[MMA_ITERS_M][2];
 #pragma unroll
@@ -437,9 +474,18 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     for (int iter = 0; iter < num_iters; iter++) {
       int phase = (iter / Kstages) % 2;
       int slot = iter % Kstages;
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+      unsigned long long ready_begin = clock64();
+#endif
       wait(k_barrier[slot], phase);
 #ifndef MPK_ATTENTION_COMBINED_KV_BARRIER
       wait(v_barrier[slot], phase);
+#endif
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+      unsigned long long compute_begin = clock64();
+      if (lane_idx == 0 && warp_idx % 4 == 0) {
+        consumer_wait_cycles += compute_begin - ready_begin;
+      }
 #endif
       k_smem.set_ptr(s_k + slot * KV_TILE_SIZE * HEAD_DIM);
       v_smem.set_ptr(s_v + slot * KV_TILE_SIZE * HEAD_DIM);
@@ -697,7 +743,21 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         arrive(compute_done[slot], 1);
       }
 #endif
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+      if (lane_idx == 0 && warp_idx % 4 == 0) {
+        consumer_compute_cycles += clock64() - compute_begin;
+      }
+#endif
     }
+
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+    if (lane_idx == 0 && warp_idx % 4 == 0 && phase_profile != nullptr) {
+      atomicAdd(&phase_profile[2], consumer_wait_cycles);
+      atomicAdd(&phase_profile[3], consumer_compute_cycles);
+      atomicAdd(&phase_profile[6], 1ULL);
+      atomicAdd(&phase_profile[7], static_cast<unsigned long long>(num_iters));
+    }
+#endif
 
     // write intermediate results to buffer in shared memory
 #pragma unroll

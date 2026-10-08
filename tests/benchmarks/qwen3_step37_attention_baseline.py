@@ -93,6 +93,8 @@ def mpk_command(args, batch, s_in, case_dir):
     ]
     if args.combined_kv_barrier:
         command.append("--mpk-attention-combined-kv-barrier")
+    if args.profile_attention_phases:
+        command.append("--profile-attention-phases")
     return command
 
 
@@ -157,6 +159,7 @@ def main():
     parser.add_argument("--target-tasks", type=int, default=128)
     parser.add_argument("--profiler-entries-per-block", type=int, default=32768)
     parser.add_argument("--combined-kv-barrier", action="store_true")
+    parser.add_argument("--profile-attention-phases", action="store_true")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     batches = [int(value) for value in args.batch_sizes.split()]

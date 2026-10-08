@@ -362,6 +362,8 @@ def get_compile_command(
     if "kv_event_log" in mpk.meta_tensors:
         flags = flags + [
             f"-DMPK_KV_EVENT_LOG={mpk.meta_tensors['kv_event_log'].numel()}"]
+    if "attention_phase_profile" in mpk.meta_tensors:
+        flags = flags + ["-DMPK_PROFILE_ATTENTION_PHASES=1"]
     flags = flags + [f"-DMPK_MAX_SEQ_LENGTH={mpk.max_seq_length}"]
     flags = flags + [
         f"-DMPK_MAX_GENERATION_LENGTH={mpk.max_generation_length}"
@@ -3635,6 +3637,9 @@ class PersistentKernel:
                 meta_tensors_ptr.append(self.meta_tensors[key].data_ptr())
         if "kv_event_log" in self.meta_tensors:
             meta_tensors_ptr.append(self.meta_tensors["kv_event_log"].data_ptr())
+        if "attention_phase_profile" in self.meta_tensors:
+            meta_tensors_ptr.append(
+                self.meta_tensors["attention_phase_profile"].data_ptr())
         profiler_buffer_ptr = (
             self.profiler_tensor.data_ptr() if self.profiler_tensor is not None else 0
         )
@@ -3771,6 +3776,8 @@ class PersistentKernel:
             meta_tensors.append(self.meta_tensors["pinned_rid_at_row"])
         if "kv_event_log" in self.meta_tensors:
             meta_tensors.append(self.meta_tensors["kv_event_log"])
+        if "attention_phase_profile" in self.meta_tensors:
+            meta_tensors.append(self.meta_tensors["attention_phase_profile"])
         meta_tensors_ptr = [tensor.data_ptr() for tensor in meta_tensors]
         profiler_buffer_ptr = (
             self.profiler_tensor.data_ptr() if self.profiler_tensor is not None else 0

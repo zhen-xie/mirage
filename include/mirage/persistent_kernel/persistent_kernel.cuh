@@ -1793,6 +1793,9 @@ extern "C" void
 #ifdef MPK_KV_EVENT_LOG
   expected_num_meta += 1;
 #endif
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+  expected_num_meta += 1;
+#endif
   assert(meta_tensors.size() == expected_num_meta);
   global_runtime_config.step = static_cast<int *>(meta_tensors[0]);
   global_runtime_config.tokens = static_cast<long long *>(meta_tensors[1]);
@@ -1851,8 +1854,18 @@ extern "C" void
   }
 #endif
 #ifdef MPK_KV_EVENT_LOG
-  global_runtime_config.kv_event_log =
-      static_cast<int *>(meta_tensors[meta_tensors.size() - 1]);
+  global_runtime_config.kv_event_log = static_cast<int *>(meta_tensors[
+      7 + MPK_NUM_KV_GROUPS * 4
+#if defined(MODE_ONLINE_PINNED)
+      + 12
+#endif
+      ]);
+#endif
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+  global_runtime_config.attention_phase_profile =
+      static_cast<unsigned long long *>(meta_tensors[meta_tensors.size() - 1]);
+#else
+  global_runtime_config.attention_phase_profile = nullptr;
 #endif
   global_runtime_config.num_workers = num_workers;
   global_runtime_config.num_local_schedulers = num_local_schedulers;

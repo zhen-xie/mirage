@@ -449,6 +449,7 @@ struct RuntimeConfig {
   int *free_row_top; // stack pointer
 #endif
   void *profiler_buffer;
+  unsigned long long *attention_phase_profile;
   bool split_worker_scheduler;
   cudaStream_t worker_stream, scheduler_stream;
   cudaEvent_t prepare_done_event;

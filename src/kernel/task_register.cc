@@ -1551,7 +1551,8 @@ int TaskRegister::register_paged_attention_hopper_task(
   code.e("    task_desc->input_ptrs[0],");
   code.e("    task_desc->output_ptrs[0],");
   code.e("    nullptr,"); // lse, not used for non-split KV tasks
-  code.e("    0);");      // kv_idx, not used for non-split KV tasks
+  code.e("    0,");       // kv_idx, not used for non-split KV tasks
+  code.e("    runtime_config.attention_phase_profile);");
 
   return register_task_variant(TASK_PAGED_ATTENTION_HOPPER, code.to_string());
 }
@@ -4623,7 +4624,8 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
   code.e("    task_desc->input_ptrs[0],");
   code.e("    task_desc->output_ptrs[1],"); // output_tmp
   code.e("    task_desc->output_ptrs[0],"); // lse
-  code.e("    task_desc->task_metadata.kv_idx);");
+  code.e("    task_desc->task_metadata.kv_idx,");
+  code.e("    runtime_config.attention_phase_profile);");
   return register_task_variant(TASK_PAGED_ATTENTION_SPLIT_KV_HOPPER,
                                code.to_string());
 }
