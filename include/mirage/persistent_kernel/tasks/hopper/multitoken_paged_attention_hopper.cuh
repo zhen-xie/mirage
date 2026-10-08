@@ -62,6 +62,7 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     int const *paged_kv_indices_buffer_ptr,
     int const *paged_kv_last_page_len_buffer_ptr,
     int16_t request_id,
+    int kv_head_idx,
     bool qk_norm,
     bool rope,
     void const *q_norm_weight_ptr,
@@ -348,7 +349,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
             k_barrier[0], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
         set_barrier_transaction_bytes(
             v_barrier[0], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
-        int const coords[4] = {0, 0, kv_cache_offset % PAGE_SIZE, page_idx_0};
+        int const coords[4] = {
+            0, kv_head_idx, kv_cache_offset % PAGE_SIZE, page_idx_0};
         tma_paged_k.tma_cp_async(k_barrier[0], k_smem(0, 0), coords);
         tma_paged_v.tma_cp_async(v_barrier[0], v_smem(0, 0), coords);
       }
@@ -453,7 +455,7 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
                 v_barrier[slot], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
             int const coords[4] = {
                 0,
-                0,
+                kv_head_idx,
                 ((iter + 1) * KV_TILE_SIZE + kv_cache_offset) % PAGE_SIZE,
                 page_idx};
             tma_paged_k.tma_cp_async(
