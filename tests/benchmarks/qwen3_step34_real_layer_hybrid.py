@@ -150,7 +150,7 @@ def main():
         "normed": t["step34_normed"],
         "qkv_weight": t["step34_qkv_weight"],
         "qkv": t["step34_qkv"],
-    }), args.output_dir / "cache_prefix_qkv_only")
+    }), args.output_dir / "cache_prefix_qkv_only_v2")
 
     def build_suffix(kernel, t):
         kernel.linear_layer(
@@ -165,7 +165,7 @@ def main():
         "attention": t["step34_attention"],
         "o_weight": t["step34_o_weight"],
         "projected": t["step34_projected"],
-    }), args.output_dir / "cache_suffix")
+    }), args.output_dir / "cache_suffix_v2")
 
     pages_per_request = math.ceil(KV_LENGTH / PAGE_SIZE)
     total_pages = BATCH * pages_per_request
