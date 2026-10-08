@@ -444,11 +444,18 @@ __host__ inline void fill_tma_desc_by_task(CUtensorMap *tma_desc,
                                   static_cast<uint64_t>(page_size),
                                   static_cast<uint64_t>(total_head_groups),
                                   static_cast<uint64_t>(head_dim)};
+        // Preserve the physical KV-pool layout. Pages in the unified cache
+        // are not necessarily packed back-to-back for one layer/component;
+        // stride[0] can include the other layers, K/V components, or padding.
+        // The TMA coordinate order is [col, head, token, page], hence the
+        // reversed TensorDesc strides below. Using a synthetic packed page
+        // stride works for page 0 but reads the wrong storage for request 1+
+        // when their page-table entries refer to later physical pages.
         uint64_t gmem_stride[4] = {
-            1,
-            static_cast<uint64_t>(head_dim),
-            static_cast<uint64_t>(total_head_groups * head_dim),
-            static_cast<uint64_t>(page_size * total_head_groups * head_dim)};
+            static_cast<uint64_t>(tensor_desc.stride[3]),
+            static_cast<uint64_t>(tensor_desc.stride[2]),
+            static_cast<uint64_t>(tensor_desc.stride[1]),
+            static_cast<uint64_t>(tensor_desc.stride[0])};
         uint32_t smem_shape[4] = {1u,
                                   static_cast<uint32_t>(KV_TILE_SIZE),
                                   1u,
