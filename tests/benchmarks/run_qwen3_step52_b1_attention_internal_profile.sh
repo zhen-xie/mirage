@@ -33,7 +33,16 @@ python -m py_compile \
 
 if [[ "$BUILD" == "1" ]]; then
     printf 'Building and installing Mirage...\n'
-    timeout "$TIMEOUT" python -m pip install -e . -v --no-build-isolation \
+    # setup.py passes the Z3 include/library paths on each clean configure.
+    # A compiler change makes CMake delete its cache and internally rerun
+    # without those command-line paths, so preserve the stale cache outside
+    # the build tree and start one clean configure with compiler overrides
+    # removed from the long-lived interactive shell.
+    if [[ -f build/CMakeCache.txt ]]; then
+        mv build/CMakeCache.txt "$OUTDIR/CMakeCache.before-step52.txt"
+    fi
+    timeout "$TIMEOUT" env -u CC -u CXX -u CUDAHOSTCXX \
+        python -m pip install -e . -v --no-build-isolation \
         > "$OUTDIR/build.log" 2>&1
     build_status=$?
     if [[ "$build_status" -ne 0 ]]; then
