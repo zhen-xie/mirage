@@ -77,6 +77,7 @@ python tests/benchmarks/qwen3_step37_attention_baseline.py \
     --warmup 1 --repeat 1 --timeout "$TIMEOUT" \
     --threshold 256 --target-tasks 128 \
     --attention-tma-kv --profile-attention-phases \
+    --skip-mpk-profile \
     --profiler-entries-per-block "$PROFILER_ENTRIES_PER_BLOCK" \
     --skip-flashinfer --output-dir "$candidate"
 candidate_status=$?

@@ -44,9 +44,7 @@ def main():
 
     task_totals = {}
     profile_csv = case_dir / "mpk_profile.csv"
-    if not profile_csv.is_file():
-        reasons.append("missing MPK profiler CSV")
-    else:
+    if profile_csv.is_file():
         with profile_csv.open(newline="", encoding="utf-8") as stream:
             for row in csv.DictReader(stream):
                 name = row["task_type_name"]
@@ -60,12 +58,10 @@ def main():
 
     attention = task_totals.get("TASK_PAGED_ATTENTION_SPLIT_KV_HOPPER", {})
     merge = task_totals.get("TASK_PAGED_ATTENTION_SPLIT_KV_MERGE_SM100", {})
-    if not attention.get("calls"):
-        reasons.append("missing split-KV attention task events")
-    if not merge.get("calls"):
-        reasons.append("missing split-KV merge task events")
     if not consumer_tiles:
         reasons.append("empty consumer tile count")
+    if not counters[14]:
+        reasons.append("empty split-KV merge counter")
 
     summary = {
         "step": 52,
@@ -86,9 +82,12 @@ def main():
         "merge_cycles_per_task": (
             counters[13] / counters[14] if counters[14] else None),
         "attention_worker_ms_per_step": (
-            attention.get("ns", 0) / 1e6 / args.profile_steps),
+            attention.get("ns", 0) / 1e6 / args.profile_steps
+            if attention.get("calls") else None),
         "attention_task_calls": attention.get("calls", 0),
-        "merge_worker_ms_per_step": merge.get("ns", 0) / 1e6 / args.profile_steps,
+        "merge_worker_ms_per_step": (
+            merge.get("ns", 0) / 1e6 / args.profile_steps
+            if merge.get("calls") else None),
         "merge_task_calls": merge.get("calls", 0),
         "decode_step_ms": data.get("decode_step_time_ms"),
         "rows": rows,
@@ -108,9 +107,8 @@ def main():
             f"{row['cycles_per_consumer_tile']:.1f}; "
             f"consumer share={100 * row['consumer_compute_share']:.1f}%")
     print(
-        f"Attention worker time: {summary['attention_worker_ms_per_step']:.3f} "
-        f"ms/step; merge worker time: {summary['merge_worker_ms_per_step']:.3f} "
-        f"ms/step; merge cycles/task: {summary['merge_cycles_per_task']}")
+        "Task-profiler worker time: disabled for this low-overhead run; "
+        f"merge cycles/task={summary['merge_cycles_per_task']}")
     print(f"Detailed counter coverage: {100 * summary['detailed_coverage']:.1f}%")
     print(f"Step 52 attention internal profile: {summary['status'].upper()}")
     raise SystemExit(1 if reasons else 0)
