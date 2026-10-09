@@ -66,7 +66,6 @@ def command(args, output, mode=None, cache=None):
             "--mpk-auto-split-kv-threshold", "256",
             "--mpk-auto-attention-target-tasks", "128",
             "--mpk-split-kv-chunk-size", "128",
-            "--mpk-attention-tma-kv-auto",
             "--mpk-kernel-cache-dir", str(cache),
             "--normal-prefill-attention", "sdpa",
             "--prefill-warmup-runs", "1", "--normal-prefill-cuda-graph",

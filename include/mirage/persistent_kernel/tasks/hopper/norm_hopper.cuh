@@ -78,19 +78,20 @@ __device__ __forceinline__ void rms_norm_rope_warp_per_head(
       T const *cur_cos_ptr = cos_ptr + win_idx * ROTARY_DIM;
       T const *cur_sin_ptr = sin_ptr + win_idx * ROTARY_DIM;
 #pragma unroll
-      for (int col = lane_idx; col < ROTARY_DIM;
+      for (int col = lane_idx; col < ROTARY_DIM / 2;
            col += NUM_THREADS_PER_WARP) {
-        int const paired_col =
-            col < ROTARY_DIM / 2 ? col + ROTARY_DIM / 2
-                                 : col - ROTARY_DIM / 2;
-        float const value = (float)smem_input.at(row, col);
-        float const paired = (float)smem_input.at(row, paired_col);
-        float const cosine = (float)cur_cos_ptr[col];
-        float const sine = (float)cur_sin_ptr[col];
-        float const rotated = col < ROTARY_DIM / 2
-                                  ? value * cosine - paired * sine
-                                  : value * cosine + paired * sine;
-        smem_input.at(row, col) = (T)rotated;
+        int const paired_col = col + ROTARY_DIM / 2;
+        // Load both normalized halves before either is overwritten. A lane
+        // owns the pair so later loop iterations never consume rotated data.
+        float const low = (float)smem_input.at(row, col);
+        float const high = (float)smem_input.at(row, paired_col);
+        float const low_cos = (float)cur_cos_ptr[col];
+        float const low_sin = (float)cur_sin_ptr[col];
+        float const high_cos = (float)cur_cos_ptr[paired_col];
+        float const high_sin = (float)cur_sin_ptr[paired_col];
+        smem_input.at(row, col) = (T)(low * low_cos - high * low_sin);
+        smem_input.at(row, paired_col) =
+            (T)(high * high_cos + low * high_sin);
       }
       __syncwarp(warp_mask);
     }
