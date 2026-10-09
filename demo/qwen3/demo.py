@@ -1124,8 +1124,7 @@ if __name__ == "__main__":
                         output=q_preprocessed[i],
                         num_q_heads=num_local_q_heads,
                         num_kv_heads=num_local_kv_heads,
-                        grid_dim=(mpk.max_num_batched_requests,
-                                  num_local_kv_heads, 1),
+                        grid_dim=(mpk.max_num_batched_requests, 1, 1),
                         block_dim=(128, 1, 1),
                         group_id=group_id,
                     )

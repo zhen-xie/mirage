@@ -4664,8 +4664,9 @@ int TaskRegister::register_q_norm_rope_hopper_task(
 
   mirage::transpiler::CodeKeeper code;
   code.inc_indent();
-  code.e("kernel::q_norm_rope_preprocess_hopper<bfloat16, $, $, $, $, $>(",
-         num_q_heads / num_kv_heads,
+  code.e("kernel::q_norm_rope_preprocess_hopper<bfloat16, $, $, $, $, $, $>(",
+         num_q_heads,
+         num_kv_heads,
          head_dim,
          qkv_stride,
          page_size,

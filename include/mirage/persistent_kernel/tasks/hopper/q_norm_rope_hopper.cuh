@@ -8,7 +8,8 @@
 namespace kernel {
 
 template <typename T,
-          int NUM_QO_PER_KV,
+          int NUM_Q_HEADS,
+          int NUM_KV_HEADS,
           int HEAD_DIM,
           int QKV_STRIDE,
           int PAGE_SIZE,
@@ -24,8 +25,9 @@ __device__ __forceinline__ void q_norm_rope_preprocess_hopper(
     int const *paged_kv_last_page_len_buffer_ptr,
     int request_id,
     float eps = 1e-6f) {
-  static_assert(NUM_QO_PER_KV <= 4,
-                "one consumer warp is assigned to each Q head");
+  static_assert(NUM_Q_HEADS % NUM_KV_HEADS == 0);
+  constexpr int NUM_QO_PER_KV = NUM_Q_HEADS / NUM_KV_HEADS;
+  constexpr int GROUP_STRIDE = (NUM_QO_PER_KV + 2) * HEAD_DIM;
   int const first_token = qo_indptr_buffer_ptr[request_id];
   int const last_token = qo_indptr_buffer_ptr[request_id + 1];
   int const num_tokens = last_token - first_token;
@@ -48,9 +50,12 @@ __device__ __forceinline__ void q_norm_rope_preprocess_hopper(
   int const lane = lane_id();
   unsigned const mask = 0xffffffffu;
 
-  if (warp < NUM_QO_PER_KV) {
+  for (int head = warp; head < NUM_Q_HEADS; head += 4) {
+    int const group = head / NUM_QO_PER_KV;
+    int const head_in_group = head % NUM_QO_PER_KV;
     for (int token = 0; token < num_tokens && token < MAX_TOKENS; ++token) {
-      int const row_offset = token * QKV_STRIDE + warp * HEAD_DIM;
+      int const row_offset = token * QKV_STRIDE + group * GROUP_STRIDE +
+                             head_in_group * HEAD_DIM;
       float sum = 0.0f;
 #pragma unroll
       for (int col = lane; col < HEAD_DIM; col += 32) {

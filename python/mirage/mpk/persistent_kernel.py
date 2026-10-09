@@ -1040,7 +1040,7 @@ class PersistentKernel:
         # self.kn_graph.customized([input, weight, output], tb_graph)
         # self.kn_graph.register_task(tb_graph, "embedding")
         tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
-        tb_graph.new_input(input, (-1, 1, -1), -1, True)
+        tb_graph.new_input(input, (-1, -1, -1), -1, True)
         tb_graph.new_input(weight, (1, -1, -1), -1, True)
         tb_graph.new_input(output, (1, 0, -1), -1, True)
         self.kn_graph.customized([input, weight, output], tb_graph)
@@ -1604,7 +1604,7 @@ class PersistentKernel:
             # grid.y is the KV head, so each task sees its own head's sinks
             tb_graph.new_input(sinks, (-1, 0, -1), -1, True)
             graph_inputs.append(sinks)
-        tb_graph.new_input(output, (-1, 1, -1), -1, True)
+        tb_graph.new_input(output, (-1, -1, -1), -1, True)
         self.kn_graph.customized(graph_inputs + [output], tb_graph)
         # SM100 only: the other kernels drop the extra params in a Release
         # build and fall back to plain causal attention with no sink.
