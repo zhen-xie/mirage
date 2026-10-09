@@ -41,7 +41,14 @@ if [[ "$BUILD" == "1" ]]; then
     if [[ -f build/CMakeCache.txt ]]; then
         mv build/CMakeCache.txt "$OUTDIR/CMakeCache.before-step52.txt"
     fi
-    timeout "$TIMEOUT" env -u CC -u CXX -u CUDAHOSTCXX \
+    HOST_CC="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc"
+    HOST_CXX="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++"
+    if [[ ! -x "$HOST_CC" || ! -x "$HOST_CXX" ]]; then
+        printf 'Missing Conda host compiler: %s or %s\n' "$HOST_CC" "$HOST_CXX"
+        exit 1
+    fi
+    timeout "$TIMEOUT" env \
+        CC="$HOST_CC" CXX="$HOST_CXX" CUDAHOSTCXX="$HOST_CXX" \
         python -m pip install -e . -v --no-build-isolation \
         > "$OUTDIR/build.log" 2>&1
     build_status=$?
