@@ -1643,7 +1643,16 @@ if __name__ == "__main__":
                 ))
             token_ids = token_ids_by_request[0]
             invalid_token_count = sum(invalid_token_counts_by_request)
-            response_text = tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True)
+            # Preserve the JSON diagnostics when a candidate kernel emits an
+            # invalid token. Calling the tokenizer with an out-of-range id
+            # raises before invalid_token_count and timing data are saved.
+            response_text = (
+                tokenizer.decode(
+                    tokens[0, :end_idx], skip_special_tokens=True
+                )
+                if invalid_token_count == 0
+                else ""
+            )
             final_logits_topk = None
             if args.capture_final_logits_topk:
                 k = min(args.capture_final_logits_topk, model.config.vocab_size)
