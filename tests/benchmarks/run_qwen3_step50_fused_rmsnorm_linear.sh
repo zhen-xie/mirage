@@ -5,6 +5,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 OUTDIR=${OUTDIR:-"$ROOT/results/qwen3_step50_fused_rmsnorm_linear_v1"}
 MODEL=${MODEL:-"Qwen/Qwen3-8B"}
 TIMEOUT=${TIMEOUT:-3600}
+BUILD=${BUILD:-0}
 
 cd "$ROOT" || exit 1
 mkdir -p "$OUTDIR"
@@ -20,16 +21,6 @@ if [[ -x "$CUDA_TOOLKIT/bin/nvcc" ]]; then
     export PATH="$CUDA_TOOLKIT/bin:$PATH"
     export LD_LIBRARY_PATH="$CUDA_TOOLKIT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
-if [[ -x "$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++" ]]; then
-    HOST_CXX="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++"
-    export CC="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc"
-    export CXX="$HOST_CXX"
-    export CUDAHOSTCXX="$HOST_CXX"
-    export NVCC_PREPEND_FLAGS="-ccbin $HOST_CXX --threads 8"
-else
-    export NVCC_PREPEND_FLAGS="--threads 8"
-fi
-
 printf 'CUDA compiler: %s\n' "$(command -v nvcc)"
 nvcc --version | tail -n 1
 printf 'Running syntax checks...\n'
@@ -37,14 +28,28 @@ python -m py_compile \
     demo/qwen3/demo.py \
     tests/benchmarks/qwen3_step50_fused_rmsnorm_linear.py || exit 1
 
-printf 'Building and installing Mirage...\n'
-timeout "$TIMEOUT" python -m pip install -e . -v --no-build-isolation \
-    > "$OUTDIR/build.log" 2>&1
-build_status=$?
-if [[ "$build_status" -ne 0 ]]; then
-    printf 'Build failed with exit code %s.\n' "$build_status"
-    tail -n 100 "$OUTDIR/build.log"
-    exit "$build_status"
+if [[ "$BUILD" == "1" ]]; then
+    printf 'Building and installing Mirage...\n'
+    timeout "$TIMEOUT" python -m pip install -e . -v --no-build-isolation \
+        > "$OUTDIR/build.log" 2>&1
+    build_status=$?
+    if [[ "$build_status" -ne 0 ]]; then
+        printf 'Build failed with exit code %s.\n' "$build_status"
+        tail -n 100 "$OUTDIR/build.log"
+        exit "$build_status"
+    fi
+else
+    printf 'Skipping editable build (BUILD=%s); this step only changes the MPK graph.\n' "$BUILD"
+fi
+
+# The Conda host compiler is needed by runtime NVCC JIT, but exporting CC/CXX
+# before the editable build invalidates an existing CMake cache and can lose
+# its resolved Z3 package path. Apply the host override only after that build.
+if [[ -x "$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++" ]]; then
+    HOST_CXX="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++"
+    export NVCC_PREPEND_FLAGS="-ccbin $HOST_CXX --threads 8"
+else
+    export NVCC_PREPEND_FLAGS="--threads 8"
 fi
 
 printf 'Running Step 50 fused RMSNorm+Linear ablation...\n'
