@@ -14,6 +14,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage2", type=Path, required=True)
     parser.add_argument("--stage3", type=Path, required=True)
+    parser.add_argument("--stage2-profile", type=Path, required=True)
+    parser.add_argument("--stage3-profile", type=Path, required=True)
     parser.add_argument("--stage2-phases", type=Path, required=True)
     parser.add_argument("--stage3-phases", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -22,6 +24,8 @@ def main():
 
     stage2 = json.loads(args.stage2.read_text(encoding="utf-8"))
     stage3 = json.loads(args.stage3.read_text(encoding="utf-8"))
+    profile2 = keyed(json.loads(args.stage2_profile.read_text(encoding="utf-8"))["rows"])
+    profile3 = keyed(json.loads(args.stage3_profile.read_text(encoding="utf-8"))["rows"])
     phase2 = keyed(json.loads(args.stage2_phases.read_text(encoding="utf-8"))["rows"])
     phase3 = keyed(json.loads(args.stage3_phases.read_text(encoding="utf-8"))["rows"])
     rows = []
@@ -29,6 +33,7 @@ def main():
     for old in stage2["rows"]:
         key = (old["batch_size"], old["kv_length"])
         new = keyed(stage3["rows"])[key]
+        profiled_old, profiled_new = profile2[key], profile3[key]
         p2, p3 = phase2[key], phase3[key]
         reasons = []
         for label, candidate in (("stage2", old), ("stage3", new)):
@@ -50,11 +55,11 @@ def main():
             "batch_size": key[0],
             "kv_length": key[1],
             "status": "failed" if reasons else "passed",
-            "stage2_attention_task_us": old.get("mpk_attention_mean_task_us"),
-            "stage3_attention_task_us": new.get("mpk_attention_mean_task_us"),
+            "stage2_attention_task_us": profiled_old.get("mpk_attention_mean_task_us"),
+            "stage3_attention_task_us": profiled_new.get("mpk_attention_mean_task_us"),
             "attention_task_ratio_stage3_stage2": ratio(
-                new.get("mpk_attention_mean_task_us"),
-                old.get("mpk_attention_mean_task_us")),
+                profiled_new.get("mpk_attention_mean_task_us"),
+                profiled_old.get("mpk_attention_mean_task_us")),
             "stage2_decode_step_ms": old.get("decode_step_ms"),
             "stage3_decode_step_ms": new.get("decode_step_ms"),
             "decode_step_ratio_stage3_stage2": ratio(

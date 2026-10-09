@@ -87,12 +87,15 @@ def mpk_command(args, batch, s_in, case_dir):
         str(args.attention_kv_pipeline_stages),
         "--normal-prefill-attention", "sdpa",
         "--mpk-kernel-cache-dir", str(case_dir / "cache"),
-        "--profiling", "--trace-name", str(case_dir / "mpk_profile"),
-        "--profiler-buffer-entries-per-block",
-        str(args.profiler_entries_per_block),
-        "--profiler-decode-start-step", "1",
-        "--profiler-decode-num-steps", str(PROFILE_STEPS),
     ]
+    if not args.skip_mpk_profile:
+        command += [
+            "--profiling", "--trace-name", str(case_dir / "mpk_profile"),
+            "--profiler-buffer-entries-per-block",
+            str(args.profiler_entries_per_block),
+            "--profiler-decode-start-step", "1",
+            "--profiler-decode-num-steps", str(PROFILE_STEPS),
+        ]
     if args.combined_kv_barrier:
         command.append("--mpk-attention-combined-kv-barrier")
     if args.profile_attention_phases:
@@ -175,6 +178,11 @@ def main():
         action="store_true",
         help="Skip the FlashInfer microbenchmark for MPK-only diagnostics.",
     )
+    parser.add_argument(
+        "--skip-mpk-profile",
+        action="store_true",
+        help="Measure unprofiled MPK decode and omit operator/phase summaries.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     batches = [int(value) for value in args.batch_sizes.split()]
@@ -227,15 +235,16 @@ def main():
                 if invalid or incomplete:
                     reasons.append(
                         f"invalid={invalid}, incomplete={incomplete}")
-                result = subprocess.run([
-                    sys.executable, str(SUMMARIZER),
-                    str(case_dir / "mpk_profile.csv"),
-                    "--output-dir", str(case_dir / "summary")], cwd=ROOT)
-                if result.returncode:
-                    reasons.append("profile summary failed")
-                else:
-                    profile = json.loads((
-                        case_dir / "summary/profile_summary.json").read_text())
+                if not args.skip_mpk_profile:
+                    result = subprocess.run([
+                        sys.executable, str(SUMMARIZER),
+                        str(case_dir / "mpk_profile.csv"),
+                        "--output-dir", str(case_dir / "summary")], cwd=ROOT)
+                    if result.returncode:
+                        reasons.append("profile summary failed")
+                    else:
+                        profile = json.loads((
+                            case_dir / "summary/profile_summary.json").read_text())
 
             if args.skip_flashinfer:
                 fi = {
@@ -328,6 +337,7 @@ def main():
         "combined_kv_barrier": args.combined_kv_barrier,
         "attention_kv_pipeline_stages": args.attention_kv_pipeline_stages,
         "flashinfer_skipped": args.skip_flashinfer,
+        "mpk_profile_skipped": args.skip_mpk_profile,
         "rows": rows,
     }
     (args.output_dir / "summary.json").write_text(

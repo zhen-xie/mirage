@@ -29,27 +29,39 @@ fi
 
 result=0
 for stages in 2 3; do
- printf 'Running TMA attention with pipeline stages=%s...\n' "$stages"
+ printf 'Measuring unprofiled TMA decode with pipeline stages=%s...\n' "$stages"
  python tests/benchmarks/qwen3_step37_attention_baseline.py \
   --model "$MODEL" --batch-sizes "8 32" --kv-lengths "1024" \
   --warmup 1 --repeat 1 --s-out 128 --timeout "$TIMEOUT" --threshold 256 \
+  --target-tasks 128 --attention-tma-kv --skip-mpk-profile \
+  --attention-kv-pipeline-stages "$stages" --skip-flashinfer \
+  --profiler-entries-per-block "$PROFILER_ENTRIES_PER_BLOCK" \
+  --output-dir "$OUTDIR/stage${stages}_perf"
+ stage_result=$?; [[ $stage_result -ne 0 ]] && result=$stage_result
+ printf 'Profiling TMA phases with pipeline stages=%s...\n' "$stages"
+ python tests/benchmarks/qwen3_step37_attention_baseline.py \
+  --model "$MODEL" --batch-sizes "8 32" --kv-lengths "1024" \
+  --warmup 1 --repeat 1 --s-out 10 --timeout "$TIMEOUT" --threshold 256 \
   --target-tasks 128 --attention-tma-kv --profile-attention-phases \
   --attention-kv-pipeline-stages "$stages" --skip-flashinfer \
   --profiler-entries-per-block "$PROFILER_ENTRIES_PER_BLOCK" \
-  --output-dir "$OUTDIR/stage${stages}"
- stage_result=$?; [[ $stage_result -ne 0 ]] && result=$stage_result
+  --output-dir "$OUTDIR/stage${stages}_profile"
+ profile_result=$?; [[ $profile_result -ne 0 ]] && result=$profile_result
  python tests/benchmarks/qwen3_step39_attention_phase_profile.py \
-  --candidate-dir "$OUTDIR/stage${stages}" \
+  --candidate-dir "$OUTDIR/stage${stages}_profile" \
   --output-dir "$OUTDIR/stage${stages}_phases" \
   --batch-sizes "8 32" --kv-lengths "1024"
  phase_result=$?; [[ $phase_result -ne 0 ]] && result=$phase_result
 done
 
-if [[ -f "$OUTDIR/stage2/summary.json" && -f "$OUTDIR/stage3/summary.json" \
+if [[ -f "$OUTDIR/stage2_perf/summary.json" && -f "$OUTDIR/stage3_perf/summary.json" \
+   && -f "$OUTDIR/stage2_profile/summary.json" && -f "$OUTDIR/stage3_profile/summary.json" \
    && -f "$OUTDIR/stage2_phases/summary.json" && -f "$OUTDIR/stage3_phases/summary.json" ]]; then
  python tests/benchmarks/qwen3_step43_tma_pipeline_stages.py \
-  --stage2 "$OUTDIR/stage2/summary.json" \
-  --stage3 "$OUTDIR/stage3/summary.json" \
+  --stage2 "$OUTDIR/stage2_perf/summary.json" \
+  --stage3 "$OUTDIR/stage3_perf/summary.json" \
+  --stage2-profile "$OUTDIR/stage2_profile/summary.json" \
+  --stage3-profile "$OUTDIR/stage3_profile/summary.json" \
   --stage2-phases "$OUTDIR/stage2_phases/summary.json" \
   --stage3-phases "$OUTDIR/stage3_phases/summary.json" \
   --output-dir "$OUTDIR"
