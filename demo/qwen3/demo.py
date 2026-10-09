@@ -321,6 +321,11 @@ if __name__ == "__main__":
         help="Group independent V-WGMMA output-column operations before waiting.",
     )
     parser.add_argument(
+        "--mpk-attention-tma-l2-promotion",
+        action="store_true",
+        help="Request 128-byte L2 promotion for paged K/V TMA descriptors.",
+    )
+    parser.add_argument(
         "--mpk-attention-consumer-completion",
         choices=("warpgroup-sync", "warp-arrive"),
         default="warpgroup-sync",
@@ -781,6 +786,7 @@ if __name__ == "__main__":
                 args.mpk_attention_consumer_completion
             ),
             attention_grouped_v_wgmma=args.mpk_attention_grouped_v_wgmma,
+            attention_tma_l2_promotion=args.mpk_attention_tma_l2_promotion,
             attention_combined_kv_barrier=(
                 args.mpk_attention_combined_kv_barrier
             ),
@@ -797,6 +803,9 @@ if __name__ == "__main__":
         print(
             "MPK grouped V-WGMMA: "
             f"{mpk.attention_grouped_v_wgmma}")
+        print(
+            "MPK attention TMA L2 promotion: "
+            f"{mpk.attention_tma_l2_promotion}")
         print(
             "MPK attention combined KV barrier: "
             f"{'ENABLED' if mpk.attention_combined_kv_barrier else 'DISABLED'}")
@@ -1727,6 +1736,10 @@ if __name__ == "__main__":
                 ),
                 "mpk_attention_grouped_v_wgmma": (
                     args.mpk_attention_grouped_v_wgmma
+                    if args.use_mirage else None
+                ),
+                "mpk_attention_tma_l2_promotion": (
+                    args.mpk_attention_tma_l2_promotion
                     if args.use_mirage else None
                 ),
                 "mpk_attention_tma_kv_policy": (

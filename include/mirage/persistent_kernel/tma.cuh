@@ -34,7 +34,9 @@ __host__ static inline void fill_tma_desc(CUtensorMap *tma_desc,
                                           uint64_t const (&gmem_stride)[NDIM],
                                           uint32_t const (&smem_shape)[NDIM],
                                           size_t smem_repeat_row,
-                                          size_t smem_repeat_col) {
+                                          size_t smem_repeat_col,
+                                          CUtensorMapL2promotion l2_promotion =
+                                              CU_TENSOR_MAP_L2_PROMOTION_NONE) {
   constexpr uint32_t tma_dim = 5;
   void *global_addr = src;
 
@@ -59,8 +61,6 @@ __host__ static inline void fill_tma_desc(CUtensorMap *tma_desc,
                 "Unsupported TMA data type");
   constexpr CUtensorMapInterleave tma_interleave =
       CU_TENSOR_MAP_INTERLEAVE_NONE;
-  constexpr CUtensorMapL2promotion tma_l2Promotion =
-      CU_TENSOR_MAP_L2_PROMOTION_L2_128B;
   constexpr CUtensorMapFloatOOBfill tma_oobFill =
       CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE;
   constexpr CUtensorMapSwizzle tma_swizzle =
@@ -247,7 +247,7 @@ printf("global_addr: %p\n", global_addr);
                                            smem_box_stride_ptr,
                                            CU_TENSOR_MAP_INTERLEAVE_NONE,
                                            tma_swizzle,
-                                           CU_TENSOR_MAP_L2_PROMOTION_NONE,
+                                           l2_promotion,
                                            CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
 
   char const *error_string;
@@ -260,7 +260,7 @@ printf("global_addr: %p\n", global_addr);
               << "\nboxDim         " << smem_box_shape << "\nelementStrides "
               << smem_box_stride << "\ninterleave     " << tma_interleave
               << "\nswizzle        " << tma_swizzle << "\nl2Promotion    "
-              << tma_l2Promotion << "\noobFill        " << tma_oobFill
+              << l2_promotion << "\noobFill        " << tma_oobFill
               << std::endl;
     std::cerr << "Error in tile TMA descriptor creation: " << error_string
               << std::endl;
@@ -469,7 +469,11 @@ __host__ inline void fill_tma_desc_by_task(CUtensorMap *tma_desc,
                                      gmem_stride,
                                      smem_shape,
                                      smem_repeat_row,
-                                     smem_repeat_col);
+                                     smem_repeat_col
+#ifdef MPK_ATTENTION_TMA_L2_PROMOTION
+                                     , CU_TENSOR_MAP_L2_PROMOTION_L2_128B
+#endif
+        );
       } else if (param_id == 3) {
         uint64_t gmem_shape[3] = {
             static_cast<uint64_t>(max_tokens),

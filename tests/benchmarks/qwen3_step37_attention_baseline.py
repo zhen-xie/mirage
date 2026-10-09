@@ -104,6 +104,8 @@ def mpk_command(args, batch, s_in, case_dir):
         command.append("--mpk-attention-tma-kv")
     if args.attention_grouped_v_wgmma:
         command.append("--mpk-attention-grouped-v-wgmma")
+    if args.attention_tma_l2_promotion:
+        command.append("--mpk-attention-tma-l2-promotion")
     return command
 
 
@@ -172,6 +174,7 @@ def main():
     parser.add_argument("--profile-attention-phases", action="store_true")
     parser.add_argument("--attention-tma-kv", action="store_true")
     parser.add_argument("--attention-grouped-v-wgmma", action="store_true")
+    parser.add_argument("--attention-tma-l2-promotion", action="store_true")
     parser.add_argument(
         "--attention-kv-pipeline-stages", type=int, default=2,
         choices=(2, 3),
@@ -340,6 +343,7 @@ def main():
         "combined_kv_barrier": args.combined_kv_barrier,
         "attention_kv_pipeline_stages": args.attention_kv_pipeline_stages,
         "attention_grouped_v_wgmma": args.attention_grouped_v_wgmma,
+        "attention_tma_l2_promotion": args.attention_tma_l2_promotion,
         "flashinfer_skipped": args.skip_flashinfer,
         "mpk_profile_skipped": args.skip_mpk_profile,
         "rows": rows,
