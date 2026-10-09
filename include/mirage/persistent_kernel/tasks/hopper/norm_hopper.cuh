@@ -24,6 +24,86 @@ template <typename T,
           int HEAD_DIM,
           int NUM_THREADS,
           int BARRIER_ID = 9,
+          int ROTARY_DIM = HEAD_DIM>
+__device__ __forceinline__ void rms_norm_rope_warp_per_head(
+    InputSmem smem_input,
+    T const *weight_ptr,
+    float *,
+    float eps,
+    int window_size,
+    int token_offset = 0,
+    bool rotary_emd = false,
+    T const *cos_ptr = nullptr,
+    T const *sin_ptr = nullptr) {
+  static_assert(HEAD_DIM % NUM_THREADS_PER_WARP == 0);
+  static_assert(ROTARY_DIM <= HEAD_DIM);
+  static_assert(ROTARY_DIM % 2 == 0);
+  constexpr int NUM_WARPS = NUM_THREADS / NUM_THREADS_PER_WARP;
+  int const warp_idx = warp_id();
+  int const lane_idx = lane_id();
+  unsigned const warp_mask = 0xffffffffu;
+
+  // A warp owns a complete (token, head) row. Split-KV tasks therefore do
+  // one warp reduction instead of synchronizing every consumer warpgroup for
+  // each Q/K head. The final warpgroup barrier publishes all rewritten rows
+  // before the attention MMA reads them.
+  int const num_rows = window_size * NUM_HEAD;
+  for (int work_idx = warp_idx; work_idx < num_rows;
+       work_idx += NUM_WARPS) {
+    int const win_idx = work_idx / NUM_HEAD;
+    int const head_idx = work_idx % NUM_HEAD;
+    int const row = (token_offset + win_idx) * NUM_HEAD + head_idx;
+    float sum = 0.0f;
+#pragma unroll
+    for (int col = lane_idx; col < HEAD_DIM;
+         col += NUM_THREADS_PER_WARP) {
+      float const value = (float)smem_input.at(row, col);
+      sum += value * value;
+    }
+#pragma unroll
+    for (int offset = NUM_THREADS_PER_WARP / 2; offset > 0; offset /= 2) {
+      sum += __shfl_xor_sync(warp_mask, sum, offset);
+    }
+    float const rms_rcp = rsqrt(sum / float(HEAD_DIM) + eps);
+#pragma unroll
+    for (int col = lane_idx; col < HEAD_DIM;
+         col += NUM_THREADS_PER_WARP) {
+      float value = (float)smem_input.at(row, col);
+      value *= rms_rcp * (float)weight_ptr[col];
+      smem_input.at(row, col) = (T)value;
+    }
+    __syncwarp(warp_mask);
+
+    if (rotary_emd) {
+      T const *cur_cos_ptr = cos_ptr + win_idx * ROTARY_DIM;
+      T const *cur_sin_ptr = sin_ptr + win_idx * ROTARY_DIM;
+#pragma unroll
+      for (int col = lane_idx; col < ROTARY_DIM;
+           col += NUM_THREADS_PER_WARP) {
+        int const paired_col =
+            col < ROTARY_DIM / 2 ? col + ROTARY_DIM / 2
+                                 : col - ROTARY_DIM / 2;
+        float const value = (float)smem_input.at(row, col);
+        float const paired = (float)smem_input.at(row, paired_col);
+        float const cosine = (float)cur_cos_ptr[col];
+        float const sine = (float)cur_sin_ptr[col];
+        float const rotated = col < ROTARY_DIM / 2
+                                  ? value * cosine - paired * sine
+                                  : value * cosine + paired * sine;
+        smem_input.at(row, col) = (T)rotated;
+      }
+      __syncwarp(warp_mask);
+    }
+  }
+  wg_sync<NUM_THREADS>(BARRIER_ID);
+}
+
+template <typename T,
+          typename InputSmem,
+          int NUM_HEAD,
+          int HEAD_DIM,
+          int NUM_THREADS,
+          int BARRIER_ID = 9,
           // Partial RoPE (e.g. GLM-4.6: 64 of 128 dims): rotate dims
           // [0, ROTARY_DIM) pairing i <-> i + ROTARY_DIM/2, pass the rest
           // through. cos/sin rows are ROTARY_DIM wide.

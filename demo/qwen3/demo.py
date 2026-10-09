@@ -362,6 +362,11 @@ if __name__ == "__main__":
             "the target task count."
         ),
     )
+    parser.add_argument(
+        "--mpk-attention-warp-norm",
+        action="store_true",
+        help="Use one consumer warp per Q/K head for RMSNorm and RoPE.",
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
@@ -789,6 +794,7 @@ if __name__ == "__main__":
                 args.mpk_attention_combined_kv_barrier
             ),
             attention_tma_kv=resolved_attention_tma_kv,
+            attention_warp_norm=args.mpk_attention_warp_norm,
         )
         print(f"MPK scheduler policy: {mpk.scheduler_policy.upper()}")
         print(f"MPK worker policy: {mpk.worker_policy.upper()}")
@@ -807,6 +813,9 @@ if __name__ == "__main__":
             "MPK attention TMA KV: "
             f"{requested_tma_kv_policy.upper()} "
             f"(resolved: {'ENABLED' if mpk.attention_tma_kv else 'DISABLED'})")
+        print(
+            "MPK attention warp-per-head norm/RoPE: "
+            f"{'ENABLED' if mpk.attention_warp_norm else 'DISABLED'}")
         if args.mpk_worker_policy == "delayed-ready-first":
             print(
                 "MPK delayed ready-first spin iterations: "
@@ -1740,6 +1749,9 @@ if __name__ == "__main__":
                 ),
                 "mpk_attention_tma_kv": (
                     resolved_attention_tma_kv if args.use_mirage else None
+                ),
+                "mpk_attention_warp_norm": (
+                    args.mpk_attention_warp_norm if args.use_mirage else None
                 ),
                 "mpk_attention_phase_counters": attention_phase_counters,
                 "mode": (

@@ -602,7 +602,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       if (qk_norm) {
         // Q norm
         if (iter == 0) {
+#ifdef MPK_ATTENTION_WARP_NORM
+          rms_norm_rope_warp_per_head<T,
+#else
           rms_norm_hopper<T,
+#endif
                           QOSmem,
                           NUM_QO_PER_KV,
                           HEAD_DIM,
@@ -623,7 +627,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         }
         // K norm
         if (kv_tokens_to_process > 0) {
+#ifdef MPK_ATTENTION_WARP_NORM
+          rms_norm_rope_warp_per_head<T,
+#else
           rms_norm_hopper<T,
+#endif
                           KVSmem,
                           1,
                           HEAD_DIM,
