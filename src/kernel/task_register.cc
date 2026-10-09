@@ -4120,7 +4120,8 @@ int TaskRegister::register_paged_attention_split_kv_merge_sm100_task(
   code.e("    runtime_config.paged_kv_last_page_len_buffer[$],", group_id);
   code.e("    task_desc->task_metadata.request_id,");
   code.e("    task_desc->output_ptrs[0],");
-  code.e("    task_desc->task_metadata.merge_task_offset);");
+  code.e("    task_desc->task_metadata.merge_task_offset,");
+  code.e("    runtime_config.attention_phase_profile);");
   return register_task_variant(TASK_PAGED_ATTENTION_SPLIT_KV_MERGE_SM100,
                                code.to_string());
 }

@@ -22,7 +22,7 @@ def main():
             data = json.loads(path.read_text())
             c = data.get("mpk_attention_phase_counters")
             reasons = []
-            if not c or len(c) != 8:
+            if not c or len(c) < 8:
                 reasons.append("missing attention phase counters")
                 c = [0] * 8
             producer_tasks, producer_tiles = c[4], c[5]

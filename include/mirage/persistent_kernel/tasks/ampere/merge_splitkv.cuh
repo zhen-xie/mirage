@@ -37,7 +37,8 @@ __device__ __forceinline__ void
                   int const *paged_kv_last_page_len_buffer_ptr,
                   int16_t request_id,
                   void *output,
-                  int merge_task_offset) {
+                  int merge_task_offset,
+                  unsigned long long *phase_profile) {
   if (threadIdx.x >= 128) {
     return;
   }
@@ -67,6 +68,9 @@ __device__ __forceinline__ void
     return;
   }
   int const num_tokens = last_token_pos - first_token_pos;
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+  unsigned long long const merge_begin = clock64();
+#endif
 
   constexpr int THREADS_PER_TOKEN = 16; // let 16 threads process one head
   constexpr int VAL_PER_THREAD = HEAD_DIM / THREADS_PER_TOKEN;
@@ -124,6 +128,13 @@ __device__ __forceinline__ void
           (T)__fdividef(o_global, d_global);
     }
   }
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+  __syncthreads();
+  if (threadIdx.x == 0 && phase_profile != nullptr) {
+    atomicAdd(&phase_profile[13], clock64() - merge_begin);
+    atomicAdd(&phase_profile[14], 1ULL);
+  }
+#endif
 }
 
 } // namespace kernel

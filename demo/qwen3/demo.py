@@ -730,7 +730,7 @@ if __name__ == "__main__":
             max_num_batched_requests=args.max_num_batched_requests,
             max_seq_length=args.max_seq_length)
         attention_phase_profile = (
-            torch.zeros(8, dtype=torch.uint64, device="cuda")
+            torch.zeros(16, dtype=torch.uint64, device="cuda")
             if args.profile_attention_phases else None
         )
         mpk = mi.PersistentKernel(

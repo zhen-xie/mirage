@@ -536,6 +536,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 #ifdef MPK_PROFILE_ATTENTION_PHASES
     unsigned long long consumer_wait_cycles = 0;
     unsigned long long consumer_compute_cycles = 0;
+    unsigned long long pre_qk_cycles = 0;
+    unsigned long long qk_cycles = 0;
+    unsigned long long softmax_cycles = 0;
+    unsigned long long pv_cycles = 0;
+    unsigned long long completion_cycles = 0;
 #endif
 
     float m_local[MMA_ITERS_M][2];
@@ -700,6 +705,12 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
           paged_v_cache_dmem.at(dst_row, col) = v_smem.at(src_row, col);
         }
       }
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+      unsigned long long qk_begin = clock64();
+      if (lane_idx == 0 && warp_idx % 4 == 0) {
+        pre_qk_cycles += qk_begin - compute_begin;
+      }
+#endif
       // compute X = QK^T
       // NOTE(Yu): we use m64n64k16 mma atom, and wrapped it as m64n64kK mma,
       // i.e. we don't need to iterate over k explicitly
@@ -721,6 +732,12 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         wgmma::mma_commit_group();
         wgmma::mma_async_wait();
       }
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+      unsigned long long softmax_begin = clock64();
+      if (lane_idx == 0 && warp_idx % 4 == 0) {
+        qk_cycles += softmax_begin - qk_begin;
+      }
+#endif
 
       // update m_local: get partial max
       // NOTE(Yu): We do 64x64x16 mma, and each thread saves 32 register values,
@@ -810,6 +827,12 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         }
       }
 
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+      unsigned long long pv_begin = clock64();
+      if (lane_idx == 0 && warp_idx % 4 == 0) {
+        softmax_cycles += pv_begin - softmax_begin;
+      }
+#endif
       uint32_t x_frag[MMA_ITERS_M][16];
 #pragma unroll
       for (int m = 0; m < MMA_ITERS_M; m++) {
@@ -824,6 +847,12 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
           wgmma::mma_async_wait();
         }
       }
+#ifdef MPK_PROFILE_ATTENTION_PHASES
+      unsigned long long completion_begin = clock64();
+      if (lane_idx == 0 && warp_idx % 4 == 0) {
+        pv_cycles += completion_begin - pv_begin;
+      }
+#endif
 
 #ifdef MPK_ATTENTION_WARP_COMPLETION
       // Each warp reports completion independently. The producer can reuse
@@ -841,7 +870,9 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 #endif
 #ifdef MPK_PROFILE_ATTENTION_PHASES
       if (lane_idx == 0 && warp_idx % 4 == 0) {
-        consumer_compute_cycles += clock64() - compute_begin;
+        unsigned long long compute_end = clock64();
+        completion_cycles += compute_end - completion_begin;
+        consumer_compute_cycles += compute_end - compute_begin;
       }
 #endif
     }
@@ -852,6 +883,11 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
       atomicAdd(&phase_profile[3], consumer_compute_cycles);
       atomicAdd(&phase_profile[6], 1ULL);
       atomicAdd(&phase_profile[7], static_cast<unsigned long long>(num_iters));
+      atomicAdd(&phase_profile[8], pre_qk_cycles);
+      atomicAdd(&phase_profile[9], qk_cycles);
+      atomicAdd(&phase_profile[10], softmax_cycles);
+      atomicAdd(&phase_profile[11], pv_cycles);
+      atomicAdd(&phase_profile[12], completion_cycles);
     }
 #endif
 
