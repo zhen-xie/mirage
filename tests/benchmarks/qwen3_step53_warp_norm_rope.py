@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEMO = ROOT / "demo/qwen3/demo.py"
 MODES = ("baseline", "warp-per-head")
-S_IN, S_OUT, MAX_SEQ = 1024, 16, 1152
+S_IN, S_OUT, MAX_SEQ = 1024, 10, 1152
 
 
 def terminate(process):
@@ -66,9 +66,11 @@ def command(args, output, mode=None, cache=None):
             "--mpk-auto-split-kv-threshold", "256",
             "--mpk-auto-attention-target-tasks", "128",
             "--mpk-split-kv-chunk-size", "128",
+            "--mpk-scheduler-policy", "round-robin",
+            "--mpk-worker-policy", "fifo",
+            "--mpk-attention-kv-pipeline-stages", "2",
             "--mpk-kernel-cache-dir", str(cache),
             "--normal-prefill-attention", "sdpa",
-            "--prefill-warmup-runs", "1", "--normal-prefill-cuda-graph",
         ]
         if mode == "warp-per-head":
             cmd.append("--mpk-attention-warp-norm")
