@@ -101,7 +101,8 @@ def main():
     )
     if reference is None:
         raise RuntimeError(f"Torch reference failed: {error}")
-    expected = reference["token_ids"][:10]
+    expected = reference["token_ids"][:min(10, S_OUT)]
+    expected_matches = len(expected)
 
     rows = []
     for mode in MODES:
@@ -130,12 +131,16 @@ def main():
         matches = invalid = incomplete = None
         if data is not None:
             tokens = data.get("token_ids", [])
-            matches = sum(a == b for a, b in zip(expected, tokens[:10]))
+            matches = sum(
+                a == b for a, b in zip(expected, tokens[:expected_matches])
+            )
             invalid = data.get("invalid_token_count")
             incomplete = data.get("generate_length") != S_OUT
             expected_flag = mode == "warp-per-head"
-            if matches != 10:
-                reasons.append(f"first-10={matches}")
+            if matches != expected_matches:
+                reasons.append(
+                    f"first-{expected_matches}={matches}"
+                )
             if invalid != 0:
                 reasons.append(f"invalid={invalid}")
             if incomplete:
@@ -148,6 +153,7 @@ def main():
             "mode": mode,
             "status": "failed" if reasons else "passed",
             "first10_matches": matches,
+            "compared_token_count": expected_matches,
             "invalid_token_count": invalid,
             "incomplete": incomplete,
             "generate_length": data.get("generate_length") if data else None,
@@ -162,7 +168,7 @@ def main():
         rows.append(row)
         print(
             f"mode={mode}: {'PASS' if not reasons else 'FAIL'}; "
-            f"first-10={matches}; decode={step_ms} ms/step; "
+            f"first-{expected_matches}={matches}; decode={step_ms} ms/step; "
             f"throughput={row['tokens_per_second']}", flush=True,
         )
 
