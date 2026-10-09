@@ -48,6 +48,14 @@ def run(command, output, log, timeout):
     return json.loads(output.read_text(encoding="utf-8")), ""
 
 
+def print_failure_tail(log, lines=40):
+    if not log.is_file():
+        return
+    content = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    print(f"--- failure tail: {log} ---", flush=True)
+    print("\n".join(content[-lines:]), flush=True)
+
+
 def command(args, output, mode=None, cache=None):
     cmd = [
         sys.executable, str(DEMO), "--model", args.model,
@@ -112,6 +120,10 @@ def main():
                 command(args, out_path, mode, cache), out_path,
                 case_dir / "run.log", args.timeout,
             )
+            if data is None:
+                print_failure_tail(case_dir / "run.log")
+        else:
+            print_failure_tail(case_dir / "warmup.log")
 
         reasons = [error] if error else []
         matches = invalid = incomplete = None
