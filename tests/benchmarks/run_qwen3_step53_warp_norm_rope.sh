@@ -50,7 +50,7 @@ else
     export NVCC_PREPEND_FLAGS="--threads 8"
 fi
 
-printf 'Running Step 53 warp-per-head Q/K Norm+RoPE ablation...\n'
+printf 'Running Step 53 warp-per-head Q Norm+RoPE ablation...\n'
 python tests/benchmarks/qwen3_step53_warp_norm_rope.py \
     --model "$MODEL" --timeout "$TIMEOUT" --output-dir "$OUTDIR"
 result=$?

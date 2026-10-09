@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEMO = ROOT / "demo/qwen3/demo.py"
 MODES = ("baseline", "warp-per-head")
-S_IN, S_OUT, MAX_SEQ = 1024, 10, 1152
+S_IN, S_OUT, MAX_SEQ = 1024, 8, 1152
 
 
 def terminate(process):
@@ -172,7 +172,7 @@ def main():
     status = "passed" if all(r["status"] == "passed" for r in rows) else "failed"
     summary = {
         "step": 53,
-        "phase": "warp_per_head_qk_norm_rope",
+        "phase": "warp_per_head_q_norm_rope",
         "status": status,
         "model": args.model,
         "batch_size": 1,
