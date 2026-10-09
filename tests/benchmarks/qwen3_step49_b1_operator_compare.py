@@ -131,10 +131,14 @@ def main():
             reasons.append("SGLang profile failed")
         try:
             mpk = mpk_metrics(mpk_row)
+        except Exception as error:
+            mpk = {"span_ms": None, "active_union_ms": None, "categories": {}}
+            reasons.append(f"MPK {type(error).__name__}: {error}")
+        try:
             sglang = analyze_sglang(sglang_trace(sg_row))
         except Exception as error:
-            mpk = sglang = {"span_ms": None, "active_union_ms": None, "categories": {}}
-            reasons.append(f"{type(error).__name__}: {error}")
+            sglang = {"span_ms": None, "active_union_ms": None, "categories": {}}
+            reasons.append(f"SGLang {type(error).__name__}: {error}")
 
         base = {
             "window": window,

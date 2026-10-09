@@ -21,8 +21,10 @@ export CUDACXX="$CUDA_TOOLKIT/bin/nvcc"
 export PATH="$CUDA_TOOLKIT/bin:$PATH"
 export LD_LIBRARY_PATH="$CUDA_TOOLKIT/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 HOST_CXX=${CUDAHOSTCXX:-${CONDA_PREFIX:+$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++}}
+HOST_CC=${CC:-${CONDA_PREFIX:+$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc}}
+HOST_BIN=${CONDA_PREFIX:+$CONDA_PREFIX/bin}
 if [[ -n "$HOST_CXX" && -x "$HOST_CXX" ]]; then
-  export CXX="$HOST_CXX" CUDAHOSTCXX="$HOST_CXX"
+  export CC="$HOST_CC" CXX="$HOST_CXX" CUDAHOSTCXX="$HOST_CXX"
   export NVCC_PREPEND_FLAGS="-ccbin $HOST_CXX --threads 8"
 else
   export NVCC_PREPEND_FLAGS="--threads 8"
@@ -52,7 +54,12 @@ python tests/benchmarks/qwen3_step48_decode_batch_profile.py \
 mpk_result=$?
 
 printf 'Capturing SGLang B=1 decode windows...\n'
+SGLANG_PREFIX=$(conda run -n "$SGLANG_ENV" python -c 'import sys; print(sys.prefix)')
 conda run --no-capture-output -n "$SGLANG_ENV" \
+  env \
+  PATH="$SGLANG_PREFIX/bin:$HOST_BIN:$CUDA_TOOLKIT/bin:$PATH" \
+  CC="$HOST_CC" CXX="$HOST_CXX" CUDAHOSTCXX="$HOST_CXX" \
+  NVCC_PREPEND_FLAGS="-ccbin $HOST_CXX --threads 8" \
   python tests/benchmarks/qwen3_step16_sglang_window_profile.py \
   --model "$MODEL" --step14-sglang-dir "$STEP47_SGLANG_DIR" \
   --cases long_context_b1 --windows early middle late \

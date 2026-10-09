@@ -194,7 +194,8 @@ def main():
                 f"{stem}: {'PASS' if not reasons else 'FAIL'}; "
                 f"kernels={row['cuda_kernel_events']}; "
                 f"linear={100 * (categories.get('linear') or 0):.1f}%; "
-                f"attention={100 * (categories.get('attention') or 0):.1f}%",
+                f"attention={100 * (categories.get('attention') or 0):.1f}%; "
+                f"reason={row['reason'] or '--'}",
                 flush=True,
             )
 
