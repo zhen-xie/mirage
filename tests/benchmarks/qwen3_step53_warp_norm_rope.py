@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEMO = ROOT / "demo/qwen3/demo.py"
 MODES = ("baseline", "warp-per-head")
-S_IN, S_OUT, MAX_SEQ = 1024, 128, 1280
+S_IN, S_OUT, MAX_SEQ = 1024, 16, 1152
 
 
 def terminate(process):
@@ -148,6 +148,7 @@ def main():
             "first10_matches": matches,
             "invalid_token_count": invalid,
             "incomplete": incomplete,
+            "generate_length": data.get("generate_length") if data else None,
             "decode_step_ms": step_ms,
             "tokens_per_second": 1000.0 / step_ms if step_ms else None,
             "resolved_attention": data.get("mpk_attention") if data else None,
