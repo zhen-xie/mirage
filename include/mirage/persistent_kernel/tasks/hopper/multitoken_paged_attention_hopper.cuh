@@ -71,6 +71,8 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
     float q_eps,
     float k_eps,
     void *qkv_ptr,
+    void const *preprocessed_q_ptr,
+    bool q_preprocessed,
     void *output_ptr,
     void *lse = nullptr,
     int kv_idx = 0,
@@ -165,9 +167,14 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
   __syncthreads();
 
-  T const *__restrict__ d_q =
+  T const *__restrict__ d_qkv =
       reinterpret_cast<T const *>(qkv_ptr) + first_token_pos * QKV_STRIDE;
-  T const *__restrict__ d_k = d_q + NUM_QO_PER_KV * HEAD_DIM;
+  T const *__restrict__ d_q =
+      q_preprocessed
+          ? reinterpret_cast<T const *>(preprocessed_q_ptr) +
+                first_token_pos * QKV_STRIDE
+          : d_qkv;
+  T const *__restrict__ d_k = d_qkv + NUM_QO_PER_KV * HEAD_DIM;
   T const *__restrict__ d_v = d_k + HEAD_DIM;
   T *__restrict__ d_paged_k_cache = reinterpret_cast<T *>(paged_k_cache_ptr);
   T *__restrict__ d_paged_v_cache = reinterpret_cast<T *>(paged_v_cache_ptr);
@@ -601,7 +608,7 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 
       if (qk_norm) {
         // Q norm
-        if (iter == 0) {
+        if (iter == 0 && !q_preprocessed) {
 #ifdef MPK_ATTENTION_WARP_NORM
           rms_norm_rope_warp_per_head<T,
 #else
@@ -647,7 +654,7 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
                   (first_kv_token_to_process + kv_cache_offset) * ROTARY_DIM);
         }
       } else if (rope) {
-        if (iter == 0) {
+        if (iter == 0 && !q_preprocessed) {
 #pragma unroll
           for (int token_idx = 0; token_idx < num_tokens; token_idx++) {
             // q rope

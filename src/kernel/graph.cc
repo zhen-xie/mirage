@@ -619,8 +619,14 @@ void Graph::register_task(char const *task_type, std::vector<int> params) {
     int variant_id =
         task_register->register_paged_attention_split_kv_hopper_task(
             customized->bgraph, params);
+    int const num_inputs = params.size() >= 10 && params[9] > 0 ? 8 : 7;
+    task_config[op] = std::make_tuple(
+        num_inputs, 2, TASK_PAGED_ATTENTION_SPLIT_KV_HOPPER, variant_id);
+  } else if (name == "q_norm_rope_hopper") {
+    int variant_id = task_register->register_q_norm_rope_hopper_task(
+        customized->bgraph, params);
     task_config[op] =
-        std::make_tuple(7, 2, TASK_PAGED_ATTENTION_SPLIT_KV_HOPPER, variant_id);
+        std::make_tuple(4, 1, TASK_Q_NORM_ROPE_HOPPER, variant_id);
   }
   // SM100 tasks
   else if (name == "linear_sm100") {

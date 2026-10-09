@@ -1549,6 +1549,8 @@ int TaskRegister::register_paged_attention_hopper_task(
   code.e("    $f,", qk_eps);
   code.e("    $f,", qk_eps);
   code.e("    task_desc->input_ptrs[0],");
+  code.e("    nullptr,");
+  code.e("    false,");
   code.e("    task_desc->output_ptrs[0],");
   code.e("    nullptr,"); // lse, not used for non-split KV tasks
   code.e("    0,");       // kv_idx, not used for non-split KV tasks
@@ -4545,10 +4547,12 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
   // params[6]: num_kv_chunks
   // params[7]: group_id
   // params[8]: page_stride_rows (0 = packed pages)
-  assert(params.size() == 9);
+  // params[9]: Q is preprocessed by a preceding task
+  assert(params.size() == 10);
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
-  int num_inputs = 7;
+  bool const q_preprocessed = params[9] > 0;
+  int num_inputs = q_preprocessed ? 8 : 7;
   int num_outputs = 2;
 
   assert(bgraph.operators.size() == (size_t)num_inputs + num_outputs);
@@ -4625,6 +4629,13 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
   code.e("    1e-6f,");
   code.e("    1e-6f,");
   code.e("    task_desc->input_ptrs[0],");
+  if (q_preprocessed) {
+    code.e("    task_desc->input_ptrs[7],");
+    code.e("    true,");
+  } else {
+    code.e("    nullptr,");
+    code.e("    false,");
+  }
   code.e("    task_desc->output_ptrs[1],"); // output_tmp
   code.e("    task_desc->output_ptrs[0],"); // lse
   code.e("    task_desc->task_metadata.kv_idx,");
@@ -4633,6 +4644,42 @@ int TaskRegister::register_paged_attention_split_kv_hopper_task(
   code.e("    static_cast<CUtensorMap*>(task_desc->input_tma_desc_ptrs[2][0]));");
   return register_task_variant(TASK_PAGED_ATTENTION_SPLIT_KV_HOPPER,
                                code.to_string());
+}
+
+int TaskRegister::register_q_norm_rope_hopper_task(
+    threadblock::Graph const &bgraph, std::vector<int> const &params) {
+  // num_q_heads, num_kv_heads, max_tokens, page_size, group_id
+  assert(params.size() == 5);
+  assert(bgraph.operators.size() == 5);
+  int const num_q_heads = params[0];
+  int const num_kv_heads = params[1];
+  int const max_tokens = params[2];
+  int const page_size = params[3];
+  int const group_id = params[4];
+  auto *input = static_cast<tb::TBInputOp *>(bgraph.operators[0]);
+  int const qkv_stride = input->dtensor.dim[1];
+  int const head_dim =
+      static_cast<tb::TBInputOp *>(bgraph.operators[1])->dtensor.dim[0];
+  assert(num_q_heads % num_kv_heads == 0);
+
+  mirage::transpiler::CodeKeeper code;
+  code.inc_indent();
+  code.e("kernel::q_norm_rope_preprocess_hopper<bfloat16, $, $, $, $, $>(",
+         num_q_heads / num_kv_heads,
+         head_dim,
+         qkv_stride,
+         page_size,
+         max_tokens);
+  code.e("    task_desc->input_ptrs[0],");
+  code.e("    task_desc->input_ptrs[1],");
+  code.e("    task_desc->input_ptrs[2],");
+  code.e("    task_desc->input_ptrs[3],");
+  code.e("    task_desc->output_ptrs[0],");
+  code.e("    runtime_config.qo_indptr_buffer,");
+  code.e("    runtime_config.paged_kv_indptr_buffer[$],", group_id);
+  code.e("    runtime_config.paged_kv_last_page_len_buffer[$],", group_id);
+  code.e("    task_desc->task_metadata.request_id);");
+  return register_task_variant(TASK_Q_NORM_ROPE_HOPPER, code.to_string());
 }
 
 int TaskRegister::register_nvshmem_allgather_strided_put_task(

@@ -367,9 +367,19 @@ if __name__ == "__main__":
         action="store_true",
         help="Use one consumer warp per Q/K head for RMSNorm and RoPE.",
     )
+    parser.add_argument(
+        "--mpk-attention-hoist-q",
+        action="store_true",
+        help=(
+            "Precompute Q RMSNorm+RoPE once per layer and reuse it across "
+            "all split-KV chunk tasks."
+        ),
+    )
     args = parser.parse_args()
     if args.mpk_policy != "always" and not args.use_mirage:
         parser.error("--mpk-policy requires --use-mirage")
+    if args.mpk_attention_hoist_q and not args.use_mirage:
+        parser.error("--mpk-attention-hoist-q requires --use-mirage")
     if args.nsys_decode_capture and (
         not args.use_mirage or args.mpk_policy != "decode-only"
     ):
@@ -871,6 +881,16 @@ if __name__ == "__main__":
             name="attn_in",
             io_category="cuda_tensor",
         )
+        q_preprocessed = [
+            mpk.new_tensor(
+                dims=(args.max_num_batched_tokens,
+                      fused_outdim_1 // world_size),
+                dtype=mi.bfloat16,
+                name=f"q_preprocessed_{layer_idx}",
+                io_category="cuda_tensor",
+            )
+            for layer_idx in range(model.config.num_hidden_layers)
+        ] if args.mpk_attention_hoist_q else None
         lse = mpk.new_tensor(
             dims=(args.max_num_batched_tokens, num_kv_cache_chunks * num_local_q_heads // num_local_kv_heads, num_local_kv_heads),
             strides=(num_kv_cache_chunks * num_local_q_heads, 1, num_kv_cache_chunks * num_local_q_heads // num_local_kv_heads),
@@ -1095,6 +1115,20 @@ if __name__ == "__main__":
                     block_dim=(128, 1, 1),
                 )
             elif args.split_kv_cache:
+                if args.mpk_attention_hoist_q:
+                    mpk.q_norm_rope_preprocess_layer(
+                        input=attn_in,
+                        q_norm=w_q_norm,
+                        cos_pos_embed=cos_pos_embed,
+                        sin_pos_embed=sin_pos_embed,
+                        output=q_preprocessed[i],
+                        num_q_heads=num_local_q_heads,
+                        num_kv_heads=num_local_kv_heads,
+                        grid_dim=(mpk.max_num_batched_requests,
+                                  num_local_kv_heads, 1),
+                        block_dim=(128, 1, 1),
+                        group_id=group_id,
+                    )
                 mpk.paged_attention_split_kv_layer(
                     input=attn_in,
                     k_cache=k_cache,
@@ -1109,6 +1143,10 @@ if __name__ == "__main__":
                     grid_dim=(mpk.max_num_batched_requests, num_local_kv_heads, num_kv_cache_chunks),
                     block_dim=(128, 1, 1),
                     group_id=group_id,
+                    preprocessed_q=(
+                        q_preprocessed[i]
+                        if args.mpk_attention_hoist_q else None
+                    ),
                 )
 
                 mpk.paged_attention_split_kv_merge_layer(
@@ -1761,6 +1799,9 @@ if __name__ == "__main__":
                 ),
                 "mpk_attention_warp_norm": (
                     args.mpk_attention_warp_norm if args.use_mirage else None
+                ),
+                "mpk_attention_hoist_q": (
+                    args.mpk_attention_hoist_q if args.use_mirage else None
                 ),
                 "mpk_attention_phase_counters": attention_phase_counters,
                 "mode": (

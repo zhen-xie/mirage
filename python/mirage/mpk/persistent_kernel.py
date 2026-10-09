@@ -1634,6 +1634,7 @@ class PersistentKernel:
         grid_dim: tuple,
         block_dim: tuple,
         group_id: int = 0,
+        preprocessed_q: DTensor = None,
     ):
         # Currently assume that input/output
         assert input.num_dims == 2  # (num_tokens, fused_outdim / world_size)
@@ -1673,8 +1674,10 @@ class PersistentKernel:
         # params[4]: max_seq_len
         # params[5]: page_size
         # params[6]: num_kv_chunks
-        params = [num_q_heads, num_kv_heads, qk_norm, rotary_embed, self.max_seq_length, block_size, num_kv_chunks, group_id,
-                  _page_stride_rows(k_cache, v_cache)]
+        params = [num_q_heads, num_kv_heads, qk_norm, rotary_embed,
+                  self.max_seq_length, block_size, num_kv_chunks, group_id,
+                  _page_stride_rows(k_cache, v_cache),
+                  1 if preprocessed_q is not None else 0]
 
         tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
         assert grid_dim[0] == self.max_num_batched_requests
@@ -1686,28 +1689,56 @@ class PersistentKernel:
         tb_graph.new_input(k_norm, (-1, -1, -1), -1, True)
         tb_graph.new_input(cos_pos_embed, (-1, -1, -1), -1, True)
         tb_graph.new_input(sin_pos_embed, (-1, -1, -1), -1, True)
+        if preprocessed_q is not None:
+            assert preprocessed_q.num_dims == 2
+            assert preprocessed_q.dim(0) == input.dim(0)
+            assert preprocessed_q.dim(1) == input.dim(1)
+            tb_graph.new_input(preprocessed_q, (-1, 1, -1), -1, True)
         tb_graph.new_input(lse, (-1, 2, 1), -1, True)
         tb_graph.new_input(output, (-1, 2, 1), -1, True)
-        self.kn_graph.customized(
-            [
-                input,
-                k_cache,
-                v_cache,
-                q_norm,
-                k_norm,
-                cos_pos_embed,
-                sin_pos_embed,
-                lse,
-                output,
-            ],
-            tb_graph,
-        )
+        tensors = [input, k_cache, v_cache, q_norm, k_norm,
+                   cos_pos_embed, sin_pos_embed]
+        if preprocessed_q is not None:
+            tensors.append(preprocessed_q)
+        tensors.extend([lse, output])
+        self.kn_graph.customized(tensors, tb_graph)
         if self.target_cc == 100:
             self.kn_graph.register_task(tb_graph, "paged_attention_split_kv_sm100", params)
         elif self.target_cc == 90:
             self.kn_graph.register_task(tb_graph, "paged_attention_split_kv_hopper", params)
         else:
             raise ValueError(f"Unsupported target CC: {self.target_cc}")
+
+    def q_norm_rope_preprocess_layer(
+        self,
+        input: DTensor,
+        q_norm: DTensor,
+        cos_pos_embed: DTensor,
+        sin_pos_embed: DTensor,
+        output: DTensor,
+        num_q_heads: int,
+        num_kv_heads: int,
+        grid_dim: tuple,
+        block_dim: tuple,
+        group_id: int = 0,
+    ):
+        assert self.target_cc == 90
+        assert input.num_dims == 2 and output.num_dims == 2
+        assert input.dim(0) == output.dim(0)
+        assert input.dim(1) == output.dim(1)
+        assert q_norm.num_dims == 1
+        block_size = self._resolve_kv_block_size(group_id)
+        params = [num_q_heads, num_kv_heads,
+                  self.max_tokens_per_request, block_size, group_id]
+        tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
+        tb_graph.new_input(input, (-1, 1, -1), -1, True)
+        tb_graph.new_input(q_norm, (-1, -1, -1), -1, True)
+        tb_graph.new_input(cos_pos_embed, (-1, -1, -1), -1, True)
+        tb_graph.new_input(sin_pos_embed, (-1, -1, -1), -1, True)
+        tb_graph.new_input(output, (-1, 1, -1), -1, True)
+        self.kn_graph.customized(
+            [input, q_norm, cos_pos_embed, sin_pos_embed, output], tb_graph)
+        self.kn_graph.register_task(tb_graph, "q_norm_rope_hopper", params)
 
     def paged_attention_split_kv_merge_layer(
         self,

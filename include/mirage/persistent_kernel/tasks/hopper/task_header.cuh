@@ -19,6 +19,7 @@
 #include "tasks/hopper/linear_swapAB_hopper.cuh"
 #include "tasks/hopper/moe_linear_swapAB_hopper.cuh"
 #include "tasks/hopper/multitoken_paged_attention_hopper.cuh"
+#include "tasks/hopper/q_norm_rope_hopper.cuh"
 #include "tasks/hopper/rmsnorm_hopper.cuh"
 #include "tasks/hopper/silu_mul_hopper.cuh"
 // Blackwell task impls

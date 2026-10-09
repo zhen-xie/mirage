@@ -125,6 +125,7 @@ enum TaskType {
   TASK_MOE_W2_LINEAR_SM90 = 162,
   TASK_SPLITK_LINEAR_SWAPAB_HOPPER = 163,
   TASK_PAGED_ATTENTION_SPLIT_KV_HOPPER = 164,
+  TASK_Q_NORM_ROPE_HOPPER = 165,
   TASK_HOPPER_TASK_END = 198, // Hopper end placeholder, not a real task
   // SM100 Tasks
   TASK_SM100_TASK_BEGIN = 230, // SM100 start placeholder, not a real task
