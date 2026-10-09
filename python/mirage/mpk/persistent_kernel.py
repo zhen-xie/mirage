@@ -329,6 +329,8 @@ def get_compile_command(
     ]
     if mpk.attention_consumer_completion == "warp-arrive":
         flags = flags + ["-DMPK_ATTENTION_WARP_COMPLETION=1"]
+    if mpk.attention_grouped_v_wgmma:
+        flags = flags + ["-DMPK_ATTENTION_GROUPED_V_WGMMA=1"]
     if mpk.attention_combined_kv_barrier:
         flags = flags + ["-DMPK_ATTENTION_COMBINED_KV_BARRIER=1"]
     if mpk.attention_tma_kv:
@@ -487,6 +489,7 @@ class PersistentKernel:
         ready_first_spin_iters: int = 64,
         attention_kv_pipeline_stages: int = 2,
         attention_consumer_completion: str = "warpgroup-sync",
+        attention_grouped_v_wgmma: bool = False,
         attention_combined_kv_barrier: bool = False,
         attention_tma_kv: bool = False,
     ):
@@ -589,6 +592,7 @@ class PersistentKernel:
                 "attention_consumer_completion must be 'warpgroup-sync' or "
                 f"'warp-arrive', got {attention_consumer_completion!r}")
         self.attention_consumer_completion = attention_consumer_completion
+        self.attention_grouped_v_wgmma = bool(attention_grouped_v_wgmma)
         self.attention_combined_kv_barrier = bool(
             attention_combined_kv_barrier)
         self.attention_tma_kv = bool(attention_tma_kv)
@@ -832,6 +836,7 @@ class PersistentKernel:
             "ready_first_spin_iters": self.ready_first_spin_iters,
             "attention_kv_pipeline_stages": self.attention_kv_pipeline_stages,
             "attention_consumer_completion": self.attention_consumer_completion,
+            "attention_grouped_v_wgmma": self.attention_grouped_v_wgmma,
             "attention_combined_kv_barrier": self.attention_combined_kv_barrier,
             "attention_tma_kv": self.attention_tma_kv,
             "max_num_pages": self.max_num_pages,
@@ -886,6 +891,7 @@ class PersistentKernel:
             ("ready_first_spin_iters", self.ready_first_spin_iters),
             ("attention_kv_pipeline_stages", self.attention_kv_pipeline_stages),
             ("attention_consumer_completion", self.attention_consumer_completion),
+            ("attention_grouped_v_wgmma", self.attention_grouped_v_wgmma),
             ("attention_combined_kv_barrier", self.attention_combined_kv_barrier),
             ("attention_tma_kv", self.attention_tma_kv),
             ("max_num_pages", self.max_num_pages),

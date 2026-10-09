@@ -814,15 +814,28 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
 #pragma unroll
       for (int m = 0; m < MMA_ITERS_M; m++) {
         convert_32_f32_to_16_bf16_uint32(x_frag_f[m], x_frag[m]);
+#ifdef MPK_ATTENTION_GROUPED_V_WGMMA
+        // The output-column MMAs use disjoint accumulators, so enqueue the
+        // complete HEAD_DIM group before waiting for it once.
+        wgmma::warpgroup_arrive();
+#endif
 #pragma unroll
         for (int n = 0; n < HEAD_DIM / 64; n++) {
           V_DESC v_desc(v_smem(m * 64, n * 64));
+#ifndef MPK_ATTENTION_GROUPED_V_WGMMA
           wgmma::warpgroup_arrive();
+#endif
           wgmma::mma_rs<T, 64, 64, 16, KVSmem, V_DESC, true>(
               o[m][n], x_frag[m], v_desc);
+#ifndef MPK_ATTENTION_GROUPED_V_WGMMA
           wgmma::mma_commit_group();
           wgmma::mma_async_wait();
+#endif
         }
+#ifdef MPK_ATTENTION_GROUPED_V_WGMMA
+        wgmma::mma_commit_group();
+        wgmma::mma_async_wait();
+#endif
       }
 
 #ifdef MPK_ATTENTION_WARP_COMPLETION

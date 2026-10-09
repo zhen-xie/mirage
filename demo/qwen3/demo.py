@@ -316,6 +316,11 @@ if __name__ == "__main__":
         help="Number of shared-memory stages in Hopper MPK attention.",
     )
     parser.add_argument(
+        "--mpk-attention-grouped-v-wgmma",
+        action="store_true",
+        help="Group independent V-WGMMA output-column operations before waiting.",
+    )
+    parser.add_argument(
         "--mpk-attention-consumer-completion",
         choices=("warpgroup-sync", "warp-arrive"),
         default="warpgroup-sync",
@@ -775,6 +780,7 @@ if __name__ == "__main__":
             attention_consumer_completion=(
                 args.mpk_attention_consumer_completion
             ),
+            attention_grouped_v_wgmma=args.mpk_attention_grouped_v_wgmma,
             attention_combined_kv_barrier=(
                 args.mpk_attention_combined_kv_barrier
             ),
@@ -788,6 +794,9 @@ if __name__ == "__main__":
         print(
             "MPK attention consumer completion: "
             f"{mpk.attention_consumer_completion.upper()}")
+        print(
+            "MPK grouped V-WGMMA: "
+            f"{mpk.attention_grouped_v_wgmma}")
         print(
             "MPK attention combined KV barrier: "
             f"{'ENABLED' if mpk.attention_combined_kv_barrier else 'DISABLED'}")
@@ -1714,6 +1723,10 @@ if __name__ == "__main__":
                 ),
                 "mpk_attention_consumer_completion": (
                     args.mpk_attention_consumer_completion
+                    if args.use_mirage else None
+                ),
+                "mpk_attention_grouped_v_wgmma": (
+                    args.mpk_attention_grouped_v_wgmma
                     if args.use_mirage else None
                 ),
                 "mpk_attention_tma_kv_policy": (
