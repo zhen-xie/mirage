@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEMO = ROOT / "demo/qwen3/demo.py"
 SUMMARIZER = ROOT / "tests/benchmarks/summarize_qwen3_mpk_profile.py"
 Q_HEADS, KV_HEADS, HEAD_DIM, PAGE_SIZE = 32, 8, 128, 128
-LAYERS, PROFILE_STEPS, S_OUT, COMPARE = 36, 9, 10, 10
+LAYERS, PROFILE_STEPS, COMPARE = 36, 9, 10
 DTYPE = torch.bfloat16
 
 
@@ -55,11 +55,11 @@ def token_batches(data):
 
 
 def torch_command(args, s_in, output):
-    max_seq = math.ceil((s_in + S_OUT) / 128) * 128
+    max_seq = math.ceil((s_in + args.s_out) / 128) * 128
     return [
         sys.executable, str(DEMO), "--model", args.model,
         "--input-length", str(s_in), "--max-seq-length", str(max_seq),
-        "--max-new-tokens", str(S_OUT), "--page-size", str(max_seq),
+        "--max-new-tokens", str(args.s_out), "--page-size", str(max_seq),
         "--max-num-pages", "1", "--max-num-batched-requests", "1",
         "--max-num-batched-tokens", "8", "--ignore-eos",
         "--save-tokens", str(output),
@@ -67,11 +67,11 @@ def torch_command(args, s_in, output):
 
 
 def mpk_command(args, batch, s_in, case_dir):
-    max_seq = math.ceil((s_in + S_OUT) / 128) * 128
+    max_seq = math.ceil((s_in + args.s_out) / 128) * 128
     command = [
         sys.executable, str(DEMO), "--model", args.model,
         "--input-length", str(s_in), "--max-seq-length", str(max_seq),
-        "--max-new-tokens", str(S_OUT), "--page-size", str(max_seq),
+        "--max-new-tokens", str(args.s_out), "--page-size", str(max_seq),
         "--max-num-pages", str(batch),
         "--max-num-batched-requests", str(batch),
         "--max-num-batched-tokens", str(max(8, batch)), "--ignore-eos",
@@ -83,6 +83,8 @@ def mpk_command(args, batch, s_in, case_dir):
         "--mpk-split-kv-chunk-size", "128",
         "--mpk-scheduler-policy", "round-robin",
         "--mpk-worker-policy", "fifo",
+        "--mpk-attention-kv-pipeline-stages",
+        str(args.attention_kv_pipeline_stages),
         "--normal-prefill-attention", "sdpa",
         "--mpk-kernel-cache-dir", str(case_dir / "cache"),
         "--profiling", "--trace-name", str(case_dir / "mpk_profile"),
@@ -156,6 +158,7 @@ def main():
     parser.add_argument("--kv-lengths", default="128 512 1024")
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--repeat", type=int, default=100)
+    parser.add_argument("--s-out", type=int, default=10)
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--threshold", type=int, default=256)
     parser.add_argument("--target-tasks", type=int, default=128)
@@ -163,6 +166,10 @@ def main():
     parser.add_argument("--combined-kv-barrier", action="store_true")
     parser.add_argument("--profile-attention-phases", action="store_true")
     parser.add_argument("--attention-tma-kv", action="store_true")
+    parser.add_argument(
+        "--attention-kv-pipeline-stages", type=int, default=2,
+        choices=(2, 3),
+    )
     parser.add_argument(
         "--skip-flashinfer",
         action="store_true",
@@ -213,7 +220,7 @@ def main():
                     references[length][:COMPARE], row[:COMPARE]))
                     for row in actual)
                 invalid = sum(data.get("invalid_token_counts_by_request", []))
-                incomplete = sum(value != S_OUT for value in
+                incomplete = sum(value != args.s_out for value in
                                  data.get("generate_lengths_by_request", []))
                 if len(actual) != batch or first10 != COMPARE:
                     reasons.append(f"first-10={first10}, batch={len(actual)}")
@@ -273,6 +280,13 @@ def main():
                     attention["mean_us"] if attention else None),
                 "mpk_attention_worker_share": (
                     attention["worker_time_share"] if attention else None),
+                "prefill_ms": data.get("prefill_time_ms") if data else None,
+                "decode_ms": data.get("decode_time_ms") if data else None,
+                "decode_step_ms": (
+                    data.get("decode_step_time_ms") if data else None),
+                "decode_tokens_per_second": (
+                    batch * args.s_out * 1000 / data["decode_time_ms"]
+                    if data and data.get("decode_time_ms") else None),
                 "mpk_attention_work_lower_bound_ms_per_step": lower_bound_ms,
                 "mpk_effective_kv_gbps_lower_bound": (
                     kv_bytes_step / (lower_bound_ms * 1e6)
@@ -308,9 +322,11 @@ def main():
         "batch_sizes": batches,
         "kv_lengths": lengths,
         "profile_steps": PROFILE_STEPS,
+        "s_out": args.s_out,
         "warmup": args.warmup,
         "repeat": args.repeat,
         "combined_kv_barrier": args.combined_kv_barrier,
+        "attention_kv_pipeline_stages": args.attention_kv_pipeline_stages,
         "flashinfer_skipped": args.skip_flashinfer,
         "rows": rows,
     }
