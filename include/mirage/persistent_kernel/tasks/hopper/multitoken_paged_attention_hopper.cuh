@@ -344,13 +344,22 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
         kv_cache_offset + KV_TILE_SIZE <= finished_seq_len;
     if (initial_uses_tma) {
       if (lane_idx == 0 && warp_idx % 4 == 0) {
+#ifdef MPK_ATTENTION_COMBINED_KV_BARRIER
+        set_barrier_transaction_bytes(
+            k_barrier[0], 2 * KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+#else
         set_barrier_transaction_bytes(
             k_barrier[0], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
         set_barrier_transaction_bytes(
             v_barrier[0], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+#endif
         int const coords[4] = {0, 0, kv_cache_offset % PAGE_SIZE, page_idx_0};
         tma_paged_k.tma_cp_async(k_barrier[0], k_smem(0, 0), coords);
+#ifdef MPK_ATTENTION_COMBINED_KV_BARRIER
+        tma_paged_v.tma_cp_async(k_barrier[0], v_smem(0, 0), coords);
+#else
         tma_paged_v.tma_cp_async(v_barrier[0], v_smem(0, 0), coords);
+#endif
       }
     } else {
 #endif
@@ -447,10 +456,15 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
             (iter + 2) * KV_TILE_SIZE + kv_cache_offset <= finished_seq_len;
         if (tile_uses_tma) {
           if (lane_idx == 0 && warp_idx % 4 == 0) {
+#ifdef MPK_ATTENTION_COMBINED_KV_BARRIER
+            set_barrier_transaction_bytes(
+                k_barrier[slot], 2 * KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+#else
             set_barrier_transaction_bytes(
                 k_barrier[slot], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
             set_barrier_transaction_bytes(
                 v_barrier[slot], KV_TILE_SIZE * HEAD_DIM * sizeof(T));
+#endif
             int const coords[4] = {
                 0,
                 0,
@@ -458,8 +472,13 @@ __device__ __forceinline__ void multitoken_paged_attention_hopper_impl(
                 page_idx};
             tma_paged_k.tma_cp_async(
                 k_barrier[slot], k_smem(0, 0), coords);
+#ifdef MPK_ATTENTION_COMBINED_KV_BARRIER
+            tma_paged_v.tma_cp_async(
+                k_barrier[slot], v_smem(0, 0), coords);
+#else
             tma_paged_v.tma_cp_async(
                 v_barrier[slot], v_smem(0, 0), coords);
+#endif
           }
         } else {
 #endif
