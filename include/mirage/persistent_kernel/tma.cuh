@@ -1575,7 +1575,8 @@ __host__ inline void create_tma_desc_by_task(FullTaskDesc &task_desc) {
       create_tma_desc_for_tensor(task_desc, tensor_desc, param_id, 0);
       break;
     }
-    case TASK_RMS_NORM_HOPPER: {
+    case TASK_RMS_NORM_HOPPER:
+    case TASK_Q_NORM_ROPE_HOPPER: {
       // no TMA needed
       break;
     }
