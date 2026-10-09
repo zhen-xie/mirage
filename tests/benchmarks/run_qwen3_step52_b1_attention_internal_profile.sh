@@ -6,7 +6,7 @@ OUTDIR=${OUTDIR:-"$ROOT/results/qwen3_step52_b1_attention_internal_profile_v1"}
 MODEL=${MODEL:-"Qwen/Qwen3-8B"}
 TIMEOUT=${TIMEOUT:-3600}
 PROFILER_ENTRIES_PER_BLOCK=${PROFILER_ENTRIES_PER_BLOCK:-32768}
-BUILD=${BUILD:-1}
+BUILD=${BUILD:-0}
 
 cd "$ROOT" || exit 1
 mkdir -p "$OUTDIR"

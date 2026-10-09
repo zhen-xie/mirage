@@ -129,7 +129,10 @@ __device__ __forceinline__ void
     }
   }
 #ifdef MPK_PROFILE_ATTENTION_PHASES
-  __syncthreads();
+  // This task runs inside one persistent worker group.  A block-wide
+  // __syncthreads() would wait for unrelated worker groups and deadlock the
+  // persistent block.  Thread 0 records its own completion latency; the MPK
+  // task profiler supplies the authoritative whole-task duration.
   if (threadIdx.x == 0 && phase_profile != nullptr) {
     atomicAdd(&phase_profile[13], clock64() - merge_begin);
     atomicAdd(&phase_profile[14], 1ULL);
