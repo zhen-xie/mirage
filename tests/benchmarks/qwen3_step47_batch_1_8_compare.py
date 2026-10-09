@@ -57,6 +57,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root-dir", type=Path, required=True)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument(
+        "--max-failed-cases", type=int, default=0,
+        help="Allow this many failed matrix cases while preserving their failed rows",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -123,9 +127,16 @@ def main():
             f"prefill MPK/SGLang={row['prefill_ms_mpk_over_sglang']}; "
             f"decode MPK/SGLang={row['decode_step_ms_mpk_over_sglang']}",
             flush=True)
+    within_failure_budget = failures <= args.max_failed_cases
+    overall_status = (
+        "passed" if failures == 0 else
+        "passed_with_exceptions" if within_failure_budget else "failed"
+    )
     summary = {
         "step": 47, "phase": "batch_1_8_mpk_sglang_comparison",
-        "status": "failed" if failures else "passed", "repeats": args.repeats,
+        "status": overall_status, "repeats": args.repeats,
+        "failed_cases": failures,
+        "max_failed_cases": args.max_failed_cases,
         "statistic": "median with min/max range", "rows": rows,
     }
     (args.output_dir / "comparison.json").write_text(
@@ -136,7 +147,7 @@ def main():
             writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
             writer.writeheader(); writer.writerows(rows)
     print(f"Step 47 batch 1-8 comparison: {summary['status'].upper()}")
-    raise SystemExit(1 if failures else 0)
+    raise SystemExit(0 if within_failure_budget else 1)
 
 
 if __name__ == "__main__":
