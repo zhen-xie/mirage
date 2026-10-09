@@ -16,7 +16,12 @@ ROOT = Path(__file__).resolve().parents[2]
 SUMMARIZER = ROOT / "tests/benchmarks/summarize_qwen3_sglang_profile.py"
 S_OUT = 128
 WINDOWS = (("early", 0, 9), ("middle", 59, 9), ("late", 118, 9))
-CASES = (("short", 1, 128), ("short", 32, 128), ("long_context", 32, 1024))
+CASES = (
+    ("short", 1, 128),
+    ("short", 32, 128),
+    ("long_context", 1, 1024),
+    ("long_context", 32, 1024),
+)
 
 
 def safe(value):
