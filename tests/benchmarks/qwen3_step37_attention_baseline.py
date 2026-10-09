@@ -47,6 +47,9 @@ def run(command, log, timeout):
         except subprocess.TimeoutExpired:
             terminate(process)
             return "timeout"
+        except KeyboardInterrupt:
+            terminate(process)
+            raise
     return "" if code == 0 else f"exit code {code}"
 
 
