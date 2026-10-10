@@ -302,7 +302,9 @@ if __name__ == "__main__":
         default=0,
         help=(
             "Override the MPK worker count (0 = auto from the SM count). "
-            "Every remaining SM hosts 4 scheduler warps."
+            "Every remaining SM hosts 4 scheduler warps. Experimental: on "
+            "H100 NVL, 130 and 131 crash because tasks sized by the worker "
+            "count (lm_head/argmax) fail TMA descriptor creation (Step 58)."
         ),
     )
     parser.add_argument(
