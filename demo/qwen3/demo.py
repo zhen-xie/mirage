@@ -288,12 +288,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mpk-auto-attention-split-rounding",
         choices=("up", "down"),
-        default="up",
+        default="down",
         help=(
             "With --mpk-attention auto, 'up' picks the smallest split count "
             "whose task count reaches the target; 'down' picks the largest "
             "split count whose task count stays within the target, so all "
             "attention tasks fit in one wave of workers."
+        ),
+    )
+    parser.add_argument(
+        "--mpk-num-workers",
+        type=int,
+        default=0,
+        help=(
+            "Override the MPK worker count (0 = auto from the SM count). "
+            "Every remaining SM hosts 4 scheduler warps."
         ),
     )
     parser.add_argument(
@@ -743,6 +752,17 @@ if __name__ == "__main__":
         )
             
         num_workers, num_schedulers = mi.get_configurations_from_gpu(rank)
+        if args.mpk_num_workers:
+            # Every SM not used by a worker hosts SCHEDULERS_PER_BLOCK (4)
+            # scheduler warps.
+            sm_count = torch.cuda.get_device_properties(rank).multi_processor_count
+            num_workers = args.mpk_num_workers
+            num_schedulers = 4 * (sm_count - num_workers)
+            if num_schedulers <= 0:
+                parser.error(
+                    f"--mpk-num-workers {num_workers} leaves no SM for "
+                    f"schedulers (sm_count={sm_count})")
+        print(f"MPK workers={num_workers}, schedulers={num_schedulers}")
         # Create auxiliary buffers for paged (with kv_plan builder) KV and QO
         qo_indptr_buffer = torch.empty(
             args.max_num_batched_requests + 1, dtype=torch.int32, device="cuda")
@@ -1705,6 +1725,7 @@ if __name__ == "__main__":
                 "mpk_max_tokens_per_request": (
                     mpk.max_tokens_per_request if args.use_mirage else None
                 ),
+                "mpk_num_workers": mpk.num_workers if args.use_mirage else None,
                 "mpk_kernel_cache_dir": (
                     os.path.abspath(args.mpk_kernel_cache_dir)
                     if args.mpk_kernel_cache_dir else None
