@@ -8,6 +8,7 @@ BATCH_SIZES=${BATCH_SIZES:-"1 2 3 4 5 6 7 8"}
 REPEATS=${REPEATS:-3}; TIMEOUT=${TIMEOUT:-3600}; THRESHOLD=${THRESHOLD:-256}
 SGLANG_ENV=${SGLANG_ENV:-sglang-bench}; BUILD=${BUILD:-1}
 MAX_FAILED_CASES=${MAX_FAILED_CASES:-2}
+CACHE_ROOT=${CACHE_ROOT:-}
 cd "$ROOT" || exit 1; mkdir -p "$OUTDIR"
 export TVM_FFI_DISABLE_TORCH_C_DLPACK=1 PYTHONUNBUFFERED=1
 CUDA_TOOLKIT=${MIRAGE_CUDA_HOME:-/opt/ohpc/pub/apps/cuda/13.3}
@@ -28,7 +29,8 @@ for repeat in $(seq 1 "$REPEATS"); do
  printf '\n=== MPK repeat %s/%s ===\n' "$repeat" "$REPEATS"
  python tests/benchmarks/qwen3_step14_mpk_sweep.py \
   --models "${models[@]}" --cases "${cases[@]}" --batch-sizes "${batches[@]}" \
-  --timeout "$TIMEOUT" --threshold "$THRESHOLD" --output-dir "$OUTDIR/mpk_repeat${repeat}"
+  --timeout "$TIMEOUT" --threshold "$THRESHOLD" --output-dir "$OUTDIR/mpk_repeat${repeat}" \
+  ${CACHE_ROOT:+--cache-root "$CACHE_ROOT"}
  rc=$?; printf 'MPK repeat %s exited with code %s.\n' "$repeat" "$rc"
 done
 for repeat in $(seq 1 "$REPEATS"); do

@@ -119,6 +119,10 @@ def main():
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--threshold", type=int, default=256)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--cache-root", type=Path, default=None,
+        help="Shared MPK kernel cache root; defaults to OUTPUT_DIR/cache",
+    )
     args = parser.parse_args()
     parsed_cases = []
     for value in args.cases:
@@ -133,8 +137,9 @@ def main():
     args.cases = [f"{name}:{s_in}:{s_out}" for name, s_in, s_out in parsed_cases]
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    cache_root = args.output_dir / "cache"
-    cache_root.mkdir(exist_ok=True)
+    cache_root = (args.cache_root.resolve() if args.cache_root
+                  else args.output_dir / "cache")
+    cache_root.mkdir(parents=True, exist_ok=True)
 
     summary_path = args.output_dir / "summary.json"
     rows = []
