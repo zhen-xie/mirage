@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -81,7 +82,7 @@ def command(args, model, batch, s_in, s_out, output, cache=None):
             "--normal-prefill-attention", "sdpa",
             "--prefill-warmup-runs", "1",
             "--normal-prefill-cuda-graph",
-        ]
+        ] + shlex.split(args.mpk_extra_args)
     return result
 
 
@@ -122,6 +123,10 @@ def main():
     parser.add_argument(
         "--cache-root", type=Path, default=None,
         help="Shared MPK kernel cache root; defaults to OUTPUT_DIR/cache",
+    )
+    parser.add_argument(
+        "--mpk-extra-args", default="",
+        help="Extra demo arguments appended to every MPK run (shell-quoted)",
     )
     args = parser.parse_args()
     parsed_cases = []

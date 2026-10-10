@@ -286,6 +286,17 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--mpk-auto-attention-split-rounding",
+        choices=("up", "down"),
+        default="up",
+        help=(
+            "With --mpk-attention auto, 'up' picks the smallest split count "
+            "whose task count reaches the target; 'down' picks the largest "
+            "split count whose task count stays within the target, so all "
+            "attention tasks fit in one wave of workers."
+        ),
+    )
+    parser.add_argument(
         "--mpk-split-kv-chunk-size",
         type=int,
         default=128,
@@ -514,12 +525,20 @@ if __name__ == "__main__":
                 and args.max_seq_length // splits
                 >= args.mpk_split_kv_chunk_size
             ]
-            if valid_splits:
+            if valid_splits and args.mpk_auto_attention_split_rounding == "down":
+                auto_attention_target_splits = max(
+                    (splits for splits in valid_splits
+                     if auto_attention_base_tasks * splits
+                     <= args.mpk_auto_attention_target_tasks),
+                    default=valid_splits[0],
+                )
+            elif valid_splits:
                 auto_attention_target_splits = next(
                     (splits for splits in valid_splits
                      if splits >= required_splits),
                     valid_splits[-1],
                 )
+            if valid_splits:
                 args.mpk_split_kv_chunk_size = (
                     args.max_seq_length // auto_attention_target_splits
                 )
@@ -694,6 +713,7 @@ if __name__ == "__main__":
                 f"base_tasks={auto_attention_base_tasks}, "
                 f"target_tasks={args.mpk_auto_attention_target_tasks}, "
                 f"splits={auto_attention_target_splits}, "
+                f"rounding={args.mpk_auto_attention_split_rounding}, "
                 f"threshold={args.mpk_auto_split_kv_threshold})"
             )
 
@@ -1707,6 +1727,10 @@ if __name__ == "__main__":
                 ),
                 "mpk_auto_attention_target_splits": (
                     auto_attention_target_splits
+                    if requested_mpk_attention == "auto" else None
+                ),
+                "mpk_auto_attention_split_rounding": (
+                    args.mpk_auto_attention_split_rounding
                     if requested_mpk_attention == "auto" else None
                 ),
                 "mpk_split_kv_chunk_size": (
