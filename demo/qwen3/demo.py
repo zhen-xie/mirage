@@ -1634,7 +1634,11 @@ if __name__ == "__main__":
                 ))
             token_ids = token_ids_by_request[0]
             invalid_token_count = sum(invalid_token_counts_by_request)
-            response_text = tokenizer.decode(tokens[0, :end_idx], skip_special_tokens=True)
+            response_ids = tokens[0, :end_idx]
+            response_ids = response_ids[
+                (response_ids >= 0) & (response_ids < model.config.vocab_size)
+            ]
+            response_text = tokenizer.decode(response_ids, skip_special_tokens=True)
             final_logits_topk = None
             if args.capture_final_logits_topk:
                 k = min(args.capture_final_logits_topk, model.config.vocab_size)
