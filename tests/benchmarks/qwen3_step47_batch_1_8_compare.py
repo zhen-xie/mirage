@@ -86,6 +86,10 @@ def main():
             if source["status"] != "completed" or source.get(
                     "minimum_first10_matches") != min(10, int(source["s_out"])):
                 reasons.append(f"MPK repeat {repeat}: correctness failed")
+            if source.get("invalid_token_count") != 0:
+                reasons.append(
+                    f"MPK repeat {repeat}: invalid_token_count="
+                    f"{source.get('invalid_token_count')}")
             mpk_samples.append(source)
             sg_path = (args.root_dir / f"sglang_repeat{repeat}" /
                        f"{safe(model)}_{case}_b{batch}.jsonl")
@@ -103,6 +107,9 @@ def main():
             "status": "failed" if reasons else "passed",
             "mpk_first10_matches": min(
                 (sample.get("minimum_first10_matches", 0) for sample in mpk_samples),
+                default=None),
+            "mpk_invalid_token_count": max(
+                (sample.get("invalid_token_count") or 0 for sample in mpk_samples),
                 default=None),
         }
         for metric in ("prefill_ms", "decode_ms", "decode_step_ms",
@@ -124,8 +131,12 @@ def main():
         rows.append(row); failures += bool(reasons)
         print(
             f"{model} {case} B={batch}: {row['status'].upper()}; "
-            f"prefill MPK/SGLang={row['prefill_ms_mpk_over_sglang']}; "
-            f"decode MPK/SGLang={row['decode_step_ms_mpk_over_sglang']}",
+            f"decode ms/step MPK={row['mpk_decode_step_ms_median']} "
+            f"SGLang={row['sglang_decode_step_ms_median']} "
+            f"MPK/SGLang={row['decode_step_ms_mpk_over_sglang']}; "
+            f"first10={row['mpk_first10_matches']} "
+            f"invalid={row['mpk_invalid_token_count']}"
+            + (f"; reason={row['reason']}" if reasons else ""),
             flush=True)
     within_failure_budget = failures <= args.max_failed_cases
     overall_status = (

@@ -60,6 +60,21 @@ def run_mpk(args, outdir, use_mirage):
                    CUDA_VISIBLE_DEVICES=args.gpu)
         sh(cmd, env=env)
         d = json.loads(jf.read_text())
+        # Sanity gate: a run that decoded the wrong number of steps, or emitted
+        # out-of-vocab ids, is not a latency measurement. Fail loudly.
+        got = d.get("generate_length")
+        bad = d.get("invalid_token_count") or 0
+        if got != args.output_len:
+            raise SystemExit(
+                f"[{tag} run{i}] generated {got} tokens, expected "
+                f"{args.output_len}. This is a correctness failure, not a "
+                f"slow run -- the latency numbers are meaningless. See {jf}"
+            )
+        if bad:
+            raise SystemExit(
+                f"[{tag} run{i}] {bad} out-of-vocab token ids. The decode "
+                f"path is producing garbage; fix correctness first. See {jf}"
+            )
         if i < args.warmup:
             continue
         runs.append({
